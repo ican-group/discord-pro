@@ -133,16 +133,10 @@ class TestZendeskWebhookEndpoints:
 class TestZendeskSuggestionEndpoint:
     """Tests for Zendesk suggestion endpoint (public, for ZAF sidebar)"""
 
-    def test_get_suggestion_nonexistent_ticket(self):
-        """GET /api/zendesk/suggestion/{instance_id}/{ticket_id} returns null suggestion for non-existent tickets"""
-        nonexistent_ticket_id = "999999999"
-        resp = requests.get(f"{BASE_URL}/api/zendesk/suggestion/{INSTANCE_ID}/{nonexistent_ticket_id}")
-        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-        data = resp.json()
-        # Should return null/None suggestion for non-existent ticket
-        assert data.get("suggestion") is None, f"Expected null suggestion, got: {data}"
-        assert data.get("ticket_id") == nonexistent_ticket_id
-        print(f"Non-existent ticket suggestion response: {data}")
+    def test_get_suggestion_route_removed(self):
+        """GET /api/zendesk/suggestion/... was removed (spec 008, P4): unauthenticated cross-tenant read."""
+        resp = requests.get(f"{BASE_URL}/api/zendesk/suggestion/{INSTANCE_ID}/999999999")
+        assert resp.status_code == 404, f"Expected 404 (route removed), got {resp.status_code}: {resp.text}"
 
 
 class TestZendeskTicketsEndpoint:

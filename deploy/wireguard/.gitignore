@@ -1,0 +1,3 @@
+# Never commit real WireGuard configs or keys (spec 008 Stage 10).
+*.key
+wg-bbp.conf

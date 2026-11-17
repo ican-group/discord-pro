@@ -11,6 +11,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
+import security_utils as _sec
+import webhook_auth as _webhook_auth
+
 logger = logging.getLogger("bridgebot.telegram")
 
 router = APIRouter()
@@ -74,22 +77,19 @@ async def _tg_request(token: str, method: str, data: dict = None):
 
 async def _set_webhook(token: str, instance_id: str, webhook_secret: str):
     """Register webhook URL with Telegram."""
-    base_url = os.environ.get("REACT_APP_BACKEND_URL", "")
-    if not base_url:
-        try:
-            with open(os.path.join(os.path.dirname(__file__), "..", "frontend", ".env")) as f:
-                for line in f:
-                    if line.startswith("REACT_APP_BACKEND_URL="):
-                        base_url = line.split("=", 1)[1].strip()
-                        break
-        except Exception:
-            pass
+    # Telegram calls the API directly: PUBLIC_API_URL (spec 008, P6).
+    import runtime_config as _rc
+    base_url = _rc.public_url(_rc.PUBLIC_API_URL)
     if not base_url:
         raise HTTPException(status_code=500, detail="Cannot determine public URL for webhook registration")
 
     webhook_url = f"{base_url}/api/telegram/webhook/{instance_id}/{webhook_secret}"
-    await _tg_request(token, "setWebhook", {"url": webhook_url, "allowed_updates": ["message", "callback_query"]})
-    logger.info(f"Telegram webhook set for instance {instance_id[:12]}: {webhook_url}")
+    # secret_token: Telegram sends it back in X-Telegram-Bot-Api-Secret-Token on every
+    # update, so forged requests are rejected even if the URL leaks (spec 008, P7).
+    await _tg_request(token, "setWebhook", {"url": webhook_url, "allowed_updates": ["message", "callback_query"],
+                                            "secret_token": webhook_secret})
+    # Never log webhook_url: its last path segment is the webhook secret.
+    logger.info(f"Telegram webhook set for instance {instance_id[:12]}")
 
 
 async def _delete_webhook(token: str):
@@ -155,6 +155,7 @@ async def update_telegram_config(body: TelegramConfigUpdate, request: Request):
 
         # Set new webhook
         await _set_webhook(token, instance_id, webhook_secret)
+        update_fields["secret_token_registered"] = True
 
         # Auto-activate on first connection
         if not existing:
@@ -176,6 +177,7 @@ async def update_telegram_config(body: TelegramConfigUpdate, request: Request):
             if not existing.get("webhook_secret"):
                 update_fields["webhook_secret"] = ws
             await _set_webhook(existing["bot_token"], instance_id, ws)
+            update_fields["secret_token_registered"] = True
 
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -262,16 +264,27 @@ def _parse_suggestions(response: str):
 @router.post("/telegram/webhook/{instance_id}/{webhook_secret}")
 async def telegram_webhook(instance_id: str, webhook_secret: str, request: Request):
     """Receive and process incoming Telegram messages and callback queries."""
+    _webhook_auth.check_webhook_rate("telegram", instance_id)
     cfg = await _db.telegram_config.find_one({"instance_id": instance_id})
-    if not cfg:
+    # Constant-time check; unknown instance and wrong secret are indistinguishable
+    # (spec 008, R-P7.1).
+    if not _sec.secret_matches((cfg or {}).get("webhook_secret"), webhook_secret):
         raise HTTPException(status_code=404, detail="Not found")
-    if cfg.get("webhook_secret") != webhook_secret:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    # Webhooks registered with secret_token must present it (forgery even with a
+    # leaked URL is rejected). Older registrations without it keep path-only auth
+    # until the bot is re-saved/reactivated (which re-registers with the token).
+    if cfg.get("secret_token_registered") and not _webhook_auth.telegram_secret_valid(
+            cfg.get("webhook_secret"), request.headers.get(_webhook_auth.TELEGRAM_SECRET_HEADER)):
+        raise HTTPException(status_code=404, detail="Not found")
     if not cfg.get("is_active", False):
         return {"ok": True, "skipped": "inactive"}
 
+    raw = await _webhook_auth.read_body_limited(request)
     try:
-        update = await request.json()
+        import json as _json
+        update = _json.loads(raw)
+        if not isinstance(update, dict):
+            raise ValueError("not an object")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 

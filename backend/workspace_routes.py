@@ -184,7 +184,7 @@ async def list_workspace_members(ws_id: str, request: Request):
     user_ids = [m["user_id"] for m in members]
     users = await h._db.users.find(
         {"id": {"$in": user_ids}},
-        {"_id": 0, "hashed_password": 0, "password_hash": 0, "verification_code": 0}
+        {"_id": 0, "hashed_password": 0, "password_hash": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0}
     ).to_list(500)
     user_map = {u["id"]: u for u in users}
     for m in members:
@@ -281,7 +281,7 @@ async def list_workspace_users(ws_id: str, request: Request):
     # Fetch user details
     users = await h._db.users.find(
         {"id": {"$in": list(all_user_ids)}},
-        {"_id": 0, "hashed_password": 0, "password_hash": 0, "verification_code": 0, "reset_code": 0}
+        {"_id": 0, "hashed_password": 0, "password_hash": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0, "reset_code": 0}
     ).to_list(500)
     for u in users:
         u["workspace_role"] = ws_role_map.get(u["id"])

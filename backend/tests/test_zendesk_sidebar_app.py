@@ -125,8 +125,9 @@ class TestSidebarGenerateEndpoint:
     def test_generate_valid_key_attempts_zendesk_fetch(self, auth_headers):
         """POST /api/zendesk/sidebar/generate with valid key attempts to fetch ticket from Zendesk."""
         # First get the valid sidebar key
-        key_response = requests.get(
-            f"{BASE_URL}/api/admin/zendesk/sidebar-key",
+        # Keys are stored hashed (spec 008 R-P4.3): only regenerate returns a usable key.
+        key_response = requests.post(
+            f"{BASE_URL}/api/admin/zendesk/sidebar-key/regenerate",
             headers=auth_headers
         )
         assert key_response.status_code == 200
@@ -154,8 +155,9 @@ class TestSidebarGenerateEndpoint:
 
     def test_generate_requires_ticket_id(self, auth_headers):
         """POST /api/zendesk/sidebar/generate requires ticket_id in body."""
-        key_response = requests.get(
-            f"{BASE_URL}/api/admin/zendesk/sidebar-key",
+        # Keys are stored hashed (spec 008 R-P4.3): only regenerate returns a usable key.
+        key_response = requests.post(
+            f"{BASE_URL}/api/admin/zendesk/sidebar-key/regenerate",
             headers=auth_headers
         )
         assert key_response.status_code == 200

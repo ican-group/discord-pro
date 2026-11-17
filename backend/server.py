@@ -1,10 +1,10 @@
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, Header, Response, Cookie, Request, Body
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Form, Depends, Header, Response, Cookie, Request, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from dotenv import load_dotenv
 import os
 import logging
@@ -18,6 +18,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import httpx
 import hashlib
+import urllib.parse
+import functools
+import random as _random
 import contextvars
 import time as _time
 import requests as _requests
@@ -25,8 +28,19 @@ import requests as _requests
 # Context variable to track which API key initiated a request
 _current_api_key_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('api_key_id', default=None)
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+# emergentintegrations is imported lazily inside _call_emergent (spec 004, C1).
 import resend
+import runtime_config as _rc
+import log_redaction as _log_redaction
+import tenant_scope as _tenant_scope
+import auth_security as _auth
+import chat_sessions as _chat
+import oauth_state as _oauth_state
+import webhook_auth as _webhook_auth
+import security_headers as _security_headers
+import client_ip as _client_ip
+import password_policy as _pw
+import rate_limit as _rate_limit
 
 import api_integrations_routes
 import api_diagnostics_routes
@@ -50,8 +64,34 @@ DB_NAME = os.environ['DB_NAME']
 JWT_SECRET = os.environ["JWT_SECRET"]  # Required — no hardcoded fallback
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
-ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
-ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+# ADMIN_EMAIL / ADMIN_PASSWORD are no longer read here: the superadmin is created
+# only by the explicit one-time bootstrap in manage.py (spec 004, C7/R2).
+
+# Runtime mode, environment and CORS are validated at import; invalid values stop
+# the process before it serves anything (spec 004, C2/C8).
+APP_MODE = _rc.get_app_mode(os.environ)
+APP_ENV = _rc.get_app_env(os.environ)
+CORS_ALLOWED_ORIGINS = _rc.parse_cors_origins(os.environ.get("CORS_ORIGINS"), APP_ENV)
+DISCORD_ALLOWED = _rc.discord_allowed(APP_MODE)
+KB_DISABLED = _rc.kb_disabled(APP_MODE)
+# Keyed hashing of verification/reset codes and rate-limit account keys
+# (spec 008 Stage 3). Required in production: the process refuses to start
+# without it (fail closed).
+_CODE_HMAC_KEY, _CODE_HMAC_KEY_EPHEMERAL = _rc.get_code_hmac_key(os.environ, APP_ENV, jwt_secret=JWT_SECRET)
+# Public origins (spec 008, R-P6.1): user-facing frontend vs API. Required in
+# production; every link, redirect, webhook and widget URL is built from these.
+_PUBLIC_APP_URL, _PUBLIC_API_URL = _rc.get_public_urls(
+    os.environ, APP_ENV, required=(APP_ENV == _rc.APP_ENV_PRODUCTION))
+# Trusted reverse proxy (spec 008, R-IP.2/R-IP.4): only the cloudflared container's
+# fixed address may supply CF-Connecting-IP. Unset/empty = trust nothing (the peer
+# address is the client). Invalid values stop the process.
+try:
+    _client_ip.configure(_client_ip.ClientIPResolver(
+        _client_ip.parse_trusted_proxies(os.environ.get(_client_ip.TRUSTED_PROXY_ENV))))
+except _client_ip.TrustedProxyConfigError as _e:
+    raise _rc.ConfigError(str(_e)) from None
+# Public chat session tokens (spec 008 Stage 4): key derived from the code key.
+_CHAT_SESSION_KEY = _chat.derive_key(_CODE_HMAC_KEY)
 
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
@@ -71,6 +111,139 @@ async def get_discord_credentials():
 
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client[DB_NAME]
+
+# ── Account-takeover protection (spec 008 Stage 3: P2, N5, N6, R-RL) ─────────
+# Per-IP limits live in process memory (one worker, spec 004 F3); per-account
+# and per-code counters live in MongoDB `security_counters` (atomic updates,
+# explicit expiry checks; the TTL index only garbage-collects).
+_IP_LIMITERS = {
+    "login": _rate_limit.SlidingWindowLimiter(10, 300),   # login
+    "code": _rate_limit.SlidingWindowLimiter(10, 900),    # verify, reset-password
+    "issue": _rate_limit.SlidingWindowLimiter(5, 3600),   # register, resend-code, forgot-password
+    "chat": _rate_limit.SlidingWindowLimiter(20, 60),     # public chat send/stream (before any LLM work)
+    "chat_history": _rate_limit.SlidingWindowLimiter(60, 60),
+}
+_COUNTERS = db[_rate_limit.COUNTERS_COLLECTION]
+_LOGIN_FAILURES = _rate_limit.MongoCounter(_COUNTERS, "login", 5, 900)
+_CODE_FAILURES = {
+    _auth.PURPOSE_VERIFY: _rate_limit.MongoCounter(_COUNTERS, "verify_code", _auth.CODE_MAX_FAILED_ATTEMPTS,
+                                                   _auth.CODE_ATTEMPT_WINDOW_SECONDS),
+    _auth.PURPOSE_RESET: _rate_limit.MongoCounter(_COUNTERS, "reset_code", _auth.CODE_MAX_FAILED_ATTEMPTS,
+                                                  _auth.CODE_ATTEMPT_WINDOW_SECONDS),
+}
+CODE_ISSUANCE_LIMIT_PER_HOUR = 3
+_CODE_ISSUANCE = _rate_limit.MongoCounter(_COUNTERS, "code_issue", CODE_ISSUANCE_LIMIT_PER_HOUR, 3600)
+# Public chat (spec 008 Stage 4, N3): message cap and per-bot daily ceiling.
+MAX_CHAT_MESSAGE_CHARS = 4000
+try:
+    CHAT_DAILY_LIMIT_PER_BOT = int(os.environ.get("CHAT_DAILY_LIMIT_PER_BOT", "2000"))
+except ValueError:
+    raise _rc.ConfigError("CHAT_DAILY_LIMIT_PER_BOT must be an integer")
+if CHAT_DAILY_LIMIT_PER_BOT < 1:
+    raise _rc.ConfigError("CHAT_DAILY_LIMIT_PER_BOT must be at least 1")
+_CHAT_DAILY = _rate_limit.MongoCounter(_COUNTERS, "chat_daily", CHAT_DAILY_LIMIT_PER_BOT, 86400)
+CHAT_UNAVAILABLE_DETAIL = "This assistant is temporarily unavailable. Please try again later."
+# Equalises login timing for unknown accounts (spec 008, R-P1.3).
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(_auth.DUMMY_PASSWORD, bcrypt.gensalt())
+# Registration policy (spec 008, P8): invite-only in production (startup refuses "open").
+REGISTRATION_MODE = _rc.get_registration_mode(os.environ, APP_ENV)
+# Minimum response time of account endpoints (spec 008, S1 timing), seconds.
+AUTH_RESPONSE_FLOOR_SECONDS = _rc.get_auth_response_floor_ms(os.environ) / 1000.0
+# Background email retries (seconds between attempts) so a provider failure for a
+# real account never changes the synchronous response (spec 008, R-P1.2).
+EMAIL_RETRY_DELAYS_SECONDS = (2, 10, 30)
+_IP_LIMITERS["invite"] = _rate_limit.SlidingWindowLimiter(20, 3600)   # invitation lookup/accept
+_IP_LIMITERS["public_read"] = _rate_limit.SlidingWindowLimiter(300, 60)  # bot-info, embed config, bot logo
+
+
+def _with_response_floor(fn):
+    """Account endpoints take at least AUTH_RESPONSE_FLOOR_SECONDS (+ jitter), so
+    response time does not reveal whether an account exists (spec 008, R-P1.3)."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        started = _time.monotonic()
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            floor = AUTH_RESPONSE_FLOOR_SECONDS
+            if floor > 0:
+                remaining = floor + _random.uniform(0, 0.05) - (_time.monotonic() - started)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+    return wrapper
+
+
+async def _deliver_with_retry(kind: str, send, *args, on_failure=None) -> bool:
+    """Background email delivery with bounded retries; logs the error type only."""
+    delays = (0,) + tuple(EMAIL_RETRY_DELAYS_SECONDS)
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await send(*args)
+            return True
+        except Exception as e:  # never log the address, code or provider message
+            logger.warning("Email delivery attempt %d/%d failed (kind=%s, error=%s)",
+                           attempt, len(delays), kind, type(e).__name__)
+    if on_failure is not None:
+        try:
+            await on_failure()
+        except Exception as e:
+            logger.error("Email failure cleanup failed (kind=%s, error=%s)", kind, type(e).__name__)
+    return False
+
+
+def _ip_guard(request: Request, bucket: str) -> None:
+    """Per-IP sliding-window limit; uniform 429 (client IP via client_ip.py only)."""
+    decision = _IP_LIMITERS[bucket].hit(_client_ip.rate_limit_key(_client_ip.client_ip(request)))
+    if not decision.allowed:
+        raise _rate_limit.too_many_requests_exception(decision.retry_after)
+
+
+def _account_key(identifier: str) -> str:
+    return _rate_limit.account_key(identifier, _CODE_HMAC_KEY)
+
+
+async def _may_issue_code(email: str) -> bool:
+    """Counts one issuance request for this email (existing or not) atomically;
+    at most CODE_ISSUANCE_LIMIT_PER_HOUR codes per address per hour (R-P2.4)."""
+    decision = await _CODE_ISSUANCE.record_failure(_account_key(email))
+    return decision.count <= CODE_ISSUANCE_LIMIT_PER_HOUR
+
+
+def _invalid_code() -> HTTPException:
+    return HTTPException(status_code=400, detail=_auth.INVALID_CODE_DETAIL)
+
+
+def _require_user_password(password: str, email: str) -> None:
+    error = _pw.user_password_error(password, email)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+
+async def _check_code(purpose: str, user: Optional[dict], presented) -> "_auth.StoredCode":
+    """Validate a verification/reset code or raise the single generic error.
+
+    Unknown account, no code, legacy plaintext code, wrong code, expired code and
+    a code locked after 5 failures are indistinguishable (R-P2.1). Each wrong
+    attempt is counted atomically; the 5th failure also deletes the code.
+    """
+    stored = _auth.stored_code(user, purpose)
+    if stored is None:
+        _auth.hash_code(_CODE_HMAC_KEY, purpose, "-", "-", "000000")  # comparable work
+        raise _invalid_code()
+    counter = _CODE_FAILURES[purpose]
+    key = _auth.attempt_key(user["id"], stored.code_id)
+    if not (await counter.check(key)).allowed:
+        raise _invalid_code()
+    if not _auth.code_matches(_CODE_HMAC_KEY, purpose, user["id"], stored, presented):
+        decision = await counter.record_failure(key)
+        if not decision.allowed:
+            fields = _auth.FIELDS_BY_PURPOSE[purpose]
+            await db.users.update_one({"id": user["id"], fields.id: stored.code_id},
+                                      {"$unset": _auth.clear_code_fields(purpose)})
+        raise _invalid_code()
+    return stored
 
 # ── Object Storage (Emergent Managed) ──────────────────────────────────
 _STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
@@ -115,10 +288,38 @@ def _get_object(path: str):
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 # ── End Object Storage ─────────────────────────────────────────────────
 
-app = FastAPI()
+# Interactive API docs and the OpenAPI schema are not served in production
+# (spec 008, N4): they would publish the full route inventory.
+_DOCS_KWARGS = (
+    {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    if APP_ENV == _rc.APP_ENV_PRODUCTION else {}
+)
+app = FastAPI(**_DOCS_KWARGS)
 api_router = APIRouter(prefix="/api")
 
-llm_sessions: Dict[str, LlmChat] = {}
+
+class _KnowledgeBaseGuard:
+    """Pure ASGI middleware: in APP_MODE=api, every existing MongoDB Knowledge Base
+    route (/api/knowledge and everything beneath it, including legacy and streaming
+    variants) returns 503 before any handler runs, so nothing is created, updated,
+    deleted or searched. Other routes pass through untouched."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and KB_DISABLED and _rc.is_kb_path(scope.get("path", "")):
+            response = JSONResponse(status_code=503, content={"detail": _rc.KB_UNAVAILABLE_DETAIL})
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+# Added before CORSMiddleware (end of file), so CORS stays the outermost layer and
+# the 503 still carries CORS headers for allowed origins.
+app.add_middleware(_KnowledgeBaseGuard)
+
+llm_sessions: Dict[str, Any] = {}
 # Conversation history cache for non-Emergent providers (Anthropic SDK, Ollama).
 # emergentintegrations' LlmChat manages its own history; for the other providers we keep
 # a parallel { session_key: [{"role": "user|assistant", "content": str}, …] } map.
@@ -161,14 +362,44 @@ logger = logging.getLogger(__name__)
 
 resend.api_key = os.environ.get("RESEND_API_KEY", "")
 FROM_EMAIL = os.environ.get("FROM_EMAIL", "noreply@bitbotpro.io")
+
+# Defence in depth: scrub credentials from every formatted log line (R8).
+_log_redaction.install()
+
+# ── Email delivery (spec 004 Phase 2b security fix) ─────────────────────────
+# Production never prints or logs verification codes, reset codes, invitation
+# tokens/links or any other credential. If email cannot be delivered, the request
+# fails with a generic 503 and never claims that an email was sent. The console
+# fallback (email_delivery.py) exists ONLY for APP_ENV=development.
+from email_delivery import EmailDeliveryError, EmailService, UNAVAILABLE_DETAIL as EMAIL_UNAVAILABLE_DETAIL
+
+_email = EmailService(
+    app_env=APP_ENV,
+    api_key_fn=lambda: resend.api_key,
+    send_fn=lambda params: resend.Emails.send(params),
+    from_email=FROM_EMAIL,
+    logger=logger,
+)
+
+
+@app.exception_handler(EmailDeliveryError)
+async def _email_delivery_error_handler(request: Request, exc: EmailDeliveryError):
+    # Generic client-facing error; never claims that an email was sent.
+    return JSONResponse(status_code=503, content={"detail": EMAIL_UNAVAILABLE_DETAIL})
+
+
+def _require_email_delivery() -> None:
+    _email.require_available()
+
+
+async def _send_or_dev_fallback(kind: str, to_email: str, subject: str, html: str,
+                                label: str, value: str) -> None:
+    await _email.send_or_dev_fallback(kind, to_email, subject, html, label, value)
+
+
 async def send_verification_email(to_email: str, code: str):
-    """Send verification code email via Resend. Falls back to console log if key not set."""
-    if not resend.api_key:
-        logger.warning("RESEND_API_KEY not set — printing code to logs")
-        print(f"\n{'='*50}\nMOCK EMAIL (no Resend key)\nTo: {to_email}\nCode: {code}\n{'='*50}\n")
-        return
-    try:
-        html = f"""
+    """Send a verification code. Raises EmailDeliveryError in production on failure."""
+    html = f"""
         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#111;color:#fff;padding:32px;border-radius:8px">
           <h2 style="margin:0 0 8px;font-size:22px">BitBot Pro</h2>
           <p style="color:#a1a1aa;margin:0 0 28px;font-size:14px">Email Verification</p>
@@ -179,24 +410,13 @@ async def send_verification_email(to_email: str, code: str):
           <p style="color:#a1a1aa;font-size:13px;margin:0">This code expires in 15 minutes. If you didn't request this, ignore this email.</p>
         </div>
         """
-        params = {
-            "from": FROM_EMAIL,
-            "to": [to_email],
-            "subject": "Your BitBot Pro verification code",
-            "html": html,
-        }
-        await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Verification email sent to {to_email}")
-    except Exception as e:
-        logger.error(f"Resend error: {e} — falling back to log")
-        print(f"\n{'='*50}\nFALLBACK EMAIL\nTo: {to_email}\nCode: {code}\n{'='*50}\n")
+    await _send_or_dev_fallback("verification", to_email, "Your BitBot Pro verification code",
+                                html, "Code", code)
+
+
 async def send_reset_email(to_email: str, code: str):
-    """Send password reset code via Resend. Falls back to console log if key not set."""
-    if not resend.api_key:
-        print(f"\n{'='*50}\nMOCK RESET EMAIL\nTo: {to_email}\nCode: {code}\n{'='*50}\n")
-        return
-    try:
-        html = f"""
+    """Send a password reset code. Raises EmailDeliveryError in production on failure."""
+    html = f"""
         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#111;color:#fff;padding:32px;border-radius:8px">
           <h2 style="margin:0 0 8px;font-size:22px">BitBot Pro</h2>
           <p style="color:#a1a1aa;margin:0 0 28px;font-size:14px">Password Reset</p>
@@ -207,17 +427,8 @@ async def send_reset_email(to_email: str, code: str):
           <p style="color:#a1a1aa;font-size:13px;margin:0">This code expires in 15 minutes. If you didn't request a reset, ignore this email.</p>
         </div>
         """
-        params = {
-            "from": FROM_EMAIL,
-            "to": [to_email],
-            "subject": "Reset your BitBot Pro password",
-            "html": html,
-        }
-        await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Password reset email sent to {to_email}")
-    except Exception as e:
-        logger.error(f"Resend error (reset): {e}")
-        print(f"\n{'='*50}\nFALLBACK RESET EMAIL\nTo: {to_email}\nCode: {code}\n{'='*50}\n")
+    await _send_or_dev_fallback("password_reset", to_email, "Reset your BitBot Pro password",
+                                html, "Code", code)
 class UserRegister(BaseModel):
     email: str
     password: str
@@ -262,6 +473,7 @@ class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
     instance_id: Optional[str] = None
+    session_token: Optional[str] = None  # proof of session possession (spec 008 Stage 4)
 
 class ApproveBody(BaseModel):
     approved: bool = True
@@ -292,11 +504,12 @@ class DiscordConfigUpdate(BaseModel):
     scripted_mode: Optional[ScriptedModeConfig] = None
 # ==================== JWT AUTH HELPERS ====================
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
+def create_access_token(user_id: str, email: str, role: str, token_version: int = 0) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        _auth.TOKEN_VERSION_CLAIM: int(token_version),  # revoked by password change/reset (N5)
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -314,11 +527,16 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return {"id": payload["sub"], "email": payload["email"], "role": payload["role"]}
+        identity = {"id": payload["sub"], "email": payload["email"], "role": payload["role"]}
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
+    except (jwt.InvalidTokenError, KeyError):
         raise HTTPException(status_code=401, detail="Invalid token")
+    # Session revocation (spec 008, N5): the token's version must match the user's.
+    user = await db.users.find_one({"id": identity["id"]}, {"_id": 0, _auth.TOKEN_VERSION_FIELD: 1})
+    if not _auth.token_version_matches(payload, user):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return identity
 async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user.get("role") != "superadmin" and current_user.get("platform_role") != "superadmin":
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -398,6 +616,8 @@ async def _get_instance_from_request(request):
     user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not _auth.token_version_matches(payload, user):  # spec 008, N5
+        raise HTTPException(status_code=401, detail="Invalid token")
     inst_id = request.headers.get("X-Instance-ID")
     return await _verify_instance_access(inst_id, user)
 
@@ -488,6 +708,10 @@ async def resolve_bot_config(instance_id: str) -> dict:
 # ==================== KNOWLEDGE / TONE HELPERS ====================
 
 async def search_knowledge(query: str, instance_id: str, limit: int = 12) -> str:
+    if KB_DISABLED:
+        # APP_MODE=api: the MongoDB Knowledge Base is not searched (spec 004). Callers
+        # (chat, Telegram, Zendesk, diagnostics) see the same signal as an empty KB.
+        return "__NO_KB__"
     try:
         # ── Step 1: Try MongoDB text search for relevance ──
         text_results = []
@@ -1176,6 +1400,15 @@ async def _call_emergent(session_id: str, user_message: str, system_prompt: str,
     api_key = os.environ.get("CLAUDE_API_KEY") or os.environ.get("EMERGENT_LLM_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="Emergent LLM key not configured")
+    try:
+        # Lazy import: emergentintegrations is only available on Emergent's private
+        # package index, so it must not be required for normal startup (spec 004, C1).
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergent LLM provider unavailable on this deployment; configure another provider",
+        )
     key = f"{session_id}_{instance_id}_emergent_{model}"
     if key not in llm_sessions:
         llm_sessions[key] = LlmChat(api_key=api_key, session_id=key, system_message=system_prompt).with_model("anthropic", model)
@@ -1479,26 +1712,27 @@ async def save_conversation(session_id: str, user_message: str, bot_response: st
         {"role": "user", "content": user_message, "timestamp": timestamp},
         {"role": "assistant", "content": bot_response, "timestamp": timestamp}
     ]
-    existing = await db.conversations.find_one({"session_id": session_id})
-    if existing:
-        update_set = {"updated_at": timestamp}
-        if api_key_id and not existing.get("api_key_id"):
-            update_set["api_key_id"] = api_key_id
+    # Scoped to (session_id, instance_id) and done as one atomic upsert (spec 008
+    # Stage 4): a session ID from another bot can never append to that bot's
+    # conversation, and concurrent messages never create duplicate documents.
+    on_insert = {
+        "platform": platform, "is_approved_for_training": False,
+        "created_at": timestamp, "metadata": metadata or {},
+    }
+    if api_key_id:
+        on_insert["api_key_id"] = api_key_id
+    await db.conversations.update_one(
+        {"session_id": session_id, "instance_id": instance_id},
+        {"$push": {"messages": {"$each": new_messages}},
+         "$set": {"updated_at": timestamp},
+         "$setOnInsert": on_insert},
+        upsert=True,
+    )
+    if api_key_id:
         await db.conversations.update_one(
-            {"session_id": session_id},
-            {"$push": {"messages": {"$each": new_messages}}, "$set": update_set}
+            {"session_id": session_id, "instance_id": instance_id, "api_key_id": {"$exists": False}},
+            {"$set": {"api_key_id": api_key_id}},
         )
-    else:
-        doc = {
-            "session_id": session_id, "platform": platform,
-            "instance_id": instance_id,
-            "messages": new_messages, "is_approved_for_training": False,
-            "created_at": timestamp, "updated_at": timestamp,
-            "metadata": metadata or {}
-        }
-        if api_key_id:
-            doc["api_key_id"] = api_key_id
-        await db.conversations.insert_one(doc)
 
 # ==================== STREAMING LLM ====================
 
@@ -1661,10 +1895,14 @@ async def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {_json.dumps(data)}\n\n"
 
 
-async def stream_chat_response(session_id: str, user_message: str, instance_id: str, platform: str = "web"):
+async def stream_chat_response(session_id: str, user_message: str, instance_id: str, platform: str = "web",
+                               session_token: Optional[str] = None):
     """SSE generator for streaming chat. Yields SSE-formatted events."""
-    # Emit session ID first
-    yield await _sse_event("session", {"session_id": session_id})
+    # Emit session ID (and, for web sessions, the possession token) first
+    session_event = {"session_id": session_id}
+    if session_token:
+        session_event["session_token"] = session_token
+    yield await _sse_event("session", session_event)
 
     bot_config = await resolve_bot_config(instance_id)
     knowledge = await search_knowledge(user_message, instance_id)
@@ -2060,6 +2298,12 @@ async def start_shared_discord_bot(token: str):
     """Start a single shared Discord client that routes messages to the correct instance."""
     global _shared_discord_client
 
+    # Single choke point for every Discord start path (startup, OAuth callback,
+    # restart endpoint, and any future caller): never start a client in API-only mode.
+    if not DISCORD_ALLOWED:
+        logger.info("Discord bot start refused (APP_MODE=api)")
+        return
+
     try:
         import discord
         intents = discord.Intents.default()
@@ -2372,9 +2616,16 @@ async def start_shared_discord_bot(token: str):
 
 @app.on_event("startup")
 async def startup_event():
+    _log_redaction.install()
+    # NOTE (spec 004): startup performs only idempotent, non-account initialisation.
+    # It never creates users, never seeds a superadmin and never runs legacy data
+    # migrations; those are explicit admin actions in manage.py (R1/R2).
     try:
-        await db.knowledge_sources.create_index([("title", "text"), ("content", "text")])
-        await db.knowledge_sources.create_index([("instance_id", 1)])
+        if not KB_DISABLED:
+            # Legacy MongoDB Knowledge Base indexes; skipped in APP_MODE=api so no
+            # MongoDB KB collection is created (spec 004, R5).
+            await db.knowledge_sources.create_index([("title", "text"), ("content", "text")])
+            await db.knowledge_sources.create_index([("instance_id", 1)])
         await db.conversations.create_index([("session_id", 1)])
         await db.conversations.create_index([("created_at", -1)])
         await db.conversations.create_index([("instance_id", 1)])
@@ -2401,96 +2652,53 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Index creation: {e}")
 
-    # Init object storage
-    try:
-        _init_storage()
-        logger.info("Object storage initialized")
-    except Exception as e:
-        logger.warning(f"Object storage init: {e}")
-
-    # Seed admin user
-    if not await db.users.find_one({"email": ADMIN_EMAIL}):
-        hashed_pw = bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode()
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": ADMIN_EMAIL,
-            "username": "administrator",
-            "hashed_password": hashed_pw,
-            "is_verified": True,
-            "verification_code": None,
-            "role": "superadmin",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        })
-        logger.info(f"Seeded admin: {ADMIN_EMAIL}")
-    else:
-        # Ensure existing admin has username
-        await db.users.update_one(
-            {"email": ADMIN_EMAIL, "username": {"$exists": False}},
-            {"$set": {"username": "administrator"}}
-        )
-
-    # Migrate single-tenant data to multi-tenant if needed
-    # (updates any existing docs that lack instance_id — safe to run on every startup)
-    first_instance = await db.bot_instances.find_one({}, {"id": 1})
-    if first_instance:
-        migrate_id = first_instance["id"]
-        for col in [db.bot_config, db.knowledge_sources, db.conversations, db.discord_config]:
-            await col.update_many({"instance_id": {"$exists": False}}, {"$set": {"instance_id": migrate_id}})
-
-    # ── Run V2 migration if V1 data exists but V2 is empty ──
-    v1_count = await db.bot_instances.count_documents({})
-    v2_count = await db.organisations.count_documents({})
-    if v1_count > 0 and v2_count == 0:
+    # Emergent object storage (bot logos) — only when an Emergent key is configured (C3)
+    if _rc.emergent_storage_configured(os.environ):
         try:
-            from migrate_v2 import migrate
-            logger.info(f"V1 data found ({v1_count} instances) with no V2 orgs — running migration...")
-            result = await migrate()
-            logger.info(f"V2 migration complete: {result}")
+            _init_storage()
+            logger.info("Object storage initialized")
         except Exception as e:
-            logger.error(f"V2 migration failed: {e}")
+            logger.warning(f"Object storage init: {e}")
+    else:
+        logger.info("Emergent object storage not configured; skipping init")
 
-    # ── Run Workspace migration (idempotent) ──
+    # Read-only check: tell the operator if the one-time bootstrap is still pending.
     try:
-        from migrate_workspaces import run_workspace_migration
-        ws_result = await run_workspace_migration(db)
-        logger.info(f"Workspace migration: {ws_result}")
-    except Exception as e:
-        logger.error(f"Workspace migration failed: {e}")
-
-    # Start shared Discord bot (one client, routes to all instances by guild)
-    global _shared_discord_task
-    app_creds = await get_discord_credentials()
-    bot_token = app_creds.get("bot_token")
-
-    # Backfill metadata.source on Discord connected_accounts that lack it
-    global_client_id = app_creds.get("client_id") or ""
-    if global_client_id:
-        untagged = await db.connected_accounts.find(
-            {"provider": "discord", "metadata.source": {"$exists": False}}
-        ).to_list(100)
-        for acc in untagged:
-            creds = acc.get("credentials") or {}
-            source = "platform" if creds.get("client_id") == global_client_id else "custom"
-            await db.connected_accounts.update_one(
-                {"id": acc["id"]},
-                {"$set": {"metadata.source": source}}
+        superadmins = await db.users.count_documents(
+            {"$or": [{"role": "superadmin"}, {"platform_role": "superadmin"}]}, limit=1
+        )
+        if not superadmins:
+            logger.warning(
+                "No superadmin account exists. Create one explicitly with: "
+                "python manage.py bootstrap-superadmin --email <addr> --password-file <path> --confirm"
             )
-        if untagged:
-            logger.info(f"Backfilled metadata.source on {len(untagged)} Discord account(s)")
+    except Exception as e:
+        logger.warning(f"Superadmin presence check failed: {e}")
 
-    # Build guild→instance map
-    active_configs = await db.discord_config.find({"is_active": True}, {"_id": 0}).to_list(50)
-    for cfg in active_configs:
-        gid = cfg.get("guild_id")
-        iid = cfg.get("instance_id")
-        if gid and iid:
-            guild_instance_map[gid] = iid
-        # Use per-instance token if available, otherwise app token
-        if not bot_token:
-            bot_token = cfg.get("bot_token")
-    if bot_token:
-        _shared_discord_task = asyncio.create_task(start_shared_discord_bot(bot_token))
-        logger.info(f"Starting shared Discord bot ({len(active_configs)} active instances)")
+    logger.info(f"Startup mode: APP_MODE={APP_MODE} APP_ENV={APP_ENV} "
+                f"discord={'enabled' if DISCORD_ALLOWED else 'disabled'} "
+                f"mongo_kb={'disabled' if KB_DISABLED else 'enabled'}")
+
+    # Start shared Discord bot (one client, routes to all instances by guild).
+    # Skipped entirely in APP_MODE=api (C2); start_shared_discord_bot() also refuses.
+    global _shared_discord_task
+    if DISCORD_ALLOWED:
+        app_creds = await get_discord_credentials()
+        bot_token = app_creds.get("bot_token")
+
+        # Build guild→instance map
+        active_configs = await db.discord_config.find({"is_active": True}, {"_id": 0}).to_list(50)
+        for cfg in active_configs:
+            gid = cfg.get("guild_id")
+            iid = cfg.get("instance_id")
+            if gid and iid:
+                guild_instance_map[gid] = iid
+            # Use per-instance token if available, otherwise app token
+            if not bot_token:
+                bot_token = cfg.get("bot_token")
+        if bot_token:
+            _shared_discord_task = asyncio.create_task(start_shared_discord_bot(bot_token))
+            logger.info(f"Starting shared Discord bot ({len(active_configs)} active instances)")
 
     # Initialise diagnostics routes (deferred — all pipeline functions must exist first)
     _init_diagnostics()
@@ -2559,65 +2767,109 @@ async def shutdown_event():
 @api_router.get("/")
 async def root():
     return {"message": "BitBot Pro API", "version": "2.0.0"}
+
+
+@api_router.get("/health")
+async def health():
+    """Unauthenticated readiness check (spec 004, C4): verifies the app's own MongoDB
+    connection with a ping. Deliberately reveals no versions, hosts or error text."""
+    try:
+        await asyncio.wait_for(db.command("ping"), timeout=2.0)
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return {"status": "ok"}
+REGISTRATION_CLOSED_DETAIL = "Registration is by invitation only. Ask your workspace administrator for an invitation."
+REGISTER_GENERIC = {"message": "If this email can be registered, a verification code has been sent."}
+
+
+@api_router.get("/auth/registration-mode")
+async def registration_mode():
+    """Public: whether self-registration is available (frontend shows the right form)."""
+    return {"mode": REGISTRATION_MODE}
+
+
 @api_router.post("/auth/register")
-async def register(body: UserRegister):
+@_with_response_floor
+async def register(body: UserRegister, request: Request):
+    _ip_guard(request, "issue")
+    # Invite-only (spec 008, P8): one uniform answer; nothing is read or written.
+    if REGISTRATION_MODE != _rc.REGISTRATION_OPEN:
+        raise HTTPException(status_code=403, detail=REGISTRATION_CLOSED_DETAIL)
     if not body.email or not body.password or not body.username:
         raise HTTPException(status_code=400, detail="Email, username, and password required")
-    if len(body.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    email = body.email.strip().lower()
+    _require_user_password(body.password, email)
     username_lower = body.username.strip().lower()
     if not username_lower:
         raise HTTPException(status_code=400, detail="Username cannot be empty")
-    if await db.users.find_one({"email": body.email.lower()}):
-        raise HTTPException(status_code=400, detail="Email already registered")
+    # An existing address gets the same answer as a new one (spec 008, S1).
+    if await db.users.find_one({"email": email}):
+        return REGISTER_GENERIC
     if await db.users.find_one({"username": username_lower}):
         raise HTTPException(status_code=400, detail="Username already taken")
-    code = str(secrets.randbelow(900000) + 100000)
-    expiry = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
+    _require_email_delivery()
+    if not await _may_issue_code(email):
+        raise _rate_limit.too_many_requests_exception(3600)
     hashed_pw = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     user_id = str(uuid.uuid4())
+    # Only the HMAC of the code is stored (spec 008, R-P2.3).
+    code, code_fields, _unset = _auth.issue_code(_CODE_HMAC_KEY, _auth.PURPOSE_VERIFY, user_id)
     await db.users.insert_one({
         "id": user_id,
-        "email": body.email.lower(),
+        "email": email,
         "username": username_lower,
         "hashed_password": hashed_pw,
         "is_verified": False,
-        "verification_code": code,
-        "verification_code_expiry": expiry,
+        **code_fields,
+        _auth.TOKEN_VERSION_FIELD: 0,
         "role": "user",
         "created_at": datetime.now(timezone.utc).isoformat()
     })
-    await send_verification_email(body.email, code)
-    return {"message": "Verification code sent to your email."}
+    try:
+        await send_verification_email(body.email.strip(), code)
+    except EmailDeliveryError:
+        # Do not leave an unverifiable account behind; the user can simply retry.
+        await db.users.delete_one({"id": user_id, "is_verified": False})
+        raise
+    return REGISTER_GENERIC
 @api_router.post("/auth/resend-code")
-async def resend_code(body: ResendCodeBody):
-    user = await db.users.find_one({"email": body.email.lower()})
-    if not user or user.get("is_verified"):
-        return {"message": "If this email is registered and unverified, a new code has been sent"}
-    code = str(secrets.randbelow(900000) + 100000)
-    expiry = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-    await db.users.update_one(
-        {"email": body.email.lower()},
-        {"$set": {"verification_code": code, "verification_code_expiry": expiry}}
-    )
-    await send_verification_email(body.email, code)
-    return {"message": "New verification code sent"}
+@_with_response_floor
+async def resend_code(body: ResendCodeBody, request: Request, background_tasks: BackgroundTasks):
+    _ip_guard(request, "issue")
+    _require_email_delivery()
+    email = body.email.strip().lower()
+    generic = {"message": "If this email is registered and unverified, a new code has been sent"}
+    # Counted for every address, existing or not (uniform; R-P2.4, R-RL.3).
+    allowed = await _may_issue_code(email)
+    user = await db.users.find_one({"email": email})
+    if not allowed or not user or user.get("is_verified"):
+        return generic
+    # A new code replaces the old one (new code_id → fresh attempt counter).
+    code, code_fields, unset_fields = _auth.issue_code(_CODE_HMAC_KEY, _auth.PURPOSE_VERIFY, user["id"])
+    await db.users.update_one({"id": user["id"]}, {"$set": code_fields, "$unset": unset_fields})
+    # Sent after the response: provider failures never change it (spec 008, S1).
+    background_tasks.add_task(_deliver_with_retry, "verification", send_verification_email, body.email.strip(), code)
+    return generic
 @api_router.post("/auth/verify")
-async def verify_email(body: VerifyEmailBody):
-    user = await db.users.find_one({"email": body.email.lower()})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.get("is_verified"):
-        return {"message": "Email already verified"}
-    if user.get("verification_code") != body.code:
-        raise HTTPException(status_code=400, detail="Invalid verification code")
-    expiry_str = user.get("verification_code_expiry")
-    if expiry_str and datetime.fromisoformat(expiry_str) < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Code expired. Request a new one.")
-    await db.users.update_one(
-        {"email": body.email.lower()},
-        {"$set": {"is_verified": True, "verification_code": None, "verification_code_expiry": None, "platform_role": None}}
+@_with_response_floor
+async def verify_email(body: VerifyEmailBody, request: Request):
+    _ip_guard(request, "code")
+    user = await db.users.find_one({"email": body.email.strip().lower()})
+    if user and user.get("is_verified"):
+        # Same answer as an unknown address or a wrong code (spec 008, S1).
+        _auth.hash_code(_CODE_HMAC_KEY, _auth.PURPOSE_VERIFY, "-", "-", "000000")
+        raise _invalid_code()
+    # Unknown account, wrong/expired/locked/legacy code: one generic 400 (R-P2.1).
+    stored = await _check_code(_auth.PURPOSE_VERIFY, user, body.code)
+    # Single-use: consume atomically on the exact code instance (no reuse, no race).
+    fields = _auth.VERIFY_FIELDS
+    result = await db.users.update_one(
+        {"id": user["id"], fields.id: stored.code_id, fields.hash: stored.code_hash, "is_verified": False},
+        {"$set": {"is_verified": True, "platform_role": None},
+         "$unset": _auth.clear_code_fields(_auth.PURPOSE_VERIFY)},
     )
+    if result.modified_count != 1:
+        raise _invalid_code()
     # Auto-create workspace + default org for new customers
     # (skip if user already has a workspace — idempotent)
     existing_membership = await db.workspace_members.find_one({"user_id": user["id"]})
@@ -2671,17 +2923,32 @@ async def verify_email(body: VerifyEmailBody):
         logger.info(f"Auto-created workspace '{ws_name}' + default org for {user['email']}")
     return {"message": "Email verified successfully"}
 @api_router.post("/auth/login")
-async def login(body: UserLogin, response: Response):
+async def login(body: UserLogin, response: Response, request: Request):
+    _ip_guard(request, "login")
     identifier = body.email_or_username.strip().lower()
+    # Per-account lock after 5 failures in 15 minutes, keyed identically for
+    # existing and unknown identifiers (R-RL.2, R-RL.3).
+    account = _account_key(identifier)
+    lock = await _LOGIN_FAILURES.check(account)
+    if not lock.allowed:
+        raise _rate_limit.too_many_requests_exception(lock.retry_after)
     # Try email first, then username
     user = await db.users.find_one({"email": identifier})
     if not user:
         user = await db.users.find_one({"username": identifier})
-    if not user or not bcrypt.checkpw(body.password.encode(), user["hashed_password"].encode()):
+    password = body.password.encode()
+    if user and user.get("hashed_password"):
+        valid = bcrypt.checkpw(password, user["hashed_password"].encode())
+    else:
+        bcrypt.checkpw(password, _DUMMY_BCRYPT_HASH)  # same cost for unknown accounts
+        valid = False
+    if not valid:
+        await _LOGIN_FAILURES.record_failure(account)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    await _LOGIN_FAILURES.reset(account)
     if not user.get("is_verified"):
         raise HTTPException(status_code=403, detail="Email not verified. Check your email for the verification code.")
-    token = create_access_token(user["id"], user["email"], user["role"])
+    token = create_access_token(user["id"], user["email"], user["role"], _auth.user_token_version(user))
     # Set httpOnly cookie — JS cannot read this, protecting against XSS token theft
     response.set_cookie(
         key="bf_access_token",
@@ -2692,9 +2959,8 @@ async def login(body: UserLogin, response: Response):
         max_age=JWT_EXPIRY_DAYS * 24 * 60 * 60,
         path="/",
     )
-    # Return V2 bots instead of legacy V1 instances
-    v2_bots = await db.bots.find({}, {"_id": 0, "id": 1, "name": 1, "org_id": 1}).to_list(100)
-    instances = [{"id": b["id"], "name": b.get("name", "")} for b in v2_bots]
+    # V2 bots this user may access only (spec 008, N2: never other tenants' bots)
+    instances = await _tenant_scope.accessible_instances(db, user)
     return {
         "token": token,  # Kept for curl/API client use — frontend uses cookie
         "user": {"id": user["id"], "email": user["email"], "role": user["role"], "username": user.get("username", "")},
@@ -2705,48 +2971,61 @@ async def logout_user(response: Response):
     response.delete_cookie(key="bf_access_token", path="/")
     return {"success": True}
 @api_router.post("/auth/forgot-password")
-async def forgot_password(body: ForgotPasswordBody):
+@_with_response_floor
+async def forgot_password(body: ForgotPasswordBody, request: Request, background_tasks: BackgroundTasks):
+    _ip_guard(request, "issue")
+    _require_email_delivery()
     email = body.email.lower().strip()
+    # Counted for every address, existing or not (uniform; R-P2.4, R-RL.3).
+    allowed = await _may_issue_code(email)
     user = await db.users.find_one({"email": email})
     # Always return success to avoid revealing whether an email is registered
-    if user and user.get("is_verified"):
-        code = str(secrets.randbelow(900000) + 100000)
-        expires = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
-        await db.users.update_one(
-            {"email": email},
-            {"$set": {"reset_code": code, "reset_code_expires": expires}}
-        )
-        await send_reset_email(email, code)
+    if allowed and user and user.get("is_verified"):
+        code, code_fields, unset_fields = _auth.issue_code(_CODE_HMAC_KEY, _auth.PURPOSE_RESET, user["id"])
+        await db.users.update_one({"id": user["id"]}, {"$set": code_fields, "$unset": unset_fields})
+        code_id = code_fields[_auth.RESET_FIELDS.id]
+
+        async def _rollback(user_id=user["id"], code_id=code_id):
+            # Delivery gave up: remove exactly this code (never a newer one).
+            await db.users.update_one({"id": user_id, _auth.RESET_FIELDS.id: code_id},
+                                      {"$unset": _auth.clear_code_fields(_auth.PURPOSE_RESET)})
+
+        # Sent after the response with retries: a provider failure for an existing
+        # account no longer turns into a 503 that only real accounts get (S1).
+        background_tasks.add_task(_deliver_with_retry, "reset", send_reset_email, email, code, on_failure=_rollback)
     return {"message": "If that email is registered, a reset code has been sent."}
 @api_router.post("/auth/reset-password")
-async def reset_password(body: ResetPasswordBody):
+@_with_response_floor
+async def reset_password(body: ResetPasswordBody, request: Request):
+    _ip_guard(request, "code")
     email = body.email.lower().strip()
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    _require_user_password(body.new_password, email)  # depends only on the input
     user = await db.users.find_one({"email": email})
-    if not user or not user.get("reset_code") or user.get("reset_code") != body.code:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
-    expires_str = user.get("reset_code_expires", "")
-    if expires_str and datetime.fromisoformat(expires_str) < datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Reset code has expired. Request a new one.")
+    stored = await _check_code(_auth.PURPOSE_RESET, user, body.code)
     hashed = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
-    await db.users.update_one(
-        {"email": email},
-        {"$set": {"hashed_password": hashed}, "$unset": {"reset_code": "", "reset_code_expires": ""}}
+    # Single-use consumption + session revocation in one atomic update (P2, N5).
+    fields = _auth.RESET_FIELDS
+    result = await db.users.update_one(
+        {"id": user["id"], fields.id: stored.code_id, fields.hash: stored.code_hash},
+        {"$set": {"hashed_password": hashed},
+         "$unset": _auth.clear_code_fields(_auth.PURPOSE_RESET),
+         "$inc": {_auth.TOKEN_VERSION_FIELD: 1}},
     )
+    if result.modified_count != 1:
+        raise _invalid_code()
+    await _LOGIN_FAILURES.reset(_account_key(email))  # a reset lifts the login lock (R-RL.4)
     return {"message": "Password reset successful. You can now log in."}
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
     user = await db.users.find_one(
         {"id": current_user["id"]},
-        {"_id": 0, "hashed_password": 0, "verification_code": 0,
+        {"_id": 0, "hashed_password": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0,
          "verification_code_expiry": 0, "reset_code": 0, "reset_code_expires": 0}
     )
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    # Return V2 bots instead of legacy V1 instances
-    v2_bots = await db.bots.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
-    instances = [{"id": b["id"], "name": b.get("name", "")} for b in v2_bots]
+    # V2 bots this user may access only (spec 008, N2: never other tenants' bots)
+    instances = await _tenant_scope.accessible_instances(db, user)
     return {**user, "instances": instances}
 
 class ProfileUpdateBody(BaseModel):
@@ -2780,18 +3059,30 @@ async def update_profile(body: ProfileUpdateBody, current_user: dict = Depends(g
     return {"success": True, "message": "Profile updated"}
 
 @api_router.post("/auth/change-password")
-async def change_password(body: ChangePasswordBody, current_user: dict = Depends(get_current_user)):
-    """Change the current user's password (requires current password)."""
+async def change_password(body: ChangePasswordBody, response: Response,
+                          current_user: dict = Depends(get_current_user)):
+    """Change the current user's password (requires current password).
+
+    Revokes every existing session (token_version += 1) and returns a fresh token
+    for the current session (also set as the httpOnly cookie).
+    """
     user = await db.users.find_one({"id": current_user["id"]})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not bcrypt.checkpw(body.current_password.encode(), user["hashed_password"].encode()):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    _require_user_password(body.new_password, user.get("email", ""))
     hashed = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
-    await db.users.update_one({"id": current_user["id"]}, {"$set": {"hashed_password": hashed}})
-    return {"success": True, "message": "Password changed successfully"}
+    updated = await db.users.find_one_and_update(
+        {"id": current_user["id"]},
+        {"$set": {"hashed_password": hashed}, "$inc": {_auth.TOKEN_VERSION_FIELD: 1}},
+        projection={"_id": 0, "id": 1, "email": 1, "role": 1, _auth.TOKEN_VERSION_FIELD: 1},
+        return_document=True,
+    )
+    token = create_access_token(updated["id"], updated["email"], updated["role"], _auth.user_token_version(updated))
+    response.set_cookie(key="bf_access_token", value=token, httponly=True, samesite="lax", secure=True,
+                        max_age=JWT_EXPIRY_DAYS * 24 * 60 * 60, path="/")
+    return {"success": True, "message": "Password changed successfully", "token": token}
 
 # ==================== INSTANCE MANAGEMENT (SUPERADMIN) ====================
 
@@ -2803,7 +3094,7 @@ async def list_all_users(current_user: dict = Depends(require_admin_or_ws_admin)
     if is_super:
         users = await db.users.find(
             {},
-            {"_id": 0, "hashed_password": 0, "verification_code": 0,
+            {"_id": 0, "hashed_password": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0,
              "verification_code_expiry": 0, "reset_code": 0, "reset_code_expires": 0}
         ).to_list(1000)
     else:
@@ -2823,21 +3114,30 @@ async def list_all_users(current_user: dict = Depends(require_admin_or_ws_admin)
             return []
         users = await db.users.find(
             {"id": {"$in": user_ids}},
-            {"_id": 0, "hashed_password": 0, "verification_code": 0,
+            {"_id": 0, "hashed_password": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0,
              "verification_code_expiry": 0, "reset_code": 0, "reset_code_expires": 0}
         ).to_list(1000)
 
-    instances = await db.bot_instances.find(
-        {}, {"_id": 0, "id": 1, "name": 1, "assigned_user_ids": 1}
-    ).to_list(100)
+    # Names are resolved only within the caller's scope (spec 008, A10/N8): other
+    # tenants' org/bot names are never disclosed; out-of-scope IDs stay bare.
+    if is_super:
+        instances = await db.bot_instances.find(
+            {}, {"_id": 0, "id": 1, "name": 1, "assigned_user_ids": 1}
+        ).to_list(100)
+        org_filter, bot_filter = {}, {}
+    else:
+        instances = []
+        scope_orgs = await db.organisations.find({"workspace_id": {"$in": my_ws_ids}}, {"_id": 0, "id": 1}).to_list(1000)
+        scope_org_ids = [o["id"] for o in scope_orgs]
+        org_filter, bot_filter = {"id": {"$in": scope_org_ids}}, {"org_id": {"$in": scope_org_ids}}
     user_instance_map = {}
     for inst in instances:
         for uid in inst.get("assigned_user_ids", []):
             user_instance_map.setdefault(uid, []).append({"id": inst["id"], "name": inst["name"]})
     # Fetch orgs and bots for V2 assignments
-    orgs = await db.organisations.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    orgs = await db.organisations.find(org_filter, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
     org_map = {o["id"]: o["name"] for o in orgs}
-    bots = await db.bots.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(200)
+    bots = await db.bots.find(bot_filter, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
     bot_map = {b["id"]: b["name"] for b in bots}
     for user in users:
         user["assigned_instances"] = user_instance_map.get(user["id"], [])
@@ -2857,19 +3157,9 @@ async def delete_user(user_id: str, current_user: dict = Depends(require_admin_o
         raise HTTPException(status_code=404, detail="User not found")
     if user.get("role") == "superadmin" or user.get("platform_role") == "superadmin":
         raise HTTPException(status_code=400, detail="Cannot delete admin accounts")
-    is_super = current_user.get("role") == "superadmin" or current_user.get("platform_role") == "superadmin"
-    if not is_super:
-        # Workspace admin: verify target is in one of their workspaces
-        my_ws = await db.workspace_members.find(
-            {"user_id": current_user["id"], "role": {"$in": ["admin", "owner"]}},
-            {"_id": 0, "workspace_id": 1}
-        ).to_list(100)
-        my_ws_ids = [m["workspace_id"] for m in my_ws]
-        target_ws = await db.workspace_members.find_one(
-            {"user_id": user_id, "workspace_id": {"$in": my_ws_ids}}
-        )
-        if not target_ws:
-            raise HTTPException(status_code=403, detail="User is not in your workspace")
+    # Same scoping as password resets (spec 008, N8): a shared workspace is not enough.
+    if not await _may_manage_user(current_user, user):
+        raise HTTPException(status_code=403, detail="Not allowed to delete this user")
     # Remove user from all instance assignments
     await db.bot_instances.update_many(
         {"assigned_user_ids": user_id},
@@ -2904,6 +3194,7 @@ async def update_user_role(user_id: str, body: UserRoleUpdate, current_user: dic
         if not ws:
             raise HTTPException(status_code=404, detail="Workspace not found")
         # Non-superadmin: must be admin/owner of THIS workspace
+        my_membership = None
         if not is_super:
             my_membership = await db.workspace_members.find_one({
                 "workspace_id": body.workspace_id, "user_id": current_user["id"],
@@ -2915,6 +3206,15 @@ async def update_user_role(user_id: str, body: UserRoleUpdate, current_user: dic
         if ws.get("owner_id") == user_id:
             raise HTTPException(status_code=400, detail="Cannot change the workspace owner's role")
         existing = await db.workspace_members.find_one({"workspace_id": body.workspace_id, "user_id": user_id})
+        if not is_super:
+            # spec 008 N8: never pull arbitrary users (from any tenant) into a workspace;
+            # only the owner may create, change or remove admins.
+            if not existing:
+                raise HTTPException(status_code=403, detail="User is not a member of this workspace")
+            if existing.get("role") == "owner":
+                raise HTTPException(status_code=400, detail="Cannot change the workspace owner's role")
+            if my_membership.get("role") != "owner" and (body.role == "admin" or existing.get("role") == "admin"):
+                raise HTTPException(status_code=403, detail="Only the workspace owner can manage admins")
         if body.role == "admin":
             if existing:
                 await db.workspace_members.update_one(
@@ -2949,7 +3249,9 @@ async def update_user_role(user_id: str, body: UserRoleUpdate, current_user: dic
         sa_count = await db.users.count_documents({"$or": [{"role": "superadmin"}, {"platform_role": "superadmin"}]})
         if sa_count <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last platform superadmin")
-    await db.users.update_one({"id": user_id}, {"$set": {"role": body.role, "platform_role": "superadmin" if body.role == "superadmin" else None}})
+    # Revoke the target's sessions so a token carrying the old role cannot be used (N5/N8).
+    await db.users.update_one({"id": user_id}, {"$set": {"role": body.role, "platform_role": "superadmin" if body.role == "superadmin" else None},
+                                                "$inc": {_auth.TOKEN_VERSION_FIELD: 1}})
     action = "promoted to Platform Admin" if body.role == "superadmin" else "demoted to Regular User"
     return {"success": True, "message": f"{user.get('email', '')} {action}"}
 
@@ -2965,7 +3267,7 @@ class InviteUserBody(BaseModel):
     org_ids: Optional[List[str]] = None
     bot_ids: Optional[List[str]] = None
     workspace_id: Optional[str] = None
-    workspace_role: Optional[str] = "admin"  # admin or member (workspace-level)
+    workspace_role: Optional[str] = "member"  # admin or member (workspace-level); least privilege by default
 
 class AcceptInviteBody(BaseModel):
     username: str
@@ -2976,39 +3278,81 @@ class AcceptInviteBody(BaseModel):
 class AdminResetPasswordBody(BaseModel):
     new_password: str
 
+async def _admin_workspace_roles(user_id: str) -> dict:
+    """{workspace_id: role} for the workspaces where user_id is owner or admin."""
+    rows = await db.workspace_members.find(
+        {"user_id": user_id, "role": {"$in": ["admin", "owner"]}},
+        {"_id": 0, "workspace_id": 1, "role": 1},
+    ).to_list(1000)
+    return {m["workspace_id"]: m.get("role") for m in rows if m.get("workspace_id")}
+
+
+async def _may_manage_user(current_user: dict, target: dict) -> bool:
+    """Whether current_user may reset the password of / delete the account of target
+    (spec 008 Stage 3/3b, N8).
+
+    `require_admin_or_ws_admin` admits every verified user (each owns a workspace),
+    so it is never sufficient on its own. Superadmins may manage any account.
+    Otherwise the target must not be a superadmin and must belong ONLY to workspaces
+    the caller administers: never a workspace owner, and an admin only when the
+    caller owns that workspace. A user with no workspace membership, or with any
+    membership outside the caller's workspaces (e.g. their own workspace), is out
+    of scope, so an account can never be taken over from another tenant.
+    """
+    if _tenant_scope.is_superadmin(current_user):
+        return True
+    if _tenant_scope.is_superadmin(target):
+        return False
+    my_roles = await _admin_workspace_roles(current_user["id"])
+    if not my_roles:
+        return False
+    memberships = await db.workspace_members.find(
+        {"user_id": target["id"]}, {"_id": 0, "workspace_id": 1, "role": 1},
+    ).to_list(1000)
+    if not memberships:
+        return False
+    for m in memberships:
+        my_role, target_role = my_roles.get(m.get("workspace_id")), m.get("role")
+        if my_role is None or target_role == "owner":
+            return False
+        if target_role == "admin" and my_role != "owner":
+            return False
+    return True
+
+
+async def _may_admin_reset_password(current_user: dict, target: dict) -> bool:
+    return await _may_manage_user(current_user, target)
+
+
 @api_router.post("/admin/users/{user_id}/reset-password")
 async def admin_reset_password(user_id: str, body: AdminResetPasswordBody, current_user: dict = Depends(require_admin_or_ws_admin)):
-    """Admin can force-reset another user's password."""
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    """Admin can force-reset another user's password (revokes their sessions).
+
+    Authorization (spec 008 Stage 3): every verified user owns an auto-created
+    workspace, so `require_admin_or_ws_admin` alone would let any user reset any
+    password. See _may_manage_user for the exact rule (never self).
+    """
+    if user_id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="Use change-password for your own account")
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if not await _may_admin_reset_password(current_user, user):
+        raise HTTPException(status_code=403, detail="Not allowed to reset this user's password")
+    _require_user_password(body.new_password, user.get("email", ""))
     hashed_pw = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
-    await db.users.update_one({"id": user_id}, {"$set": {"hashed_password": hashed_pw}})
+    await db.users.update_one({"id": user_id}, {"$set": {"hashed_password": hashed_pw},
+                                                "$inc": {_auth.TOKEN_VERSION_FIELD: 1}})
     return {"success": True, "message": f"Password reset for {user.get('email', '')}"}
 
 async def send_invitation_email(to_email: str, invite_token: str, role: str, inviter_name: str):
-    """Send invitation email with sign-up link via Resend."""
-    base_url = os.environ.get("REACT_APP_BACKEND_URL", "")
-    if not base_url:
-        try:
-            with open(os.path.join(os.path.dirname(__file__), "..", "frontend", ".env")) as f:
-                for line in f:
-                    if line.startswith("REACT_APP_BACKEND_URL="):
-                        base_url = line.split("=", 1)[1].strip()
-                        break
-        except Exception:
-            pass
-    invite_url = f"{base_url.rstrip('/')}/invite/{invite_token}"
+    """Send invitation email with sign-up link. Raises EmailDeliveryError in production on failure."""
+    # Invitation pages are frontend routes: PUBLIC_APP_URL, never the API origin (P6).
+    base_url = _rc.public_url(_rc.PUBLIC_APP_URL)
+    invite_url = f"{base_url}/invite/{invite_token}"
     role_label = "Admin" if role == "superadmin" else "Team Member"
 
-    if not resend.api_key:
-        logger.warning("RESEND_API_KEY not set — printing invite to logs")
-        print(f"\n{'='*50}\nMOCK INVITE EMAIL\nTo: {to_email}\nLink: {invite_url}\nRole: {role_label}\n{'='*50}\n")
-        return
-    try:
-        html = f"""
+    html = f"""
         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;background:#111;color:#fff;padding:32px;border-radius:8px">
           <h2 style="margin:0 0 8px;font-size:22px">BitBot Pro</h2>
           <p style="color:#a1a1aa;margin:0 0 28px;font-size:14px">You're Invited</p>
@@ -3018,17 +3362,64 @@ async def send_invitation_email(to_email: str, invite_token: str, role: str, inv
           <p style="color:#555;font-size:11px;margin:16px 0 0;word-break:break-all">{invite_url}</p>
         </div>
         """
-        params = {
-            "from": FROM_EMAIL,
-            "to": [to_email],
-            "subject": f"{inviter_name} invited you to BitBot Pro",
-            "html": html,
-        }
-        await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Invitation email sent to {to_email}")
-    except Exception as e:
-        logger.error(f"Resend invite error: {e}")
-        print(f"\n{'='*50}\nFALLBACK INVITE EMAIL\nTo: {to_email}\nLink: {invite_url}\n{'='*50}\n")
+    # The invite link contains the invitation token: never logged; console only in development.
+    await _send_or_dev_fallback("invitation", to_email, f"{inviter_name} invited you to BitBot Pro",
+                                html, "Link", invite_url)
+
+async def _validate_invitation_grants(current_user: dict, body, workspace_role: str):
+    """Return (org_ids, bot_ids) after checking that the inviter may grant them.
+
+    - Roles: only workspace 'admin' or 'member'; platform roles are never granted.
+    - Non-superadmins must invite into a workspace they own/administer; only the
+      owner may invite admins; V1 `instance_id` grants are superadmin-only.
+    - Every org must belong to the target workspace, and every bot to one of those
+      workspace's orgs. Unknown or foreign IDs are rejected (no IDOR).
+    """
+    if workspace_role not in ("admin", "member"):
+        raise HTTPException(status_code=400, detail="Workspace role must be 'admin' or 'member'")
+    is_super = _tenant_scope.is_superadmin(current_user)
+    ws_id = body.workspace_id
+    if not is_super:
+        if not ws_id:
+            raise HTTPException(status_code=400, detail="workspace_id is required")
+        my_role = (await _admin_workspace_roles(current_user["id"])).get(ws_id)
+        if my_role is None:
+            raise HTTPException(status_code=403, detail="You are not an admin of this workspace")
+        if workspace_role == "admin" and my_role != "owner":
+            raise HTTPException(status_code=403, detail="Only the workspace owner can invite admins")
+        if body.instance_id:
+            raise HTTPException(status_code=403, detail="Legacy instance assignment requires a platform superadmin")
+    if ws_id and not await db.workspaces.find_one({"id": ws_id}):
+        raise HTTPException(status_code=400, detail="Workspace not found")
+    org_ids = sorted(set(body.org_ids or []))
+    bot_ids = sorted(set(body.bot_ids or []))
+    if (org_ids or bot_ids) and not ws_id:
+        raise HTTPException(status_code=400, detail="Organisation or bot access requires a workspace")
+    ws_org_ids = set()
+    if ws_id:
+        ws_org_ids = {o["id"] for o in await db.organisations.find(
+            {"workspace_id": ws_id}, {"_id": 0, "id": 1}).to_list(1000)}
+    if any(oid not in ws_org_ids for oid in org_ids):
+        raise HTTPException(status_code=400, detail="One or more organisations are not in this workspace")
+    if bot_ids:
+        bots = await db.bots.find({"id": {"$in": bot_ids}}, {"_id": 0, "id": 1, "org_id": 1}).to_list(1000)
+        valid = {b["id"] for b in bots if b.get("org_id") in ws_org_ids}
+        if any(bid not in valid for bid in bot_ids):
+            raise HTTPException(status_code=400, detail="One or more bots are not in this workspace")
+    if body.instance_id and not await db.bot_instances.find_one({"id": body.instance_id}):
+        raise HTTPException(status_code=400, detail="Instance not found")
+    return org_ids, bot_ids
+
+
+async def _invitation_scope_filter(current_user: dict) -> Optional[dict]:
+    """MongoDB filter for invitations the caller may see or revoke (None = none)."""
+    if _tenant_scope.is_superadmin(current_user):
+        return {}
+    ws_ids = list(await _admin_workspace_roles(current_user["id"]))
+    if not ws_ids:
+        return None
+    return {"workspace_id": {"$in": ws_ids}}
+
 
 @api_router.post("/admin/users/invite")
 async def invite_user(body: InviteUserBody, current_user: dict = Depends(require_admin_or_ws_admin)):
@@ -3053,14 +3444,11 @@ async def invite_user(body: InviteUserBody, current_user: dict = Depends(require
         if datetime.now(timezone.utc) - created < timedelta(days=7):
             raise HTTPException(status_code=400, detail=f"An invitation is already pending for {email}")
 
-    # Validate workspace if provided
-    if body.workspace_id:
-        ws = await db.workspaces.find_one({"id": body.workspace_id})
-        if not ws:
-            raise HTTPException(status_code=400, detail="Workspace not found")
-        if body.workspace_role not in ("admin", "member", None):
-            raise HTTPException(status_code=400, detail="Workspace role must be 'admin' or 'member'")
+    # Validate the target workspace, role and every granted resource (spec 008, N8).
+    workspace_role = body.workspace_role or "member"
+    org_ids, bot_ids = await _validate_invitation_grants(current_user, body, workspace_role)
 
+    _require_email_delivery()
     token_val = secrets.token_urlsafe(48)
     now = datetime.now(timezone.utc).isoformat()
     await db.invitations.insert_one({
@@ -3071,10 +3459,10 @@ async def invite_user(body: InviteUserBody, current_user: dict = Depends(require
         "first_name": (body.first_name or "").strip(),
         "last_name": (body.last_name or "").strip(),
         "username": (body.username or "").strip().lower() or None,
-        "org_ids": body.org_ids or [],
-        "bot_ids": body.bot_ids or [],
+        "org_ids": org_ids,
+        "bot_ids": bot_ids,
         "workspace_id": body.workspace_id,
-        "workspace_role": body.workspace_role or "admin",
+        "workspace_role": workspace_role,
         "invited_by": current_user["id"],
         "invited_by_email": current_user.get("email", ""),
         "status": "pending",
@@ -3083,21 +3471,32 @@ async def invite_user(body: InviteUserBody, current_user: dict = Depends(require
     })
 
     inviter_name = current_user.get("username", current_user.get("email", "An admin"))
-    await send_invitation_email(email, token_val, body.workspace_role or "member", inviter_name)
+    try:
+        await send_invitation_email(email, token_val, workspace_role, inviter_name)
+    except EmailDeliveryError:
+        await db.invitations.delete_one({"token": token_val, "status": "pending"})
+        raise
 
     return {"success": True, "message": f"Invitation sent to {email}", "token": token_val}
 
 @api_router.get("/admin/users/invitations")
 async def list_invitations(current_user: dict = Depends(require_admin_or_ws_admin)):
-    """List all pending and recent invitations."""
-    invites = await db.invitations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    """List pending and recent invitations: all for superadmins, otherwise only those
+    for workspaces the caller administers (spec 008, N8: tokens are bearer secrets)."""
+    flt = await _invitation_scope_filter(current_user)
+    if flt is None:
+        return {"invitations": []}
+    invites = await db.invitations.find(flt, {"_id": 0}).sort("created_at", -1).to_list(50)
     return {"invitations": invites}
 
 @api_router.delete("/admin/users/invitations/{token}")
 async def revoke_invitation(token: str, current_user: dict = Depends(require_admin_or_ws_admin)):
-    """Revoke a pending invitation."""
+    """Revoke a pending invitation (only within the caller's scope; otherwise 404)."""
+    flt = await _invitation_scope_filter(current_user)
+    if flt is None:
+        raise HTTPException(status_code=404, detail="Invitation not found or already used")
     result = await db.invitations.update_one(
-        {"token": token, "status": "pending"},
+        {"token": token, "status": "pending", **flt},
         {"$set": {"status": "revoked", "revoked_at": datetime.now(timezone.utc).isoformat()}}
     )
     if result.modified_count == 0:
@@ -3105,18 +3504,11 @@ async def revoke_invitation(token: str, current_user: dict = Depends(require_adm
     return {"success": True, "message": "Invitation revoked"}
 
 @api_router.get("/invite/{token}")
-async def get_invite_details(token: str):
-    """Public endpoint: validate an invitation token and return details."""
-    invite = await db.invitations.find_one({"token": token}, {"_id": 0})
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    if invite["status"] != "pending":
-        raise HTTPException(status_code=400, detail=f"This invitation has been {invite['status']}")
-    expires = datetime.fromisoformat(invite["expires_at"])
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=400, detail="This invitation has expired")
+async def get_invite_details(token: str, request: Request):
+    """Public endpoint: validate an invitation token and return details.
+    Unknown, used, revoked and expired invitations get one uniform 404 (R-P7.7)."""
+    _ip_guard(request, "invite")
+    invite = await _usable_invitation(token)
     # Resolve workspace name if assigned
     ws_name = None
     ws_id = invite.get("workspace_id")
@@ -3127,7 +3519,7 @@ async def get_invite_details(token: str):
 
     return {
         "email": invite["email"],
-        "role": invite["role"],
+        "role": "user",
         "invited_by_email": invite.get("invited_by_email", ""),
         "first_name": invite.get("first_name", ""),
         "last_name": invite.get("last_name", ""),
@@ -3136,25 +3528,66 @@ async def get_invite_details(token: str):
         "workspace_role": ws_role if ws_name else None,
     }
 
-@api_router.post("/invite/{token}/accept")
-async def accept_invite(token: str, body: AcceptInviteBody):
-    """Public endpoint: accept an invitation and create the user account."""
-    invite = await db.invitations.find_one({"token": token})
+INVITATION_INVALID_DETAIL = "Invitation not found or no longer valid"
+
+
+async def _usable_invitation(token) -> dict:
+    """The pending, unexpired invitation for `token`, or one uniform 404 (no
+    distinction between unknown, used, revoked or expired; spec 008 R-P7.7)."""
+    not_found = HTTPException(status_code=404, detail=INVITATION_INVALID_DETAIL)
+    if not isinstance(token, str) or not 20 <= len(token) <= 128:
+        raise not_found
+    invite = await db.invitations.find_one({"token": token, "status": "pending"}, {"_id": 0})
     if not invite:
-        raise HTTPException(status_code=404, detail="Invitation not found")
-    if invite["status"] != "pending":
-        raise HTTPException(status_code=400, detail=f"This invitation has been {invite['status']}")
-    expires = datetime.fromisoformat(invite["expires_at"])
+        raise not_found
+    try:
+        expires = datetime.fromisoformat(invite["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        raise not_found
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires:
-        raise HTTPException(status_code=400, detail="This invitation has expired")
+        raise not_found
+    return invite
 
+
+async def _invitation_grants_at_acceptance(invite: dict):
+    """Re-validate grants when the invitation is used (defence in depth, N8):
+    orgs/bots only inside the invitation's workspace; a legacy instance only if
+    the inviter is still a superadmin. Returns (org_ids, bot_ids, instance_id)."""
+    ws_id = invite.get("workspace_id")
+    org_ids, bot_ids = [], []
+    if ws_id:
+        ws_orgs = {o["id"] for o in await db.organisations.find(
+            {"workspace_id": ws_id}, {"_id": 0, "id": 1}).to_list(1000)}
+        org_ids = [o for o in (invite.get("org_ids") or []) if o in ws_orgs]
+        wanted = list(invite.get("bot_ids") or [])
+        if wanted:
+            bots = await db.bots.find({"id": {"$in": wanted}}, {"_id": 0, "id": 1, "org_id": 1}).to_list(1000)
+            ok = {b["id"] for b in bots if b.get("org_id") in ws_orgs}
+            bot_ids = [b for b in wanted if b in ok]
+    instance_grant = None
+    if invite.get("instance_id") and invite.get("invited_by"):
+        inviter = await db.users.find_one({"id": invite["invited_by"]}, {"_id": 0, "role": 1, "platform_role": 1})
+        if inviter and _tenant_scope.is_superadmin(inviter):
+            instance_grant = invite["instance_id"]
+    return org_ids, bot_ids, instance_grant
+
+
+@api_router.post("/invite/{token}/accept")
+async def accept_invite(token: str, body: AcceptInviteBody, request: Request):
+    """Public endpoint: accept an invitation and create the user account.
+
+    Spec 008 Stage 8: input is validated first, then the invitation is claimed
+    atomically (pending → accepting) so it can create at most one account; grants
+    are re-validated against the invitation's workspace at acceptance time; any
+    failure after the claim rolls back (invitation back to pending)."""
+    _ip_guard(request, "invite")
+    invite = await _usable_invitation(token)
     username = body.username.strip().lower()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required")
-    if len(body.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    _require_user_password(body.password, invite["email"])
 
     # Check conflicts
     if await db.users.find_one({"email": invite["email"]}):
@@ -3162,8 +3595,28 @@ async def accept_invite(token: str, body: AcceptInviteBody):
     if await db.users.find_one({"username": username}):
         raise HTTPException(status_code=400, detail="Username already taken")
 
-    hashed_pw = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
+    claimed = await db.invitations.find_one_and_update(
+        {"token": token, "status": "pending"},
+        {"$set": {"status": "accepting", "accepting_at": datetime.now(timezone.utc).isoformat()}},
+        projection={"_id": 0}, return_document=True,
+    )
+    if not claimed:
+        raise HTTPException(status_code=404, detail=INVITATION_INVALID_DETAIL)
+    invite = claimed
+    org_ids, bot_ids, instance_grant = await _invitation_grants_at_acceptance(invite)
     user_id = str(uuid.uuid4())
+    try:
+        return await _create_invited_account(token, invite, body, username, user_id,
+                                             org_ids, bot_ids, instance_grant)
+    except Exception:
+        await db.users.delete_one({"id": user_id})
+        await db.invitations.update_one({"token": token, "status": "accepting"},
+                                        {"$set": {"status": "pending"}, "$unset": {"accepting_at": ""}})
+        raise
+
+
+async def _create_invited_account(token, invite, body, username, user_id, org_ids, bot_ids, instance_grant):
+    hashed_pw = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     now = datetime.now(timezone.utc).isoformat()
 
     first_name = (body.first_name or invite.get("first_name", "")).strip()
@@ -3177,23 +3630,23 @@ async def accept_invite(token: str, body: AcceptInviteBody):
         "last_name": last_name,
         "hashed_password": hashed_pw,
         "is_verified": True,  # Pre-verified since admin invited them
-        "verification_code": None,
-        "role": invite["role"],
-        "org_ids": invite.get("org_ids", []),
-        "bot_ids": invite.get("bot_ids", []),
+        _auth.TOKEN_VERSION_FIELD: 0,
+        "role": "user",  # invitations never grant a platform role (spec 008, N8)
+        "org_ids": org_ids,
+        "bot_ids": bot_ids,
         "created_at": now,
         "invited_by": invite.get("invited_by", ""),
     })
 
     # Assign to instance if specified
-    if invite.get("instance_id"):
+    if instance_grant:
         await db.bot_instances.update_one(
-            {"id": invite["instance_id"]},
+            {"id": instance_grant},
             {"$addToSet": {"assigned_user_ids": user_id}}
         )
 
     # Assign to V2 organisations
-    for oid in invite.get("org_ids", []):
+    for oid in org_ids:
         await db.organisations.update_one(
             {"id": oid},
             {"$addToSet": {"member_ids": user_id},
@@ -3203,7 +3656,9 @@ async def accept_invite(token: str, body: AcceptInviteBody):
     # Assign to workspace if specified
     ws_id = invite.get("workspace_id")
     if ws_id:
-        ws_role = invite.get("workspace_role", "admin")
+        ws_role = invite.get("workspace_role", "member")
+        if ws_role not in ("admin", "member"):
+            ws_role = "member"
         existing_ws = await db.workspace_members.find_one({"workspace_id": ws_id, "user_id": user_id})
         if not existing_ws:
             await db.workspace_members.insert_one({
@@ -3236,8 +3691,8 @@ async def accept_invite(token: str, body: AcceptInviteBody):
 
     # Mark invitation as accepted
     await db.invitations.update_one(
-        {"token": token},
-        {"$set": {"status": "accepted", "accepted_at": now, "user_id": user_id}}
+        {"token": token, "status": "accepting"},
+        {"$set": {"status": "accepted", "accepted_at": now, "user_id": user_id}, "$unset": {"accepting_at": ""}}
     )
 
     return {"success": True, "message": "Account created! You can now log in.", "email": invite["email"]}
@@ -3279,7 +3734,7 @@ async def _try_api_query(user_message: str, bot_config: dict, knowledge_context:
     if not endpoint_listing.strip():
         return None
 
-    logger.info(f"[API_QUERY] {len(endpoints)} enabled endpoints, routing: {user_message[:80]}")
+    logger.info(f"[API_QUERY] {len(endpoints)} enabled endpoints, routing a {len(user_message)}-char message")
 
     # Step 1: Ask LLM which endpoints to call
     route_prompt = API_ROUTE_PROMPT.format(
@@ -3303,7 +3758,7 @@ async def _try_api_query(user_message: str, bot_config: dict, knowledge_context:
         route = _json.loads(clean)
         if not isinstance(route, dict):
             return None
-        logger.info(f"[API_QUERY] Route: {route.get('action')} — {route.get('reason', '')[:80]}")
+        logger.info("[API_QUERY] Route: %s", _log_redaction.sanitize_for_log(route.get('action'), 40))
     except Exception as e:
         logger.warning(f"[API_QUERY] Route parse failed: {e}")
         return None
@@ -3378,30 +3833,51 @@ async def _try_api_query(user_message: str, bot_config: dict, knowledge_context:
 # ==================== CHAT (PUBLIC) ====================
 
 async def _resolve_chat_instance(provided_id: Optional[str]) -> str:
-    """Resolve instance_id for public chat endpoints.
-    V2 bots checked first, then V1 fallback."""
-    if provided_id and provided_id != "default":
-        return provided_id
-    # V2-first
-    first_bot = await db.bots.find_one({}, {"id": 1})
-    if first_bot:
-        return first_bot["id"]
-    # V1 fallback
-    first = await db.bot_instances.find_one({}, {"id": 1})
-    if first:
-        return first["id"]
-    return provided_id or "default"
+    """The bot for a public chat request. It must be named explicitly and exist
+    (V2 bot id or legacy instance id). There is no fallback to "the first bot"
+    (spec 008, R-N3.3): an unknown or missing ID is a uniform 404."""
+    not_found = HTTPException(status_code=404, detail="Bot not found")
+    if not isinstance(provided_id, str) or not provided_id.strip() or len(provided_id) > 128:
+        raise not_found
+    iid = provided_id.strip()
+    if await db.bots.find_one({"$or": [{"id": iid}, {"legacy_instance_id": iid}]}, {"_id": 0, "id": 1}):
+        return iid
+    if await db.bot_instances.find_one({"id": iid}, {"_id": 0, "id": 1}):
+        return iid
+    raise not_found
+
+
+async def _chat_preflight(request: Request, body: "ChatMessage"):
+    """All checks for public chat, in order, before any knowledge search or LLM
+    call: per-IP limit, message size, explicit existing bot, per-bot daily
+    ceiling, then session possession. Returns (instance_id, session_id, token)."""
+    _ip_guard(request, "chat")
+    if not isinstance(body.message, str) or not body.message.strip():
+        raise HTTPException(status_code=400, detail="Message is required")
+    if len(body.message) > MAX_CHAT_MESSAGE_CHARS:
+        raise HTTPException(status_code=413, detail=f"Message is too long (max {MAX_CHAT_MESSAGE_CHARS} characters)")
+    instance_id = await _resolve_chat_instance(body.instance_id)
+    daily = await _CHAT_DAILY.record_failure(instance_id)
+    if daily.count > CHAT_DAILY_LIMIT_PER_BOT:
+        raise HTTPException(status_code=503, detail=CHAT_UNAVAILABLE_DETAIL)
+    session_id, token, _resumed = _chat.resume_or_new(_CHAT_SESSION_KEY, body.session_id, body.session_token,
+                                                      instance_id)
+    return instance_id, session_id, token
+
 
 @api_router.get("/bot-info/{bot_id}")
-async def get_bot_info(bot_id: str):
-    """Public: return basic bot info (name, persona) for display purposes."""
+async def get_bot_info(bot_id: str, request: Request):
+    """Public: the bot's display name only. `persona` is part of the system prompt
+    and is no longer published (spec 008, R-P7.6)."""
+    _ip_guard(request, "public_read")
+    if not isinstance(bot_id, str) or len(bot_id) > 128:
+        raise HTTPException(status_code=404, detail="Bot not found")
     config = await resolve_bot_config(bot_id)
-    return {"name": config.get("name", "Assistant"), "persona": config.get("persona", "")}
+    return {"name": str(config.get("name", "Assistant"))[:100]}
 
 @api_router.post("/chat/send")
-async def send_chat_message(body: ChatMessage):
-    session_id = body.session_id or str(uuid.uuid4())
-    instance_id = await _resolve_chat_instance(body.instance_id)
+async def send_chat_message(body: ChatMessage, request: Request):
+    instance_id, session_id, session_token = await _chat_preflight(request, body)
     bot_config = await resolve_bot_config(instance_id)
     knowledge = await search_knowledge(body.message, instance_id)
 
@@ -3427,23 +3903,35 @@ async def send_chat_message(body: ChatMessage):
         response = await call_claude(session_id, body.message, system_prompt,
                                     instance_id=instance_id, platform="web")
     await save_conversation(session_id, body.message, response, platform="web", instance_id=instance_id)
-    return {"response": response, "session_id": session_id}
+    return {"response": response, "session_id": session_id, "session_token": session_token}
 
 @api_router.post("/chat/stream")
-async def stream_chat_message(body: ChatMessage):
+async def stream_chat_message(body: ChatMessage, request: Request):
     """Streaming version of /chat/send. Returns SSE (text/event-stream)."""
-    session_id = body.session_id or str(uuid.uuid4())
-    instance_id = await _resolve_chat_instance(body.instance_id)
+    instance_id, session_id, session_token = await _chat_preflight(request, body)
     return StreamingResponse(
-        stream_chat_response(session_id, body.message, instance_id, platform="web"),
+        stream_chat_response(session_id, body.message, instance_id, platform="web", session_token=session_token),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 @api_router.get("/chat/history/{session_id}")
-async def get_chat_history(session_id: str):
-    conv = await db.conversations.find_one({"session_id": session_id}, {"_id": 0})
-    return conv or {"messages": [], "session_id": session_id}
+async def get_chat_history(
+    session_id: str, request: Request, instance_id: Optional[str] = None,
+    x_chat_session_token: Optional[str] = Header(None, alias="X-Chat-Session-Token"),
+):
+    """Public: history of ONE web chat session, only with its possession token
+    (header, never URL) for the same bot. Every failure is the same 404
+    (spec 008, R-P3.3). Non-web (Discord/Telegram/Zendesk) conversations are
+    never returned (R-P3.4)."""
+    _ip_guard(request, "chat_history")
+    if not instance_id or not _chat.verify_token(_CHAT_SESSION_KEY, x_chat_session_token, session_id, instance_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    conv = await db.conversations.find_one(
+        {"session_id": session_id, "instance_id": instance_id, "platform": "web"},
+        {"_id": 0, "messages": 1},
+    )
+    return {"session_id": session_id, "messages": (conv or {}).get("messages", [])}
 
 # ==================== API KEY MANAGEMENT (PROTECTED) ====================
 
@@ -3458,6 +3946,8 @@ async def create_api_key(body: dict, current_user: dict = Depends(require_admin_
     label = body.get("label", "")
     if not instance_id:
         raise HTTPException(status_code=400, detail="instance_id is required")
+    # Tenant check (spec 008, N8): the same rule as every X-Instance-ID route.
+    await _verify_instance_access(instance_id, current_user)
     inst = await db.bot_instances.find_one({"id": instance_id})
     if not inst:
         # Also check V2 bots collection
@@ -3490,17 +3980,28 @@ async def list_api_keys(instance_id: str = Depends(get_instance_access)):
         {"instance_id": instance_id}, {"_id": 0, "key_hash": 0}
     ).sort("created_at", -1).to_list(50)
     return keys
+async def _api_key_in_scope(key_id: str, current_user: dict) -> dict:
+    """The API key document if the caller may manage its bot; otherwise 404 (no IDOR)."""
+    doc = await db.api_keys.find_one({"id": key_id}, {"_id": 0, "id": 1, "instance_id": 1, "is_active": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="API key not found")
+    try:
+        await _verify_instance_access(doc.get("instance_id"), current_user)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return doc
+
+
 @api_router.delete("/admin/api-keys/{key_id}")
 async def revoke_api_key(key_id: str, current_user: dict = Depends(require_admin_or_ws_admin)):
+    await _api_key_in_scope(key_id, current_user)
     result = await db.api_keys.delete_one({"id": key_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="API key not found")
     return {"success": True}
 @api_router.patch("/admin/api-keys/{key_id}/toggle")
 async def toggle_api_key(key_id: str, current_user: dict = Depends(require_admin_or_ws_admin)):
-    doc = await db.api_keys.find_one({"id": key_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="API key not found")
+    doc = await _api_key_in_scope(key_id, current_user)
     new_status = not doc.get("is_active", True)
     await db.api_keys.update_one({"id": key_id}, {"$set": {"is_active": new_status}})
     return {"is_active": new_status}
@@ -4046,19 +4547,41 @@ class EmbedConfigUpdate(BaseModel):
 # ==================== EMBED CONFIG ====================
 
 @api_router.get("/embed/config/{instance_id}")
-async def get_embed_config(instance_id: str):
-    """Public endpoint — returns embed theming config for an instance."""
-    config = await db.embed_configs.find_one({"instance_id": instance_id}, {"_id": 0})
-    if not config:
-        return {"instance_id": instance_id, "custom_css_url": "", "theme": {}}
-    return config
+async def get_embed_config(instance_id: str, request: Request):
+    """Public endpoint — embed theming config for an instance.
+
+    Read by the widget page (bitbotpro.io) and by embed.js on customer websites,
+    so it is served with `Access-Control-Allow-Origin: *` and NO credentials
+    (spec 008, P9). Only the fields below are ever returned (R-P7.6): no
+    `updated_at` or other internal fields; a non-https stylesheet URL is dropped.
+    """
+    _ip_guard(request, "public_read")
+    if len(instance_id) > 128:
+        raise HTTPException(status_code=404, detail="Not found")
+    config = await db.embed_configs.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
+    css_url = config.get("custom_css_url") or ""
+    if not (isinstance(css_url, str) and css_url.startswith("https://") and len(css_url) <= 2048):
+        css_url = ""
+    theme = config.get("theme") if isinstance(config.get("theme"), dict) else {}
+    public = {
+        "instance_id": instance_id,
+        "custom_css_url": css_url,
+        "theme": {str(k)[:64]: str(v)[:200] for k, v in list(theme.items())[:50] if v is not None},
+        "welcome_message": str(config.get("welcome_message") or "")[:2000],
+        "default_open": bool(config.get("default_open", False)),
+    }
+    return JSONResponse(content=public, headers={"Access-Control-Allow-Origin": "*", "Vary": "Origin"})
 
 @api_router.put("/admin/embed-config")
 async def update_embed_config(body: EmbedConfigUpdate, instance_id: str = Depends(get_instance_access)):
     """Save embed configuration (custom CSS URL, theme variables) for an instance."""
     update_data = {"instance_id": instance_id, "updated_at": datetime.now(timezone.utc).isoformat()}
     if body.custom_css_url is not None:
-        update_data["custom_css_url"] = body.custom_css_url.strip()
+        css_url = body.custom_css_url.strip()
+        # Loaded into the widget page on the frontend origin: https only (spec 008, P9).
+        if css_url and not (css_url.startswith("https://") and len(css_url) <= 2048):
+            raise HTTPException(status_code=400, detail="Custom stylesheet URL must be an https:// URL")
+        update_data["custom_css_url"] = css_url
     if body.theme is not None:
         update_data["theme"] = body.theme
     if body.welcome_message is not None:
@@ -4107,8 +4630,11 @@ async def upload_bot_logo(
 
 
 @api_router.get("/bot-logo/{instance_id}")
-async def serve_bot_logo(instance_id: str):
+async def serve_bot_logo(instance_id: str, request: Request):
     """Public endpoint — serves the bot logo image for a given instance."""
+    _ip_guard(request, "public_read")
+    if len(instance_id) > 128:
+        raise HTTPException(status_code=404, detail="Not found")
     config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0, "logo_path": 1, "logo_content_type": 1})
     if not config or not config.get("logo_path"):
         raise HTTPException(404, "No logo configured")
@@ -4184,7 +4710,19 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
       </script>
     """
     from fastapi.responses import Response as FastResponse
-    origin = str(request.base_url).rstrip("/")
+    # The widget UI is a frontend page (PUBLIC_APP_URL); config and logo are API
+    # routes (PUBLIC_API_URL) (spec 008, E5/P9). request.base_url is a
+    # development fallback only.
+    fallback = str(request.base_url).rstrip("/")
+    app_origin = _rc.public_url(_rc.PUBLIC_APP_URL) or fallback
+    api_origin = _rc.public_url(_rc.PUBLIC_API_URL) or fallback
+
+    def js(value) -> str:
+        # Values from the query string are emitted as JSON string literals, never
+        # spliced into the script source (reflected script injection).
+        return _json.dumps(str(value)[:200]).replace("<", "\\u003c")
+
+    safe_mode = mode if mode in ("popup", "inline", "fullpage") else "popup"
     script = f"""
 (function() {{
   // ── Read config from script tag data-* attributes or URL params ──
@@ -4194,9 +4732,17 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
     return fallback || "";
   }};
 
-  var INSTANCE = attr("instance", "{instance}");
-  var MODE = attr("mode", "{mode}");
-  var ORIGIN = "{origin}" || window.location.origin;
+  var INSTANCE = attr("instance", {js(instance)});
+  var MODE = attr("mode", {js(safe_mode)});
+  if (["popup", "inline", "fullpage"].indexOf(MODE) < 0) MODE = "popup";
+  var APP_ORIGIN = {js(app_origin)};
+  var API_ORIGIN = {js(api_origin)};
+  // Isolate the widget frame: no top navigation, only what the chat UI needs.
+  var harden = function(el) {{
+    el.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox");
+    el.setAttribute("allow", "clipboard-write");
+    el.setAttribute("referrerpolicy", "strict-origin");
+  }};
   var POSITION = attr("position", "bottom-right");
 
   // Theme attributes
@@ -4208,7 +4754,7 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
     if (v) themeQuery += "&" + p + "=" + encodeURIComponent(v);
   }});
 
-  var widgetUrl = ORIGIN + "/widget?instance=" + encodeURIComponent(INSTANCE) + "&mode=" + MODE + themeQuery;
+  var widgetUrl = APP_ORIGIN + "/widget?instance=" + encodeURIComponent(INSTANCE) + "&mode=" + encodeURIComponent(MODE) + themeQuery;
 
   // Welcome message and default-open from data attributes or embed config
   var WELCOME = attr("welcome", "");
@@ -4218,7 +4764,7 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
 
   // If no data-* overrides, fetch embed config from server for welcome/open settings
   if (!WELCOME || !attr("open", "")) {{
-    var cfgUrl = ORIGIN + "/api/embed/config/" + encodeURIComponent(INSTANCE);
+    var cfgUrl = API_ORIGIN + "/api/embed/config/" + encodeURIComponent(INSTANCE);
     var xhr = new XMLHttpRequest();
     xhr.open("GET", cfgUrl, false); // sync to run before DOM injection
     try {{
@@ -4238,10 +4784,11 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
 
   // ── Inline mode ──
   if (MODE === "inline") {{
-    var target = document.getElementById("bridgebot-container") || document.querySelector("[data-bridgebot]");
-    if (!target) {{ console.warn("BitBot Pro: No #bridgebot-container found."); return; }}
+    var target = document.getElementById("bitbotpro-container") || document.getElementById("bridgebot-container") ||
+                 document.querySelector("[data-bitbotpro],[data-bridgebot]");
+    if (!target) {{ console.warn("BitBot Pro: No #bitbotpro-container found."); return; }}
     var f = document.createElement("iframe");
-    f.src = widgetUrl; f.title = "BitBot Pro Chat";
+    f.src = widgetUrl; f.title = "BitBot Pro Chat"; harden(f);
     f.style.cssText = "width:100%;height:100%;border:none;min-height:500px;";
     f.setAttribute("data-testid", "bridgebot-inline-iframe");
     target.innerHTML = ""; target.appendChild(f);
@@ -4251,7 +4798,7 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
   // ── Fullpage mode ──
   if (MODE === "fullpage") {{
     var f = document.createElement("iframe");
-    f.src = widgetUrl; f.title = "BitBot Pro Chat";
+    f.src = widgetUrl; f.title = "BitBot Pro Chat"; harden(f);
     f.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;border:none;z-index:99999;";
     f.setAttribute("data-testid", "bridgebot-fullpage-iframe");
     document.body.appendChild(f);
@@ -4277,8 +4824,8 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
   var chatSVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
   var closeSVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>';
 
-  // Bot logo — served from /api/bot-logo/{instance}
-  var logoUrl = ORIGIN + "/api/bot-logo/" + encodeURIComponent(INSTANCE);
+  // Bot logo — served from /api/bot-logo/<instance>
+  var logoUrl = API_ORIGIN + "/api/bot-logo/" + encodeURIComponent(INSTANCE);
   var logoImg = new Image();
   var hasLogo = false;
   var openChatIcon = chatSVG;  // default fallback
@@ -4311,7 +4858,7 @@ async def serve_embed_script(request: Request, instance: str = "", mode: str = "
     "box-shadow:0 12px 48px rgba(0,0,0,0.3);display:none;";
 
   var iframe = document.createElement("iframe");
-  iframe.src = widgetUrl; iframe.title = "BitBot Pro Chat";
+  iframe.src = widgetUrl; iframe.title = "BitBot Pro Chat"; harden(iframe);
   iframe.style.cssText = "width:100%;height:100%;border:none;";
   iframe.setAttribute("data-testid", "bridgebot-popup-iframe");
   panel.appendChild(iframe);
@@ -5685,7 +6232,8 @@ async def get_conversations(
     if approved is not None:
         query["is_approved_for_training"] = approved
     if search and search.strip():
-        query["messages.content"] = {"$regex": search.strip(), "$options": "i"}
+        # Literal search: user input is never interpreted as a regex (ReDoS / injection).
+        query["messages.content"] = {"$regex": re.escape(search.strip()[:200]), "$options": "i"}
     skip = (page - 1) * limit
     total = await db.conversations.count_documents(query)
     convs = await db.conversations.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
@@ -5708,10 +6256,14 @@ async def approve_conversation(session_id: str, body: ApproveBody,
     return {"success": True, "is_approved_for_training": body.approved}
 @api_router.delete("/conversations/{session_id}")
 async def delete_conversation(session_id: str, instance_id: str = Depends(get_instance_access)):
-    llm_sessions.pop(session_id, None)
     result = await db.conversations.delete_one({"session_id": session_id, "instance_id": instance_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    # Drop this bot's in-memory LLM context for the session only (keys are
+    # "<session>_<instance>_<provider>_<model>"), after the ownership check.
+    prefix = f"{session_id}_{instance_id}_"
+    for key in [k for k in list(llm_sessions) if k.startswith(prefix)]:
+        llm_sessions.pop(key, None)
     return {"success": True}
 # ==================== ANALYTICS (PROTECTED) ====================
 
@@ -6035,9 +6587,24 @@ async def analytics_zendesk(instance_id: str = Depends(get_instance_access)):
 # ==================== DISCORD (PROTECTED) ====================
 @api_router.get("/discord/app-config")
 async def get_discord_app_config(current_user: dict = Depends(require_admin_or_ws_admin)):
-    """Get Discord app credentials (admin only). Secrets are masked."""
+    """Platform Discord app configuration.
+
+    Superadmins get the masked credential view. Everyone else (spec 008, N8) gets
+    only the non-secret status that workspace pages need: no secret fragments.
+    """
     creds = await get_discord_credentials()
     raw = await db.discord_app_config.find_one({"_id": "discord_app"}) or {}
+    if not _tenant_scope.is_superadmin(current_user):
+        return {
+            "client_id": creds["client_id"],          # public OAuth application ID
+            "redirect_uri": creds["redirect_uri"],
+            "client_secret": "",
+            "bot_token": "",
+            "has_client_id": bool(creds["client_id"]),
+            "has_client_secret": bool(creds["client_secret"]),
+            "has_redirect_uri": bool(creds["redirect_uri"]),
+            "has_bot_token": bool(creds["bot_token"]),
+        }
     return {
         "client_id": creds["client_id"],
         "client_secret": ("***" + creds["client_secret"][-4:]) if len(creds.get("client_secret", "")) > 4 else ("***" if creds.get("client_secret") else ""),
@@ -6056,7 +6623,7 @@ class DiscordAppConfigUpdate(BaseModel):
     bot_token: Optional[str] = None
 
 @api_router.put("/discord/app-config")
-async def update_discord_app_config(body: DiscordAppConfigUpdate, current_user: dict = Depends(require_admin_or_ws_admin)):
+async def update_discord_app_config(body: DiscordAppConfigUpdate, current_user: dict = Depends(require_admin)):
     """Update Discord app credentials (admin only). Stored in DB."""
     update = {k: v.strip() for k, v in body.dict().items() if v is not None and v.strip()}
     if not update:
@@ -6067,7 +6634,7 @@ async def update_discord_app_config(body: DiscordAppConfigUpdate, current_user: 
     )
     return {"success": True, "message": "Discord credentials updated"}
 @api_router.get("/discord/app-config/connections")
-async def list_discord_connections(current_user: dict = Depends(require_admin_or_ws_admin)):
+async def list_discord_connections(current_user: dict = Depends(require_admin)):
     """List every instance currently mapped to a Discord guild. Used by Discord App Setup to
     preview the impact of clearing app credentials."""
     rows = await db.discord_config.find({"guild_id": {"$exists": True, "$ne": ""}}).to_list(length=None)
@@ -6084,7 +6651,7 @@ async def list_discord_connections(current_user: dict = Depends(require_admin_or
 @api_router.delete("/discord/app-config")
 async def clear_discord_app_config(
     clear_connections: bool = False,
-    current_user: dict = Depends(require_admin_or_ws_admin),
+    current_user: dict = Depends(require_admin),
 ):
     """Clear the Discord App credentials (admin only).
     If clear_connections=true, also wipe every instance ↔ guild mapping in discord_config."""
@@ -6110,8 +6677,12 @@ async def clear_discord_app_config(
         "connections_cleared": connections_cleared,
     }
 @api_router.get("/discord/oauth-url")
-async def get_discord_oauth_url(instance_id: str = Depends(get_instance_access)):
-    """Generate Discord OAuth2 URL to invite the bot to a server."""
+async def get_discord_oauth_url(instance_id: str = Depends(get_instance_access),
+                                current_user: dict = Depends(get_current_user)):
+    """Generate Discord OAuth2 URL to invite the bot to a server.
+
+    `state` is random, single-use, expires after 10 minutes and is bound to this
+    user, the install action and this instance (spec 008, P5)."""
     creds = await get_discord_credentials()
     if not creds["client_id"]:
         raise HTTPException(status_code=400, detail="Discord Client ID not configured")
@@ -6124,12 +6695,15 @@ async def get_discord_oauth_url(instance_id: str = Depends(get_instance_access))
         "scope": "bot",
         "redirect_uri": creds["redirect_uri"],
         "response_type": "code",
-        "state": instance_id,
+        "state": await _oauth_state.issue(db[_oauth_state.COLLECTION], provider="discord",
+                                          mode=_oauth_state.MODE_INSTALL, user_id=current_user["id"],
+                                          instance_id=instance_id),
     }
     url = f"https://discord.com/oauth2/authorize?{urlencode(params)}"
     return {"url": url}
 @api_router.get("/discord/share-oauth-url")
-async def get_discord_share_oauth_url(instance_id: str = Depends(get_instance_access)):
+async def get_discord_share_oauth_url(instance_id: str = Depends(get_instance_access),
+                                      current_user: dict = Depends(get_current_user)):
     """Generate a shareable Discord OAuth2 URL for a third-party admin to invite the bot
     to their server. The bot becomes assigned to the inviting admin's instance, but the
     third-party user lands on a public friendly success page instead of the admin login wall."""
@@ -6145,7 +6719,11 @@ async def get_discord_share_oauth_url(instance_id: str = Depends(get_instance_ac
         "scope": "bot",
         "redirect_uri": creds["redirect_uri"],
         "response_type": "code",
-        "state": f"share:{instance_id}",
+        # Random, single-use, 7-day state bound to this instance (spec 008, P5); the
+        # third-party server owner who uses the link is not a BitBotPro user.
+        "state": await _oauth_state.issue(db[_oauth_state.COLLECTION], provider="discord",
+                                          mode=_oauth_state.MODE_SHARE, user_id=current_user["id"],
+                                          instance_id=instance_id),
     }
     url = f"https://discord.com/oauth2/authorize?{urlencode(params)}"
     return {"url": url}
@@ -6159,6 +6737,16 @@ async def send_discord_invite_email(body: SendInviteEmailBody, instance_id: str 
     """Send a Discord bot invite link to a third-party server admin via Resend."""
     if not resend.api_key:
         raise HTTPException(status_code=503, detail="Email service not configured (Resend API key missing)")
+    # Only a Discord authorization link for OUR application may be emailed from our
+    # domain (spec 008 Stage 7: no arbitrary-URL phishing relay).
+    _creds = await get_discord_credentials()
+    _parsed = urllib.parse.urlparse(body.invite_url or "")
+    _q = urllib.parse.parse_qs(_parsed.query)
+    if not (_parsed.scheme == "https" and _parsed.netloc in ("discord.com", "discordapp.com")
+            and _parsed.path in ("/oauth2/authorize", "/api/oauth2/authorize")
+            and _creds["client_id"] and _q.get("client_id") == [_creds["client_id"]]
+            and len(body.invite_url) <= 2048):
+        raise HTTPException(status_code=400, detail="invite_url must be a Discord authorization link for this application")
     if not body.to_email or "@" not in body.to_email:
         raise HTTPException(status_code=400, detail="Valid recipient email is required")
     if not body.invite_url:
@@ -6193,6 +6781,20 @@ async def send_discord_invite_email(body: SendInviteEmailBody, instance_id: str 
     except Exception as e:
         logger.error(f"Resend send failed: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send email: {type(e).__name__}")
+async def _session_user_is(token: Optional[str], user_id: str) -> bool:
+    """True if `token` is a valid, current JWT for `user_id` (cookie session)."""
+    if not token or not user_id:
+        return False
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        return False
+    if payload.get("sub") != user_id:
+        return False
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, _auth.TOKEN_VERSION_FIELD: 1})
+    return _auth.token_version_matches(payload, user)
+
+
 @api_router.get("/discord/callback")
 async def discord_oauth_callback(
     request: Request,
@@ -6201,25 +6803,42 @@ async def discord_oauth_callback(
     state: str = None,
     error: str = None,
     error_description: str = None,
+    bf_access_token: Optional[str] = Cookie(None),
 ):
-    """Handle Discord OAuth2 callback after bot is invited to a server."""
+    """Handle Discord OAuth2 callback after bot is invited to a server.
+
+    The `state` must be a live, unused record issued by /discord/oauth-url or
+    /discord/share-oauth-url; it is consumed atomically before anything else
+    happens (spec 008, P5). Install-mode states additionally require the
+    browser's signed-in session to be the user who started the flow."""
     creds = await get_discord_credentials()
     redirect_uri = creds["redirect_uri"]
-    frontend_base = redirect_uri.replace("/api/discord/callback", "") if redirect_uri else ""
+    # Landing pages are frontend routes (spec 008, P6): PUBLIC_APP_URL. The
+    # redirect_uri-derived origin is only a development fallback.
+    frontend_base = _rc.public_url(_rc.PUBLIC_APP_URL) or (
+        redirect_uri.replace("/api/discord/callback", "") if redirect_uri else "")
 
     if error:
-        logger.warning(f"Discord OAuth error: {error} - {error_description}")
-        return RedirectResponse(url=f"{frontend_base}/admin/discord?oauth=error&reason={error}")
+        logger.warning("Discord OAuth error: %s - %s",
+                       _log_redaction.sanitize_for_log(error, 64),
+                       _log_redaction.sanitize_for_log(error_description, 200))
+        return RedirectResponse(url=f"{frontend_base}/admin/discord?" + urllib.parse.urlencode(
+            {"oauth": "error", "reason": str(error)[:64]}))
 
     if not code:
         return RedirectResponse(url=f"{frontend_base}/admin/discord?oauth=error&reason=no_code")
 
-    instance_id = state or "default"
-    is_share = True  # Treat ALL invite callbacks as share-style so the user always lands on the
-                     # public success page — never the login wall. Admins can still open /admin/discord
-                     # afterwards from their own session.
-    if instance_id.startswith("share:"):
-        instance_id = instance_id[len("share:"):]
+    def _fail(reason: str):
+        return RedirectResponse(url=f"{frontend_base}/admin/discord?" + urllib.parse.urlencode(
+            {"oauth": "error", "reason": reason}))
+
+    record = await _oauth_state.consume(db[_oauth_state.COLLECTION], state, "discord")
+    if record is None:
+        return _fail("invalid_state")              # missing, forged, expired or already used
+    if record["mode"] == _oauth_state.MODE_INSTALL and not await _session_user_is(bf_access_token, record["user_id"]):
+        return _fail("session_mismatch")           # login-CSRF: the flow must finish in the same session
+    instance_id = record["instance_id"]
+    is_share = True  # Every callback lands on the public success page (never the login wall).
 
     try:
         async with httpx.AsyncClient() as client:
@@ -6261,13 +6880,17 @@ async def discord_oauth_callback(
                 upsert=True,
             )
 
-            logger.info(f"Discord OAuth success: bot invited to guild {guild.get('name', 'unknown')}")
+            logger.info("Discord OAuth success: bot invited to guild %s",
+                        _log_redaction.sanitize_for_log(guild.get('name', 'unknown'), 100))
 
             # Auto-start/restart the shared bot and update guild mapping
             config = await db.discord_config.find_one({"instance_id": instance_id}, {"_id": 0})
             app_creds = await get_discord_credentials()
             bot_token = (config or {}).get("bot_token") or app_creds["bot_token"]
-            if bot_token:
+            if bot_token and not DISCORD_ALLOWED:
+                # APP_MODE=api: the OAuth result is saved above, but no bot process is started.
+                logger.info("Discord OAuth saved; bot start skipped (APP_MODE=api)")
+            elif bot_token:
                 guild_instance_map[guild.get("id", "")] = instance_id
                 global _shared_discord_client, _shared_discord_task
                 if _shared_discord_client:
@@ -6281,7 +6904,8 @@ async def discord_oauth_callback(
 
             bot_name = (await resolve_bot_config(instance_id)).get('name', 'BitBot Pro')
             return RedirectResponse(
-                url=f"{frontend_base}/discord/invited?guild={guild.get('name', '')}&bot={bot_name}"
+                url=f"{frontend_base}/discord/invited?" + urllib.parse.urlencode(
+                    {"guild": str(guild.get('name', ''))[:100], "bot": str(bot_name)[:100]})
             )
 
     except Exception as e:
@@ -6304,7 +6928,7 @@ async def disconnect_discord_guild(instance_id: str = Depends(get_instance_acces
         del guild_instance_map[guild_id]
     return {"success": True, "cleared_guild_id": guild_id}
 @api_router.post("/discord/purge-all-connections")
-async def purge_all_discord_connections(current_user: dict = Depends(require_admin_or_ws_admin)):
+async def purge_all_discord_connections(current_user: dict = Depends(require_admin)):
     """ADMIN-ONLY: Wipe every guild mapping across every instance. Useful after
     revoking/rotating a Discord App, removing the bot from many servers at once,
     or cleaning up after testing. Does NOT touch knowledge bases, users, or other
@@ -6680,6 +7304,8 @@ async def reset_scripted_counters(instance_id: str = Depends(get_instance_access
 @api_router.post("/discord/restart")
 async def restart_discord_bot_endpoint(instance_id: str = Depends(get_instance_access)):
     global _shared_discord_client, _shared_discord_task
+    if not DISCORD_ALLOWED:
+        raise HTTPException(status_code=409, detail="Discord bot disabled (APP_MODE=api)")
     # Restart the shared bot (reconnects and re-syncs all guilds)
     if _shared_discord_client:
         try:
@@ -7000,7 +7626,11 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    # Exact, validated origins only (spec 004, C8): no default, no wildcard, no regex.
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost: security headers on every response, including CORS preflights and
+# KB 503s (spec 008 Stage 10). HSTS only in production (HTTPS at Cloudflare).
+app.add_middleware(_security_headers.SecurityHeadersMiddleware, hsts=(APP_ENV == _rc.APP_ENV_PRODUCTION))

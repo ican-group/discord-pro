@@ -1,0 +1,41 @@
+# /etc/wireguard/wg-bbp.conf — BitBotPro Backend 1 → Caddy VPS (spec 008 Stage 10)
+# TEMPLATE: rendered and installed by deploy/wireguard/bbp-install-conf.sh (never by hand).
+#
+# - The private key is NOT in this file: it lives in /etc/wireguard/wg-bbp.key
+#   (root, 0600) and is loaded by PostUp.
+# - Only 10.50.0.1/32 (the Caddy VPS) is routed into the tunnel: no default-route,
+#   DNS or LAN change (no DNS/Table/ListenPort lines), and WireGuard drops any packet
+#   from this peer whose source is not 10.50.0.1, so the other wg0 peers (Gridscan)
+#   can neither be reached from here nor reach this VM.
+# - Firewall (iptables-nft; every rule tagged "bitbotpro-wg-bbp"). The published port
+#   10.50.0.20:8000 is DNATed by Docker, so its traffic is FORWARDed through DOCKER-USER:
+#     F1  client->API connections not from 10.50.0.1          -> DROP
+#     F2  client->API connections not arriving on wg-bbp       -> DROP (LAN, spoofing)
+#     F3  anything forwarded from wg-bbp not addressed to the
+#         API (LAN hosts, other containers, the internet)      -> DROP (no pivot via VPS)
+#     I1  new non-ICMP connections from wg-bbp to the VM itself -> DROP (no host services;
+#         ping stays allowed for diagnostics)
+#   `--ctdir ORIGINAL` limits F1-F3 to the initiating direction, so API replies
+#   (container -> Caddy) are never dropped. Rules are added in PreUp (before the address
+#   exists), only if absent, and removed in PostDown (after the address is gone) until
+#   none remain: idempotent, no exposure window. Docker never flushes DOCKER-USER.
+
+[Interface]
+Address = 10.50.0.20/32
+PreUp = iptables -N DOCKER-USER 2>/dev/null || true
+PreUp = iptables -C DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -s 10.50.0.1 -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -s 10.50.0.1 -m comment --comment bitbotpro-wg-bbp -j DROP
+PreUp = iptables -C DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -i %i -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -i %i -m comment --comment bitbotpro-wg-bbp -j DROP
+PreUp = iptables -C DOCKER-USER -i %i -m conntrack --ctdir ORIGINAL ! --ctorigdst 10.50.0.20 -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -i %i -m conntrack --ctdir ORIGINAL ! --ctorigdst 10.50.0.20 -m comment --comment bitbotpro-wg-bbp -j DROP
+PreUp = iptables -C INPUT -i %i ! -p icmp -m conntrack ! --ctstate ESTABLISHED,RELATED -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null || iptables -I INPUT 1 -i %i ! -p icmp -m conntrack ! --ctstate ESTABLISHED,RELATED -m comment --comment bitbotpro-wg-bbp -j DROP
+PostUp = wg set %i private-key /etc/wireguard/wg-bbp.key
+PostDown = while iptables -D INPUT -i %i ! -p icmp -m conntrack ! --ctstate ESTABLISHED,RELATED -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null; do :; done
+PostDown = while iptables -D DOCKER-USER -i %i -m conntrack --ctdir ORIGINAL ! --ctorigdst 10.50.0.20 -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null; do :; done
+PostDown = while iptables -D DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -i %i -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null; do :; done
+PostDown = while iptables -D DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst 10.50.0.20 --ctorigdstport 8000 ! -s 10.50.0.1 -m comment --comment bitbotpro-wg-bbp -j DROP 2>/dev/null; do :; done
+
+[Peer]
+# Caddy VPS (wg0, 10.50.0.1)
+PublicKey = <VPS_WG0_PUBLIC_KEY>
+Endpoint = 37.27.153.47:51820
+AllowedIPs = 10.50.0.1/32
+PersistentKeepalive = 25

@@ -1,0 +1,95 @@
+# deploy/docker-compose.api.yml — BitBotPro API (spec 004, Phase 2b)
+#
+# Separate compose project from the databases (deploy/docker-compose.db.yml), so
+# API up/down/rebuild/rollback can never touch the database containers or volumes.
+#
+#   docker compose -f deploy/docker-compose.api.yml --env-file deploy/.env build
+#   docker compose -f deploy/docker-compose.api.yml --env-file deploy/.env up -d api
+#   docker compose -f deploy/docker-compose.api.yml --env-file deploy/.env down     # never -v
+#
+# This file defines ONLY the API service. It never references admin_password, so
+# deleting that file after the bootstrap cannot affect API start/recreate/health.
+#
+# Optional overrides (add with an extra -f, after this file):
+#   deploy/docker-compose.resend.yml  - mounts the optional resend_api_key secret
+#   deploy/docker-compose.admin.yml   - one-off admin-cli (bootstrap); `--profile admin run --rm` only
+#
+# No `ports:` anywhere: the API is not reachable from the host network or the internet.
+
+name: bitbotpro-api
+
+networks:
+  db:
+    name: bitbotpro_db          # created by the database project; internal-only
+    external: true
+  egress:
+    name: bitbotpro_egress      # outbound internet for the API (Anthropic, Resend, ...)
+    driver: bridge
+
+secrets:
+  backend_mongo_url:
+    file: ${BITBOTPRO_SECRETS_DIR:?set BITBOTPRO_SECRETS_DIR in deploy/.env}/backend_mongo_url
+  jwt_secret:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/jwt_secret
+  encryption_key:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/encryption_key
+  code_hmac_key:            # spec 008 Stage 3: HMAC key for verification/reset codes
+    file: ${BITBOTPRO_SECRETS_DIR:?}/code_hmac_key
+
+# Keep in sync with deploy/docker-compose.admin.yml (YAML anchors do not cross files).
+x-hardening: &hardening
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+
+  api:
+    <<: *hardening
+    build:
+      context: ../backend
+      target: runtime
+    image: bitbotpro-api:${BITBOTPRO_API_TAG:?set BITBOTPRO_API_TAG (git short SHA) in deploy/.env}
+    container_name: bitbotpro-api
+    restart: unless-stopped
+    networks: [db, egress]
+    # NO `ports:` and no trusted proxy here (R6). The public edge is added by ONE
+    # override: docker-compose.edge-caddy.yml (selected: Caddy VPS over WireGuard)
+    # or docker-compose.edge-tunnel.yml (alternative: Cloudflare Tunnel).
+    environment:
+      APP_MODE: api
+      APP_ENV: production
+      DB_NAME: bitbotpro
+      CORS_ORIGINS: https://bitbotpro.io
+      PUBLIC_APP_URL: https://bitbotpro.io        # frontend: invitation links, OAuth landing pages, widget UI
+      PUBLIC_API_URL: https://api.bitbotpro.io    # API: webhooks, OAuth callbacks, embed.js, Zendesk app
+      REGISTRATION_MODE: invite_only              # spec 008 P8: "open" is refused in production
+      FROM_EMAIL: noreply@bitbotpro.io
+      MONGO_URL_FILE: /run/secrets/backend_mongo_url
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      ENCRYPTION_KEY_FILE: /run/secrets/encryption_key
+      CODE_HMAC_KEY_FILE: /run/secrets/code_hmac_key
+      # Deliberately NOT set: ADMIN_EMAIL, ADMIN_PASSWORD, DISCORD_*, CLAUDE_API_KEY,
+      # EMERGENT_LLM_KEY, INTEGRATION_PROXY_URL, KB_* and any PostgreSQL URL.
+      # RESEND_API_KEY is never set here: it is an optional secret file supplied by
+      # deploy/docker-compose.resend.yml (without it, email endpoints return 503).
+    secrets: [backend_mongo_url, jwt_secret, encryption_key, code_hmac_key]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    stop_grace_period: 30s
+    mem_limit: 2g

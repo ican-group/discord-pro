@@ -1,0 +1,24 @@
+# deploy/docker-compose.edge-caddy.yml — public edge: Caddy VPS over WireGuard (spec 008 Stage 10, selected)
+#
+#   Internet --HTTPS--> Caddy VPS 37.27.153.47 (api.bitbotpro.io)
+#            --HTTP over WireGuard--> 10.50.0.20:8000 (this VM, interface wg-bbp) --> api container
+#
+# Use together with the base file (and the resend override if configured):
+#   sudo docker compose -f deploy/docker-compose.api.yml -f deploy/docker-compose.edge-caddy.yml \
+#     --env-file deploy/.env up -d api
+#
+# - The API is published ONLY on the WireGuard address 10.50.0.20 (never 0.0.0.0,
+#   never the LAN address). The address exists only while wg-bbp is up; Docker is
+#   ordered after wg-quick@wg-bbp (see deploy/wireguard/README.md).
+# - The wg-bbp PostUp firewall rules drop anything reaching this port that did not
+#   arrive on wg-bbp from 10.50.0.1 (the Caddy VPS); WireGuard itself only accepts
+#   source 10.50.0.1 from that peer (AllowedIPs = 10.50.0.1/32).
+# - The API trusts CF-Connecting-IP only from 10.50.0.1; Caddy overwrites that header
+#   with the real client address ({remote_host}), so clients cannot forge it.
+
+services:
+  api:
+    ports:
+      - "10.50.0.20:8000:8000"
+    environment:
+      TRUSTED_PROXY_IPS: 10.50.0.1

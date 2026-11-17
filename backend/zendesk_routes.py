@@ -17,6 +17,10 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Optional
 
+import security_utils as _sec
+import webhook_auth as _webhook_auth
+from log_redaction import sanitize_for_log
+
 logger = logging.getLogger("bitbotpro.zendesk")
 
 router = APIRouter()
@@ -103,19 +107,15 @@ def _generate_pkce() -> tuple:
 
 
 def _get_base_url() -> str:
-    """Derive the app's public base URL from env."""
-    base = os.environ.get("REACT_APP_BACKEND_URL", "")
-    if not base:
-        try:
-            env_path = os.path.join(os.path.dirname(__file__), "..", "frontend", ".env")
-            with open(env_path) as f:
-                for line in f:
-                    if line.startswith("REACT_APP_BACKEND_URL="):
-                        base = line.split("=", 1)[1].strip()
-                        break
-        except Exception:
-            pass
-    return base.rstrip("/")
+    """Public API origin (PUBLIC_API_URL): webhooks, OAuth callback, sidebar app."""
+    import runtime_config as _rc
+    return _rc.public_url(_rc.PUBLIC_API_URL)
+
+
+def _get_app_url() -> str:
+    """Public frontend origin (PUBLIC_APP_URL): where users land after OAuth."""
+    import runtime_config as _rc
+    return _rc.public_url(_rc.PUBLIC_APP_URL)
 
 
 def _get_oauth_credentials() -> tuple:
@@ -322,7 +322,7 @@ async def zendesk_oauth_callback(request: Request):
     error = params.get("error", "")
     error_desc = params.get("error_description", "")
 
-    frontend_base = _get_base_url()
+    frontend_base = _get_app_url()
     redirect_target = f"{frontend_base}/admin/zendesk"
 
     def _err_redirect(msg: str):
@@ -333,21 +333,26 @@ async def zendesk_oauth_callback(request: Request):
     if error:
         if error == "access_denied":
             return _err_redirect("You denied the authorization request. No connection was made.")
-        return _err_redirect(error_desc or f"Zendesk returned an error: {error}")
+        return _err_redirect((error_desc or f"Zendesk returned an error: {error}")[:200])
 
     if not state or not code:
         return _err_redirect("Missing authorization code or state. Please try again.")
 
     # ── Validate state ──
-    pending = await _db.zendesk_oauth_states.find_one({"state": state})
+    # Consume atomically: a state can complete at most one flow (spec 008, P5).
+    if not isinstance(state, str) or len(state) > 200:
+        return _err_redirect("Invalid or expired authorization state. Please start the connection again.")
+    pending = await _db.zendesk_oauth_states.find_one_and_delete({"state": state})
     if not pending:
         return _err_redirect("Invalid or expired authorization state. Please start the connection again.")
 
-    created = datetime.fromisoformat(pending["created_at"])
+    try:
+        created = datetime.fromisoformat(pending["created_at"])
+    except (KeyError, TypeError, ValueError):
+        return _err_redirect("Invalid or expired authorization state. Please start the connection again.")
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) - created > timedelta(seconds=OAUTH_STATE_TTL):
-        await _db.zendesk_oauth_states.delete_one({"state": state})
         return _err_redirect("The authorization request timed out. Please try again.")
 
     instance_id = pending["instance_id"]
@@ -502,7 +507,8 @@ async def delete_oauth_client_config(request: Request):
 @router.get("/admin/zendesk-config")
 async def get_zendesk_config(request: Request):
     instance_id = await _get_instance_access(request)
-    logger.info(f"[ZENDESK_GET] instance_id resolved to: {instance_id}, raw header: {request.headers.get('X-Instance-ID')}")
+    logger.info("[ZENDESK_GET] instance_id resolved to: %s, raw header: %s",
+                instance_id, sanitize_for_log(request.headers.get('X-Instance-ID'), 80))
 
     # Provide OAuth configuration status
     client_id, _ = await _get_oauth_credentials_async()
@@ -534,6 +540,7 @@ async def get_zendesk_config(request: Request):
         "auth_type": auth_type,
         "oauth_configured": oauth_configured,
         "subdomain": cfg.get("subdomain", ""),
+        "webhook_signature_configured": bool(cfg.get(SIGNING_SECRET_FIELD)),
         "auto_reply_enabled": cfg.get("auto_reply_enabled", False),
         "agent_assist_enabled": cfg.get("agent_assist_enabled", True),
         "is_active": cfg.get("is_active", False),
@@ -614,12 +621,12 @@ async def delete_zendesk_config(request: Request):
 @router.post("/admin/zendesk-config/test")
 async def test_zendesk_connection(request: Request):
     instance_id = await _get_instance_access(request)
-    logger.info(f"[ZENDESK_TEST] instance_id resolved to: {instance_id}, raw header: {request.headers.get('X-Instance-ID')}")
+    logger.info("[ZENDESK_TEST] instance_id resolved to: %s, raw header: %s",
+                instance_id, sanitize_for_log(request.headers.get('X-Instance-ID'), 80))
     cfg = await _db.zendesk_config.find_one({"instance_id": instance_id})
     if not cfg or not cfg.get("subdomain"):
-        # Log all zendesk_config instance_ids to help debug
-        all_ids = [doc["instance_id"] async for doc in _db.zendesk_config.find({}, {"instance_id": 1, "_id": 0})]
-        logger.warning(f"[ZENDESK_TEST] No config for instance_id={instance_id}. Existing configs: {all_ids}")
+        # Never log other tenants' instance IDs (spec 008, A10).
+        logger.warning("[ZENDESK_TEST] No config for instance_id=%s", sanitize_for_log(instance_id, 64))
         raise HTTPException(400, "No Zendesk connection found.")
 
     try:
@@ -677,14 +684,21 @@ async def get_sidebar_key(request: Request):
     cfg = await _db.zendesk_config.find_one({"instance_id": instance_id})
     if not cfg:
         raise HTTPException(400, "Connect Zendesk first.")
-    key = cfg.get("sidebar_api_key")
-    if not key:
-        key = f"zsk_{secrets.token_urlsafe(32)}"
-        await _db.zendesk_config.update_one(
-            {"instance_id": instance_id},
-            {"$set": {"sidebar_api_key": key, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
-    return {"sidebar_api_key": key}
+    # Keys are stored only as a hash (spec 008, R-P4.3). An existing key cannot be
+    # shown again; the plaintext is returned only when a key is first created or
+    # regenerated. `sidebar_api_key` keeps its field name for the current frontend
+    # and holds a masked, unusable value for existing keys.
+    if cfg.get(_sec.SIDEBAR_KEY_HASH_FIELD):
+        hint = cfg.get(_sec.SIDEBAR_KEY_HINT_FIELD)
+        return {"sidebar_api_key": _sec.masked_sidebar_key(hint), "key_hidden": True, "key_hint": hint}
+    # No hashed key yet: adopt a legacy plaintext key (shown one last time) or create one.
+    key = cfg.get(_sec.LEGACY_SIDEBAR_KEY_FIELD) or _sec.new_sidebar_key()
+    await _db.zendesk_config.update_one(
+        {"instance_id": instance_id},
+        {"$set": {**_sec.sidebar_key_fields(key), "updated_at": datetime.now(timezone.utc).isoformat()},
+         "$unset": {_sec.LEGACY_SIDEBAR_KEY_FIELD: ""}},
+    )
+    return {"sidebar_api_key": key, "key_hidden": False, "key_hint": _sec.sidebar_key_hint(key)}
 
 
 @router.post("/admin/zendesk/sidebar-key/regenerate")
@@ -694,12 +708,16 @@ async def regenerate_sidebar_key(request: Request):
     cfg = await _db.zendesk_config.find_one({"instance_id": instance_id})
     if not cfg:
         raise HTTPException(400, "Connect Zendesk first.")
-    key = f"zsk_{secrets.token_urlsafe(32)}"
+    key = _sec.new_sidebar_key()
     await _db.zendesk_config.update_one(
         {"instance_id": instance_id},
-        {"$set": {"sidebar_api_key": key, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {**_sec.sidebar_key_fields(key), "updated_at": datetime.now(timezone.utc).isoformat()},
+         "$unset": {_sec.LEGACY_SIDEBAR_KEY_FIELD: ""}},
     )
-    return {"sidebar_api_key": key, "message": "Sidebar API key regenerated. Update the key in your Zendesk app settings."}
+    # The only time this key's plaintext is returned (it is stored hashed).
+    return {"sidebar_api_key": key, "key_hidden": False, "key_hint": _sec.sidebar_key_hint(key),
+            "message": "Sidebar API key regenerated. Copy it now; it will not be shown again. "
+                       "Update the key in your Zendesk app settings."}
 
 
 # ════════════════════════════════════════════════════════════
@@ -712,11 +730,13 @@ class SidebarGenerateRequest(BaseModel):
 
 async def _authenticate_sidebar(request: Request) -> tuple:
     """Validate sidebar API key from header. Returns (instance_id, zendesk_config)."""
-    key = request.headers.get("X-Sidebar-Key", "").strip()
-    if not key:
+    raw = request.headers.get("X-Sidebar-Key", "").strip()
+    if not raw:
         raise HTTPException(401, "Missing sidebar API key.")
-    cfg = await _db.zendesk_config.find_one({"sidebar_api_key": key})
-    if not cfg:
+    # Look up by hash only; plaintext keys are never stored or compared (R-P4.3).
+    candidate = _sec.sidebar_key_candidate_hash(raw)
+    cfg = await _db.zendesk_config.find_one({_sec.SIDEBAR_KEY_HASH_FIELD: candidate}) if candidate else None
+    if not cfg or not _sec.secret_matches(cfg.get(_sec.SIDEBAR_KEY_HASH_FIELD), candidate):
         raise HTTPException(401, "Invalid sidebar API key.")
     if not cfg.get("subdomain") or not (cfg.get("oauth_access_token") or cfg.get("api_token")):
         raise HTTPException(400, "Zendesk is not connected for this instance.")
@@ -868,8 +888,11 @@ async def download_sidebar_app(request: Request):
                 }
             }
         },
-        "version": "1.0.0",
+        "version": "1.1.0",
         "frameworkVersion": "2.0",
+        # Secure settings ({{setting.sidebar_api_key}}) are substituted by
+        # Zendesk's request proxy only for whitelisted domains (spec 008, P9).
+        "domainWhitelist": [urllib.parse.urlparse(base_url).hostname] if base_url else [],
         "parameters": [
             {
                 "name": "bitbot_url",
@@ -913,15 +936,9 @@ async def download_sidebar_app(request: Request):
     )
 
 
-# ────────────────── Agent-Assist Suggestion (legacy) ──────────────────
-
-@router.get("/zendesk/suggestion/{instance_id}/{ticket_id}")
-async def get_suggestion(instance_id: str, ticket_id: str):
-    """Public endpoint for ZAF sidebar app to fetch AI suggestion for a ticket."""
-    suggestion = await _db.zendesk_suggestions.find_one(
-        {"instance_id": instance_id, "ticket_id": str(ticket_id)}, {"_id": 0}
-    )
-    return suggestion or {"suggestion": None, "ticket_id": ticket_id}
+# The unauthenticated legacy route GET /zendesk/suggestion/{instance_id}/{ticket_id}
+# was removed (spec 008, P4): it exposed AI suggestions for any instance/ticket and
+# had no client (the sidebar app uses POST /zendesk/sidebar/generate).
 
 
 # ────────────────── Recent Tickets (Admin View) ──────────────────
@@ -942,22 +959,81 @@ async def get_recent_zendesk_tickets(request: Request):
 #  Webhook Handler
 # ══════════════════════════════════════════════════════════════
 
+SIGNING_SECRET_FIELD = "webhook_signing_secret_enc"
+
+
+def _signing_secret(cfg: dict):
+    """Decrypted Zendesk webhook signing secret, or None if not configured."""
+    enc = (cfg or {}).get(SIGNING_SECRET_FIELD)
+    if not enc:
+        return None
+    from api_integrations import decrypt_value
+    try:
+        return decrypt_value(enc)
+    except Exception:
+        logger.error("Zendesk webhook signing secret could not be decrypted (instance %s)",
+                     str((cfg or {}).get("instance_id", ""))[:12])
+        return ""   # configured but unusable: fail closed (no signature can match)
+
+
+class SigningSecretBody(BaseModel):
+    signing_secret: str
+
+
+@router.put("/admin/zendesk/webhook-signing-secret")
+async def set_webhook_signing_secret(body: SigningSecretBody, request: Request):
+    """Store the signing secret shown on the Zendesk webhook page (encrypted at rest).
+    From then on every webhook delivery must carry a valid Zendesk signature."""
+    instance_id = await _get_instance_access(request)
+    secret = (body.signing_secret or "").strip()
+    if not 16 <= len(secret) <= 256:
+        raise HTTPException(400, "Invalid signing secret")
+    cfg = await _db.zendesk_config.find_one({"instance_id": instance_id}, {"_id": 0, "instance_id": 1})
+    if not cfg:
+        raise HTTPException(400, "Connect Zendesk first.")
+    from api_integrations import encrypt_value
+    await _db.zendesk_config.update_one({"instance_id": instance_id},
+                                        {"$set": {SIGNING_SECRET_FIELD: encrypt_value(secret),
+                                                  "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"webhook_signature_configured": True}
+
+
+@router.delete("/admin/zendesk/webhook-signing-secret")
+async def delete_webhook_signing_secret(request: Request):
+    instance_id = await _get_instance_access(request)
+    await _db.zendesk_config.update_one({"instance_id": instance_id}, {"$unset": {SIGNING_SECRET_FIELD: ""}})
+    return {"webhook_signature_configured": False}
+
+
 @router.post("/zendesk/webhook/{instance_id}/{webhook_secret}")
 async def zendesk_webhook(
     instance_id: str, webhook_secret: str,
     request: Request, background_tasks: BackgroundTasks,
 ):
     """Receive new-ticket notifications from Zendesk."""
+    _webhook_auth.check_webhook_rate("zendesk", instance_id)
     cfg = await _db.zendesk_config.find_one({"instance_id": instance_id})
-    if not cfg:
+    # Constant-time check; unknown instance and wrong secret are indistinguishable
+    # (spec 008, R-P7.1).
+    if not _sec.secret_matches((cfg or {}).get("webhook_secret"), webhook_secret):
         raise HTTPException(404, "Not found")
-    if cfg.get("webhook_secret") != webhook_secret:
-        raise HTTPException(403, "Forbidden")
+    raw = await _webhook_auth.read_body_limited(request)
+    # With a signing secret configured, the Zendesk HMAC signature and a fresh
+    # timestamp are required (forgery and replay protection, spec 008 P7).
+    # Without one, only the path secret applies (legacy; shown in the admin UI).
+    signing_secret = _signing_secret(cfg)
+    if signing_secret is not None and not _webhook_auth.zendesk_signature_valid(
+            signing_secret, request.headers.get(_webhook_auth.ZENDESK_TIMESTAMP_HEADER), raw,
+            request.headers.get(_webhook_auth.ZENDESK_SIGNATURE_HEADER)):
+        raise HTTPException(404, "Not found")
     if not cfg.get("is_active", False):
         return {"ok": True, "skipped": "inactive"}
 
     try:
-        event = await request.json()
+        import json as _json
+        event = _json.loads(raw)
+        if not isinstance(event, dict):
+            raise ValueError("not an object")
     except Exception:
         raise HTTPException(400, "Invalid JSON")
 

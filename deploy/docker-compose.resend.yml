@@ -1,0 +1,22 @@
+# deploy/docker-compose.resend.yml — optional Resend email secret (spec 004).
+#
+# Add this override ONLY after ~/.bitbotpro/secrets/resend_api_key exists
+# (see specs/004-backend-container-deploy/implementation.md, "Resend API key"):
+#
+#   sudo docker compose -f deploy/docker-compose.api.yml -f deploy/docker-compose.resend.yml \
+#     --env-file deploy/.env up -d api
+#
+# The key is mounted as a file and loaded by the entrypoint (RESEND_API_KEY_FILE);
+# its value never appears in compose config, `docker inspect` or logs.
+# Without this override the API starts normally and email-dependent endpoints
+# return a generic 503.
+
+secrets:
+  resend_api_key:
+    file: ${BITBOTPRO_SECRETS_DIR:?set BITBOTPRO_SECRETS_DIR in deploy/.env}/resend_api_key
+
+services:
+  api:
+    environment:
+      RESEND_API_KEY_FILE: /run/secrets/resend_api_key
+    secrets: [resend_api_key]

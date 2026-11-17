@@ -1,0 +1,128 @@
+# deploy/docker-compose.db.yml — BitBotPro production databases (Phase 1)
+#
+# MongoDB  : application configuration and operational data
+# Postgres : Knowledge Base documents, chunks, embeddings (pgvector)
+#
+# Neither database publishes a port. Both sit on an internal-only Docker
+# network; the backend container will join `bitbotpro_db` in a later phase.
+#
+# Secrets are read from files in $BITBOTPRO_SECRETS_DIR (outside the repo,
+# set in deploy/.env, which is git-ignored). No credentials live in this file.
+#
+# Usage (from repo root):
+#   docker compose -f deploy/docker-compose.db.yml --env-file deploy/.env up -d
+#   docker compose -f deploy/docker-compose.db.yml --env-file deploy/.env ps
+#
+# NOTE: init scripts run ONLY when a volume is empty (first start).
+
+name: bitbotpro
+
+networks:
+  db:
+    name: bitbotpro_db
+    driver: bridge
+    internal: true          # no route to/from outside the Docker host
+
+volumes:
+  mongo-data:
+    name: bitbotpro_mongo_data
+  mongo-config:
+    name: bitbotpro_mongo_config
+  postgres-data:
+    name: bitbotpro_postgres_data
+
+secrets:
+  mongo_root_password:
+    file: ${BITBOTPRO_SECRETS_DIR:?set BITBOTPRO_SECRETS_DIR in deploy/.env}/mongo_root_password
+  mongo_app_password:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/mongo_app_password
+  postgres_superuser_password:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/postgres_superuser_password
+  postgres_migrator_password:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/postgres_migrator_password
+  postgres_app_password:
+    file: ${BITBOTPRO_SECRETS_DIR:?}/postgres_app_password
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+
+  mongo:
+    image: mongo:8.0.38-noble
+    container_name: bitbotpro-mongo
+    restart: unless-stopped
+    command: ["mongod", "--wiredTigerCacheSizeGB", "${MONGO_WT_CACHE_GB:-2}"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+      # Consumed by mongo/init/01-create-app-user.js
+      BITBOTPRO_MONGO_DB: ${MONGO_APP_DB:-bitbotpro}
+      BITBOTPRO_MONGO_USER: ${MONGO_APP_USER:-bitbotpro_app}
+    secrets:
+      - mongo_root_password
+      - mongo_app_password
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - db
+    # No `ports:` — intentionally not reachable from the host network.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.adminCommand({ping: 1}).ok ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    logging: *logging
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    container_name: bitbotpro-postgres
+    restart: unless-stopped
+    shm_size: 512m
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-512MB}
+      - -c
+      - password_encryption=scram-sha-256
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+      # Consumed by postgres/init/01-init-kb.sh
+      BITBOTPRO_PG_DB: ${PG_KB_DB:-bitbotpro_kb}
+      BITBOTPRO_PG_MIGRATOR: ${PG_MIGRATOR_USER:-bitbotpro_migrator}
+      BITBOTPRO_PG_APP: ${PG_APP_USER:-bitbotpro_app}
+    secrets:
+      - postgres_superuser_password
+      - postgres_migrator_password
+      - postgres_app_password
+    volumes:
+      # PG18+ images keep PGDATA under /var/lib/postgresql/<major>/docker
+      - postgres-data:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - db
+    # No `ports:` — intentionally not reachable from the host network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d \"$${BITBOTPRO_PG_DB}\" -h 127.0.0.1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    logging: *logging

@@ -1,0 +1,57 @@
+# deploy/docker-compose.tunnel.yml — Cloudflare Tunnel for https://api.bitbotpro.io (spec 008 Stage 10)
+#
+# Separate compose project: starting/stopping the tunnel never touches the API or
+# the databases. Profile-gated: nothing starts without `--profile tunnel`.
+#
+#   ALTERNATIVE EDGE (the selected edge is Caddy over WireGuard). ACTIVATION IS A SEPARATE, APPROVED STEP (see specs/008-pre-public-hardening/launch-runbook.md):
+#   sudo docker compose -f deploy/docker-compose.tunnel.yml --env-file deploy/.env --profile tunnel up -d
+#   sudo docker compose -f deploy/docker-compose.tunnel.yml --env-file deploy/.env --profile tunnel down
+#
+# - No published ports: cloudflared makes OUTBOUND connections to Cloudflare only.
+# - cloudflared reaches the API over the internal bitbotpro_ingress network at the
+#   API's fixed address; its own fixed address (10.250.250.2) is the only peer the
+#   API trusts for CF-Connecting-IP (TRUSTED_PROXY_IPS).
+# - The tunnel credentials JSON is a Docker secret (never an environment variable).
+
+name: bitbotpro-tunnel
+
+networks:
+  ingress:
+    name: bitbotpro_ingress            # created by the API project with docker-compose.edge-tunnel.yml
+    external: true
+  tunnel_egress:
+    name: bitbotpro_tunnel_egress      # outbound to Cloudflare's edge only
+    driver: bridge
+
+secrets:
+  cloudflared_credentials:
+    file: ${BITBOTPRO_SECRETS_DIR:?set BITBOTPRO_SECRETS_DIR in deploy/.env}/cloudflared_credentials.json
+
+services:
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:2024.12.2      # pin; verify digest before activation
+    container_name: bitbotpro-cloudflared
+    command: ["tunnel", "--config", "/etc/cloudflared/config.yml", "run",
+              "${CLOUDFLARE_TUNNEL_ID:?set CLOUDFLARE_TUNNEL_ID in deploy/.env}"]
+    restart: unless-stopped
+    user: "65532:65532"                          # image's non-root user
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    networks:
+      ingress:
+        ipv4_address: 10.250.250.2
+      tunnel_egress: {}
+    # NO `ports:`
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+    secrets: [cloudflared_credentials]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

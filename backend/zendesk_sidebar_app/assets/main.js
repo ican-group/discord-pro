@@ -11,7 +11,10 @@
   var currentSuggestion = null;
   var isGenerating = false;
   var bitbotUrl = "";
-  var sidebarApiKey = "";
+  // The sidebar key is a SECURE app setting: it is never readable here. Zendesk's
+  // request proxy substitutes {{setting.sidebar_api_key}} server-side when the app
+  // calls client.request({secure: true}) to a whitelisted domain (spec 008, P9).
+  var SIDEBAR_KEY_PLACEHOLDER = "{{setting.sidebar_api_key}}";
 
   // ── DOM refs ──
   var stateInitial = document.getElementById("state-initial");
@@ -78,9 +81,8 @@
   // ── Init ──
   client.metadata().then(function (meta) {
     bitbotUrl = (meta.settings.bitbot_url || "").replace(/\/+$/, "");
-    sidebarApiKey = meta.settings.sidebar_api_key || "";
 
-    if (!bitbotUrl || !sidebarApiKey) {
+    if (!/^https:\/\//.test(bitbotUrl)) {
       showState("not-configured");
       return;
     }
@@ -121,24 +123,25 @@
 
     var requestTicketId = String(currentTicketId);
 
-    fetch(bitbotUrl + "/api/zendesk/sidebar/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Sidebar-Key": sidebarApiKey,
-      },
-      body: JSON.stringify({ ticket_id: requestTicketId }),
+    // Zendesk proxy request (no browser CORS; the key never reaches this iframe).
+    client.request({
+      url: bitbotUrl + "/api/zendesk/sidebar/generate",
+      type: "POST",
+      contentType: "application/json",
+      headers: { "X-Sidebar-Key": SIDEBAR_KEY_PLACEHOLDER },
+      data: JSON.stringify({ ticket_id: requestTicketId }),
+      secure: true,
+      cors: false,
+      dataType: "json",
+      timeout: 60000,
     })
-      .then(function (resp) {
-        if (!resp.ok) {
-          return resp.json().then(function (err) {
-            throw new Error(err.detail || "Request failed (" + resp.status + ")");
-          }).catch(function (e) {
-            if (e.message) throw e;
-            throw new Error("Request failed (" + resp.status + ")");
-          });
-        }
-        return resp.json();
+      .catch(function (err) {
+        var status = (err && err.status) || 0;
+        var detail = "";
+        try { detail = (err.responseJSON && err.responseJSON.detail) || JSON.parse(err.responseText || "{}").detail || ""; } catch (e) { detail = ""; }
+        if (status === 401) throw new Error("The sidebar API key is missing or invalid. Paste the current key into this app's settings.");
+        if (status === 429) throw new Error("Too many requests. Please wait a moment and try again.");
+        throw new Error(detail || ("Request failed (" + (status || "network") + ")"));
       })
       .then(function (data) {
         isGenerating = false;

@@ -1,0 +1,21 @@
+# Cloudflare Tunnel (locally-managed) — spec 008 Stage 10.
+# The tunnel credentials JSON is a Docker secret (never in this file or in env).
+# Only https://api.bitbotpro.io/api/* reaches the API; everything else is 404 at
+# the tunnel. The origin is the API's fixed address on the internal
+# bitbotpro_ingress network (no host port exists).
+# The tunnel ID is passed on the command line (docker-compose.tunnel.yml).
+credentials-file: /run/secrets/cloudflared_credentials
+no-autoupdate: true
+metrics: 127.0.0.1:20241
+
+ingress:
+  - hostname: api.bitbotpro.io
+    path: ^/api/
+    service: http://10.250.250.3:8000
+    originRequest:
+      connectTimeout: 10s
+      keepAliveTimeout: 90s
+      noTLSVerify: false
+      disableChunkedEncoding: false   # SSE chat streaming
+      httpHostHeader: api.bitbotpro.io
+  - service: http_status:404

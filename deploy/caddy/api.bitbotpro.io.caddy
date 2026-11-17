@@ -1,0 +1,42 @@
+# Caddy site block for the BitBotPro API (spec 008 Stage 10).
+# Install as a SEPARATE file and `import` it from /etc/caddy/Caddyfile; the
+# existing Gridscan site (ada.api.gridscan.io) and global options stay unchanged.
+#
+# - DNS: api.bitbotpro.io A 37.27.153.47 (DNS-only / not proxied by Cloudflare);
+#   Caddy obtains and renews the certificate automatically.
+# - Upstream: the BitBotPro VM over WireGuard (wg0 peer 10.50.0.20).
+# - CF-Connecting-IP is OVERWRITTEN with the address that connected to Caddy, so a
+#   client cannot forge it; the API trusts that header only from 10.50.0.1.
+# - No `log` directive: request paths contain invitation tokens and webhook secrets.
+#   If access logs are needed, use a log filter that deletes request>uri.
+
+api.bitbotpro.io {
+	# Only the API surface; everything else is 404 at the edge.
+	handle /api/* {
+		request_body {
+			max_size 10MB
+		}
+		reverse_proxy 10.50.0.20:8000 {
+			header_up Host {host}
+			header_up CF-Connecting-IP {remote_host}
+			header_up -X-Real-IP
+			# Server-Sent Events (chat streaming): flush immediately.
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				keepalive 90s
+			}
+			health_uri /api/health
+			health_interval 30s
+			health_timeout 5s
+		}
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		-Server
+	}
+}

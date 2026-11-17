@@ -1,0 +1,19 @@
+# Allowlist: everything is excluded unless listed below (spec 004, R8).
+*
+
+!requirements.txt
+!*.py
+!docker-entrypoint.sh
+!zendesk_sidebar_app/assets/**
+!tests/unit/**
+!tests/integration/**
+
+# Never send these, even inside allowed paths.
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.env
+**/.env.*
+**/*.env
+**/*.pem
+**/*.key

@@ -154,7 +154,7 @@ async def list_members(org_id: str, request: Request):
     member_roles = org.get("member_roles", {})
     users = await h._db.users.find(
         {"id": {"$in": member_ids}},
-        {"_id": 0, "password_hash": 0, "hashed_password": 0, "verification_code": 0}
+        {"_id": 0, "password_hash": 0, "hashed_password": 0, "verification_code": 0, "verification_code_hash": 0, "verification_code_id": 0, "reset_code_hash": 0, "reset_code_id": 0}
     ).to_list(500)
     for u in users:
         u["org_role"] = member_roles.get(u["id"], "member")

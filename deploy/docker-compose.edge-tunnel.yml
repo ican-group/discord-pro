@@ -1,0 +1,25 @@
+# deploy/docker-compose.edge-tunnel.yml — ALTERNATIVE public edge: Cloudflare Tunnel (spec 008 Stage 10)
+#
+# Not used while the Caddy edge (docker-compose.edge-caddy.yml) is selected; never
+# combine both. Adds the internal ingress network shared with
+# docker-compose.tunnel.yml (cloudflared at 10.250.250.2).
+#   sudo docker compose -f deploy/docker-compose.api.yml -f deploy/docker-compose.edge-tunnel.yml \
+#     --env-file deploy/.env up -d api
+
+networks:
+  ingress:
+    name: bitbotpro_ingress
+    driver: bridge
+    internal: true          # no route to the internet or the LAN
+    ipam:
+      config:
+        - subnet: 10.250.250.0/29
+          gateway: 10.250.250.1
+
+services:
+  api:
+    networks:
+      ingress:
+        ipv4_address: 10.250.250.3
+    environment:
+      TRUSTED_PROXY_IPS: 10.250.250.2    # cloudflared only

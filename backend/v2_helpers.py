@@ -43,6 +43,9 @@ async def _authed_user(request: Request) -> dict:
     user = await _db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(401, "User not found")
+    import auth_security
+    if not auth_security.token_version_matches(payload, user):  # revoked session (spec 008, N5)
+        raise HTTPException(401, "Invalid token")
     return user
 
 
