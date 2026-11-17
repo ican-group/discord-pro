@@ -4,13 +4,12 @@ import requests
 import os
 from urllib.parse import urlparse, parse_qs
 
-BASE_URL = os.environ.get('BACKEND_URL', '').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 INSTANCE_ID = "96966c6c-2c2e-47e5-91f9-0518dfe25e34"
 
 # Test credentials
 ADMIN_USERNAME = "administrator"
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me")
-DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
+ADMIN_PASSWORD = os.environ.get("TEST_ADMIN_PASSWORD", "")
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +38,7 @@ class TestLogin:
     """Test login flow with admin credentials"""
     
     def test_login_with_username(self):
-        """Login with username 'administrator' and password 'Admin@123'"""
+        """Login with username 'administrator' and password '<TEST_ADMIN_PASSWORD>'"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "email_or_username": ADMIN_USERNAME,
             "password": ADMIN_PASSWORD
@@ -75,9 +74,7 @@ class TestDiscordOAuthUrl:
         
         # Verify required parameters
         assert "client_id" in params, "URL should contain client_id"
-        if DISCORD_CLIENT_ID:
-            assert params["client_id"][0] == DISCORD_CLIENT_ID, \
-                f"client_id mismatch: got {params['client_id'][0]}, expected {DISCORD_CLIENT_ID}"
+        assert params["client_id"][0] == "1492589924480843858", "client_id should match configured value"
         
         assert "permissions" in params, "URL should contain permissions"
         

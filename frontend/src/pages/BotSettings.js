@@ -1,46 +1,183 @@
 import { useState, useEffect } from "react";
 import api from "../utils/api";
+import v2 from "../utils/v2api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Save, Eye, EyeOff, Plus, X, ExternalLink, MessageSquare, Lightbulb, Cpu, Key } from "lucide-react";
+import { Save, Eye, EyeOff, Plus, X, ExternalLink, MessageSquare, Lightbulb, Cpu, Zap, DollarSign, Key, Copy, Trash2, Shield, ShieldOff, ToggleLeft, ToggleRight, Upload, Image as ImageIcon, RefreshCw, BookmarkPlus } from "lucide-react";
 import { colors, fonts, T, onFocus, onBlur } from "../theme";
 
 export default function BotSettings() {
-  const { selectedInstance } = useAuth();
-  const instanceId = selectedInstance?.id;
-  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-4-5-20251101" });
+  const { selectedOrg, selectedBot } = useAuth();
+  const botId = selectedBot?.id;
+  const orgId = selectedOrg?.id;
+  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", tone_instructions: "", manual_tone_examples: [], knowledge_gate: "strict", knowledge_gate_pct: 0 });
   const [saving, setSaving] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [apiKeySet, setApiKeySet] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
   const [approvedCount, setApprovedCount] = useState(0);
   const [newEx, setNewEx] = useState({ label: "", user_msg: "", bot_msg: "" });
   const [showAddForm, setShowAddForm] = useState(false);
 
+  // LLM provider per-instance configuration
+  const [llm, setLlm] = useState({
+    provider: "emergent",
+    model: "",
+    anthropic_api_key: "",
+    openai_api_key: "",
+    ollama_base_url: "",
+    anthropic_api_key_set: false,
+    anthropic_api_key_preview: "",
+    openai_api_key_set: false,
+    openai_api_key_preview: "",
+    allowed_anthropic_models: ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5"],
+    allowed_openai_models: ["gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-mini"],
+    default_models: { emergent: "claude-sonnet-4-6", anthropic: "claude-sonnet-4-6", openai: "gpt-4o", ollama: "llama3.1" },
+  });
+  const [llmSaving, setLlmSaving] = useState(false);
+  const [llmTesting, setLlmTesting] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState(null);
+  const [costData, setCostData] = useState(null);
+
+  // API Keys
+  const [apiKeys, setApiKeys] = useState([]);
+  const [newKeyLabel, setNewKeyLabel] = useState("");
+  const [creatingKey, setCreatingKey] = useState(false);
+  const [newKeyRevealed, setNewKeyRevealed] = useState(null);
+
+  // Bot Logo
+  const [logoUrl, setLogoUrl] = useState(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [discordSyncing, setDiscordSyncing] = useState(false);
+
   useEffect(() => {
-    api.get(`/admin/bot-config`).then(r => {
-      if (r.data) {
-        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-4-5-20251101" });
-        setApiKeySet(r.data.api_key_set || false);
-        setApiKeyInput("");
-      }
+    if (!botId || !orgId) return;
+    v2.getLlmConfig(orgId, botId).then(r => {
+      if (r.data) setLlm(p => ({ ...p, ...r.data, anthropic_api_key: "", openai_api_key: "" }));
+    }).catch(() => {});
+    api.get(`/analytics/llm-cost`).then(r => setCostData(r.data)).catch(() => {});
+    api.get(`/admin/api-keys`).then(r => setApiKeys(r.data || [])).catch(() => {});
+  }, [orgId, botId]);
+
+  const saveLlm = async () => {
+    if (!orgId || !botId) return;
+    const payload = {
+      provider: llm.provider,
+      model: llm.model || null,
+      anthropic_api_key: llm.anthropic_api_key.trim() || null,
+      openai_api_key: llm.openai_api_key.trim() || null,
+      ollama_base_url: llm.ollama_base_url || null,
+    };
+    setLlmSaving(true); setLlmTestResult(null);
+    try {
+      await v2.putLlmConfig(orgId, botId, payload);
+      toast.success(`Provider saved: ${llm.provider}`);
+      const r = await v2.getLlmConfig(orgId, botId);
+      if (r.data) setLlm(p => ({ ...p, ...r.data, anthropic_api_key: "", openai_api_key: "" }));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save LLM config");
+    } finally { setLlmSaving(false); }
+  };
+
+  const testLlm = async () => {
+    if (!orgId || !botId) return;
+    setLlmTesting(true); setLlmTestResult(null);
+    try {
+      const r = await v2.testLlmConfig(orgId, botId);
+      setLlmTestResult(r.data);
+      if (r.data?.success) toast.success(`Ping ok → ${r.data.response?.slice(0, 60)}`);
+      else toast.error(`Ping failed: ${r.data?.error?.slice(0, 80)}`);
+    } catch (e) {
+      const err = e.response?.data?.detail || e.message;
+      setLlmTestResult({ success: false, error: err });
+      toast.error(`Ping failed: ${err}`);
+    } finally { setLlmTesting(false); }
+  };
+
+  const createApiKey = async () => {
+    setCreatingKey(true);
+    try {
+      const r = await api.post(`/admin/api-keys`, { instance_id: botId, label: newKeyLabel.trim() });
+      setNewKeyRevealed(r.data.key);
+      setNewKeyLabel("");
+      api.get(`/admin/api-keys`).then(r2 => setApiKeys(r2.data || [])).catch(() => {});
+      toast.success("API key created");
+    } catch (e) { toast.error(e.response?.data?.detail || "Failed to create key"); }
+    finally { setCreatingKey(false); }
+  };
+
+  const revokeApiKey = async (keyId) => {
+    try {
+      await api.delete(`/admin/api-keys/${keyId}`);
+      setApiKeys(prev => prev.filter(k => k.id !== keyId));
+      toast.success("API key revoked");
+    } catch { toast.error("Failed to revoke key"); }
+  };
+
+  const toggleApiKey = async (keyId) => {
+    try {
+      const r = await api.patch(`/admin/api-keys/${keyId}/toggle`);
+      setApiKeys(prev => prev.map(k => k.id === keyId ? { ...k, is_active: r.data.is_active } : k));
+    } catch { toast.error("Failed to toggle key"); }
+  };
+
+  const copyKey = (key) => {
+    navigator.clipboard.writeText(key).then(() => toast.success("Copied to clipboard"));
+  };
+
+  useEffect(() => {
+    if (!orgId || !botId) return;
+    v2.getBotSettings(orgId, botId).then(r => {
+      if (r.data) setConfig({
+        name: r.data.name || "",
+        persona: r.data.persona || "",
+        custom_instructions: r.data.custom_instructions || "",
+        tone_instructions: r.data.tone_instructions || "",
+        manual_tone_examples: r.data.manual_tone_examples || [],
+        knowledge_gate: r.data.knowledge_gate || "strict",
+        knowledge_gate_pct: r.data.knowledge_gate_pct ?? (r.data.knowledge_gate === "flexible" ? 100 : 0),
+      });
     }).catch(() => {});
     api.get(`/analytics/overview`).then(r => setApprovedCount(r.data?.approved_for_training ?? 0)).catch(() => {});
-  }, [instanceId]);
+    // Probe for bot logo
+    if (botId) {
+      const img = new Image();
+      img.onload = () => setLogoUrl(`/api/bot-logo/${botId}?t=${Date.now()}`);
+      img.onerror = () => setLogoUrl(null);
+      img.src = `/api/bot-logo/${botId}?t=${Date.now()}`;
+    }
+  }, [orgId, botId]);
 
   const save = async () => {
     if (!config.name.trim()) { toast.error("Bot name is required"); return; }
     if (!config.persona.trim()) { toast.error("Persona description is required"); return; }
+    if (!orgId || !botId) { toast.error("No bot selected"); return; }
     setSaving(true);
     try {
-      const payload = { ...config };
-      if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
-      await api.put(`/admin/bot-config`, payload);
-      if (apiKeyInput.trim()) { setApiKeySet(true); setApiKeyInput(""); }
+      await v2.updateBotSettings(orgId, botId, {
+        persona: config.persona,
+        custom_instructions: config.custom_instructions,
+        tone_instructions: config.tone_instructions,
+        manual_tone_examples: config.manual_tone_examples,
+        knowledge_gate: config.knowledge_gate,
+        knowledge_gate_pct: config.knowledge_gate_pct,
+      });
+      await v2.updateBot(orgId, botId, { name: config.name.trim() });
       toast.success("Settings saved");
     } catch { toast.error("Failed to save settings"); }
     finally { setSaving(false); }
+  };
+
+  const saveAsTemplate = async () => {
+    if (!orgId || !botId) { toast.error("Templates are only available for V2 bots"); return; }
+    const name = prompt("Template name:", `${config.name || "Bot"} Template`);
+    if (!name) return;
+    setSavingTemplate(true);
+    try {
+      await v2.saveAsTemplate(orgId, botId, { name: name.trim(), description: "" });
+      toast.success(`Template "${name.trim()}" saved`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to save template");
+    } finally { setSavingTemplate(false); }
   };
 
   const addExample = () => {
@@ -58,6 +195,41 @@ export default function BotSettings() {
 
   const totalToneExamples = (config.manual_tone_examples?.length || 0) + approvedCount;
 
+  const handleLogoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { toast.error("Please select an image file"); return; }
+    if (file.size > 2 * 1024 * 1024) { toast.error("Image must be under 2 MB"); return; }
+    setLogoUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      await api.post("/admin/bot-logo", form, { headers: { "Content-Type": "multipart/form-data" } });
+      setLogoUrl(`/api/bot-logo/${botId}?t=${Date.now()}`);
+      toast.success("Logo uploaded");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Upload failed");
+    } finally { setLogoUploading(false); }
+  };
+
+  const handleLogoDelete = async () => {
+    try {
+      await api.delete("/admin/bot-logo");
+      setLogoUrl(null);
+      toast.success("Logo removed");
+    } catch { toast.error("Failed to remove logo"); }
+  };
+
+  const handleDiscordSync = async () => {
+    setDiscordSyncing(true);
+    try {
+      const r = await api.post("/admin/bot-logo/discord-sync");
+      toast.success(r.data?.detail || "Discord avatar updated");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to sync to Discord");
+    } finally { setDiscordSyncing(false); }
+  };
+
   const systemPromptPreview = [
     `You are ${config.name || "[Bot Name]"}. ${config.persona || "[Persona]"}`,
     `KNOWLEDGE BASE \u2014 AUTHORITATIVE SOURCE:\n[Verified knowledge snippets injected here at runtime]\n\u2192 Bot answers these with full confidence, no hedging`,
@@ -72,46 +244,96 @@ export default function BotSettings() {
       <p style={T.overline}>Configuration</p>
       <h1 style={T.h1}>Bot Settings</h1>
 
+      {!orgId || !botId ? (
+        <div data-testid="no-instance-empty-state" style={{ ...T.card, marginTop: "20px", textAlign: "center", padding: "40px 24px" }}>
+          <Cpu size={28} color={colors.text.muted} style={{ margin: "0 auto 12px" }} />
+          <p style={{ ...T.sectionTitle, margin: "0 0 6px" }}>Select a bot first</p>
+          <p style={{ fontFamily: fonts.body, fontSize: "13px", color: colors.text.secondary, margin: 0, maxWidth: "440px", marginLeft: "auto", marginRight: "auto" }}>
+            Use the bot switcher in the sidebar to pick the bot you want to configure. Each bot has its own identity, knowledge base, and LLM provider.
+          </p>
+        </div>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
         {/* LEFT */}
         <div>
           <div style={{ ...T.card, marginBottom: "20px" }}>
             <p style={T.sectionTitle}>Identity</p>
             <p style={T.sectionSub}>Define who the bot is and how it presents itself.</p>
+
+            {/* Bot Logo */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: "16px",
+              padding: "14px 16px", backgroundColor: colors.bg.base,
+              border: `1px solid ${colors.border.subtle}`, borderRadius: "12px",
+              marginBottom: "18px",
+            }} data-testid="bot-logo-section">
+              <div style={{
+                width: "56px", height: "56px", borderRadius: "50%", flexShrink: 0,
+                background: logoUrl ? "none" : `linear-gradient(135deg, ${colors.brand.primary}, ${colors.brand.cyan})`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden", border: `2px solid ${colors.border.default}`,
+              }}>
+                {logoUrl
+                  ? <img src={logoUrl} alt="Bot Logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : <ImageIcon size={22} color="#fff" />}
+              </div>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontFamily: fonts.heading, fontSize: "13px", fontWeight: "600", color: colors.text.primary, margin: "0 0 4px" }}>
+                  Bot Avatar
+                </p>
+                <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.muted, margin: "0 0 8px" }}>
+                  {logoUrl ? "Appears in chat bubbles and the embed launcher." : "Upload a logo for the chat widget and Discord bot."}
+                </p>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  <label
+                    data-testid="upload-logo-btn"
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: "5px",
+                      padding: "5px 12px", borderRadius: "8px", fontSize: "11px",
+                      fontFamily: fonts.body, cursor: "pointer",
+                      backgroundColor: colors.brand.primary, color: "#fff",
+                      opacity: logoUploading ? 0.6 : 1,
+                    }}>
+                    <Upload size={12} />
+                    {logoUploading ? "Uploading..." : logoUrl ? "Replace" : "Upload"}
+                    <input type="file" accept="image/*" onChange={handleLogoUpload}
+                      disabled={logoUploading} style={{ display: "none" }} />
+                  </label>
+                  {logoUrl && (
+                    <>
+                      <button onClick={handleLogoDelete} data-testid="delete-logo-btn"
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "5px",
+                          padding: "5px 12px", borderRadius: "8px", fontSize: "11px",
+                          fontFamily: fonts.body, cursor: "pointer",
+                          backgroundColor: "transparent", color: colors.brand.error,
+                          border: `1px solid ${colors.brand.error}30`,
+                        }}>
+                        <Trash2 size={11} /> Remove
+                      </button>
+                      <button onClick={handleDiscordSync} disabled={discordSyncing}
+                        data-testid="discord-sync-logo-btn"
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: "5px",
+                          padding: "5px 12px", borderRadius: "8px", fontSize: "11px",
+                          fontFamily: fonts.body, cursor: "pointer",
+                          backgroundColor: "#5865F2", color: "#fff",
+                          border: "none", opacity: discordSyncing ? 0.6 : 1,
+                        }}>
+                        <RefreshCw size={11} /> {discordSyncing ? "Syncing..." : "Sync to Discord"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div style={{ marginBottom: "18px" }}>
               <label style={T.label}>Bot Name *</label>
               <input style={T.input} value={config.name} onChange={e => setConfig(p => ({ ...p, name: e.target.value }))}
                 placeholder="e.g. Aria, SupportBot, Max" data-testid="bot-name-input" onFocus={onFocus} onBlur={onBlur} />
               <p style={T.hint}>How the bot introduces itself.</p>
             </div>
-            <div style={{ marginBottom: "18px" }}>
-              <label style={T.label}>AI Model</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px" }}>
-                {[
-                  { value: "claude-haiku-4-5-20251001", label: "Haiku", sub: "Fast · Cheapest" },
-                  { value: "claude-sonnet-4-5-20251101", label: "Sonnet", sub: "Balanced" },
-                  { value: "claude-opus-4-5-20251101", label: "Opus", sub: "Most capable" },
-                ].map(({ value, label, sub }) => {
-                  const active = config.model === value;
-                  return (
-                    <button key={value} onClick={() => setConfig(p => ({ ...p, model: value }))}
-                      style={{
-                        padding: "10px 8px", borderRadius: "8px", border: `1px solid ${active ? colors.brand.light : colors.border.default}`,
-                        backgroundColor: active ? "rgba(59,130,246,0.1)" : colors.bg.panel,
-                        cursor: "pointer", textAlign: "center", transition: "all 0.2s",
-                      }}>
-                      <div style={{ display: "flex", justifyContent: "center", marginBottom: "4px" }}>
-                        <Cpu size={13} color={active ? colors.brand.light : colors.text.muted} />
-                      </div>
-                      <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: active ? colors.brand.light : colors.text.primary, margin: 0 }}>{label}</p>
-                      <p style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, margin: "2px 0 0", textTransform: "uppercase", letterSpacing: "0.08em" }}>{sub}</p>
-                    </button>
-                  );
-                })}
-              </div>
-              <p style={T.hint}>Haiku is fastest and cheapest. Opus gives the best answers but costs more.</p>
-            </div>
-
             <div>
               <label style={T.label}>Persona *</label>
               <textarea style={{ ...T.textarea, minHeight: "110px" }} value={config.persona}
@@ -120,33 +342,6 @@ export default function BotSettings() {
                 data-testid="bot-persona-input" onFocus={onFocus} onBlur={onBlur} />
               <p style={T.hint}>Core personality, role, and expertise area.</p>
             </div>
-          </div>
-
-          <div style={{ ...T.card, marginBottom: "20px" }}>
-            <p style={T.sectionTitle}>Anthropic API Key</p>
-            <p style={T.sectionSub}>Override the platform-wide key with one specific to this instance.</p>
-            {apiKeySet && (
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px", padding: "8px 12px", backgroundColor: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: "8px" }}>
-                <Key size={12} color={colors.brand.success} />
-                <span style={{ fontFamily: fonts.mono, fontSize: "11px", color: colors.brand.success }}>Custom API key saved for this instance</span>
-              </div>
-            )}
-            <div style={{ position: "relative" }}>
-              <input
-                type={showApiKey ? "text" : "password"}
-                value={apiKeyInput}
-                onChange={e => setApiKeyInput(e.target.value)}
-                placeholder={apiKeySet ? "Enter new key to replace…" : "sk-ant-api03-…"}
-                style={{ ...T.input, paddingRight: "40px", fontFamily: fonts.mono, fontSize: "12px" }}
-                onFocus={onFocus} onBlur={onBlur}
-                autoComplete="off"
-              />
-              <button onClick={() => setShowApiKey(v => !v)}
-                style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: colors.text.muted, display: "flex", padding: "4px" }}>
-                {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-            <p style={T.hint}>Leave blank to use the platform-wide key. Saved on next "Save All Settings".</p>
           </div>
 
           <div style={{ ...T.card, marginBottom: "20px" }}>
@@ -159,11 +354,455 @@ export default function BotSettings() {
             <p style={T.hint}>These rules override everything else.</p>
           </div>
 
-          <div style={{ display: "flex", gap: "12px" }}>
+          {/* ── LLM Provider — per-instance routing ── */}
+          <div data-testid="llm-provider-card" style={{ ...T.card, marginBottom: "20px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+              <Cpu size={14} color={colors.brand.light} />
+              <p style={{ ...T.sectionTitle, margin: 0 }}>LLM Provider</p>
+            </div>
+            <p style={T.sectionSub}>Pick where this instance&apos;s AI calls go. <strong>Emergent</strong> uses the platform&apos;s Universal Key (default). <strong>Anthropic Direct</strong> / <strong>OpenAI Direct</strong> bill against your own accounts. <strong>Ollama</strong> calls a self-hosted model.</p>
+
+            <label style={T.label}>Provider</label>
+            <select
+              value={llm.provider}
+              onChange={e => setLlm(p => ({ ...p, provider: e.target.value, model: "" }))}
+              data-testid="llm-provider-select"
+              style={{ ...T.input, cursor: "pointer" }}
+            >
+              <option value="emergent">Emergent Universal Key (default)</option>
+              <option value="anthropic">Anthropic Direct (BYO key)</option>
+              <option value="openai">OpenAI Direct (BYO key)</option>
+              <option value="ollama">Ollama (self-hosted)</option>
+            </select>
+
+            <label style={{ ...T.label, marginTop: "14px" }}>Model</label>
+            {llm.provider === "anthropic" ? (
+              <select
+                value={llm.model || ""}
+                onChange={e => setLlm(p => ({ ...p, model: e.target.value }))}
+                data-testid="llm-model-select"
+                style={{ ...T.input, cursor: "pointer" }}
+              >
+                <option value="">{`Default (${llm.default_models?.anthropic})`}</option>
+                {(llm.allowed_anthropic_models || []).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : llm.provider === "openai" ? (
+              <select
+                value={llm.model || ""}
+                onChange={e => setLlm(p => ({ ...p, model: e.target.value }))}
+                data-testid="llm-model-select"
+                style={{ ...T.input, cursor: "pointer" }}
+              >
+                <option value="">{`Default (${llm.default_models?.openai})`}</option>
+                {(llm.allowed_openai_models || []).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={llm.model || ""}
+                onChange={e => setLlm(p => ({ ...p, model: e.target.value }))}
+                placeholder={llm.provider === "ollama" ? "e.g. llama3.1, mistral" : `Default: ${llm.default_models?.emergent}`}
+                data-testid="llm-model-input"
+                autoComplete="off"
+                name="dc-llm-model-name"
+                onFocus={onFocus} onBlur={onBlur}
+                style={T.input}
+              />
+            )}
+            <p style={T.hint}>
+              {llm.provider === "anthropic" && "Allowed: Haiku 4.5 (cheapest), Sonnet 4.5 (balanced), Opus 4.5 (best quality)."}
+              {llm.provider === "openai" && "Choose from available OpenAI models. GPT-4o is a great starting point."}
+              {llm.provider === "emergent" && "Model name only — Emergent supplies the key automatically. Leave blank to use Opus → Sonnet fallback."}
+              {llm.provider === "ollama" && "Any model installed on your Ollama server."}
+            </p>
+            {/^(sk-|bbk_)/i.test(llm.model || "") && (
+              <p data-testid="llm-model-key-warning" style={{ margin: "6px 0 0", padding: "6px 10px", fontSize: "11px", color: colors.brand.error, backgroundColor: "rgba(244,63,94,0.08)", border: `1px solid rgba(244,63,94,0.3)`, borderRadius: "6px", fontFamily: fonts.body }}>
+                That looks like an API key, not a model name. Clear this field — Emergent does not need a key here.
+              </p>
+            )}
+
+            {llm.provider === "anthropic" && (
+              <>
+                <label style={{ ...T.label, marginTop: "14px" }}>Anthropic API Key</label>
+                <input
+                  type="password"
+                  value={llm.anthropic_api_key}
+                  onChange={e => setLlm(p => ({ ...p, anthropic_api_key: e.target.value }))}
+                  placeholder={llm.anthropic_api_key_set ? `Current: ${llm.anthropic_api_key_preview} — leave blank to keep` : "sk-ant-…"}
+                  autoComplete="new-password"
+                  data-testid="llm-anthropic-key-input"
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={T.input}
+                />
+                <p style={T.hint}>
+                  Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" style={{ color: colors.brand.light }}>console.anthropic.com</a>. Leave blank to keep the existing saved key.
+                </p>
+              </>
+            )}
+
+            {llm.provider === "openai" && (
+              <>
+                <label style={{ ...T.label, marginTop: "14px" }}>OpenAI API Key</label>
+                <input
+                  type="password"
+                  value={llm.openai_api_key}
+                  onChange={e => setLlm(p => ({ ...p, openai_api_key: e.target.value }))}
+                  placeholder={llm.openai_api_key_set ? `Current: ${llm.openai_api_key_preview} — leave blank to keep` : "sk-…"}
+                  autoComplete="new-password"
+                  data-testid="llm-openai-key-input"
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={T.input}
+                />
+                <p style={T.hint}>
+                  Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{ color: colors.brand.light }}>platform.openai.com</a>. Leave blank to keep the existing saved key.
+                </p>
+              </>
+            )}
+
+            {llm.provider === "ollama" && (
+              <>
+                <label style={{ ...T.label, marginTop: "14px" }}>Ollama Base URL</label>
+                <input
+                  value={llm.ollama_base_url}
+                  onChange={e => setLlm(p => ({ ...p, ollama_base_url: e.target.value }))}
+                  placeholder="http://localhost:11434"
+                  data-testid="llm-ollama-url-input"
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={T.input}
+                />
+                <p style={T.hint}>Where your Ollama server is reachable from the BitBot Pro backend. Leave blank to fall back to <code>OLLAMA_BASE_URL</code> env (default localhost:11434).</p>
+              </>
+            )}
+
+            <div style={{ display: "flex", gap: "8px", marginTop: "14px", alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={saveLlm} disabled={llmSaving} data-testid="llm-save-btn"
+                style={{ ...T.btnPrimary, opacity: llmSaving ? 0.6 : 1 }}>
+                <Save size={13} /> {llmSaving ? "Saving…" : "Save Provider"}
+              </button>
+              <button onClick={testLlm} disabled={llmTesting} data-testid="llm-test-btn"
+                style={{ ...T.btnSecondary, opacity: llmTesting ? 0.6 : 1 }}>
+                <Zap size={13} /> {llmTesting ? "Pinging…" : "Test Connection"}
+              </button>
+              {llmTestResult && (
+                <span data-testid="llm-test-result" style={{
+                  fontFamily: fonts.mono, fontSize: "11px",
+                  color: llmTestResult.success ? "#22c55e" : colors.brand.error,
+                  backgroundColor: llmTestResult.success ? "rgba(34,197,94,0.08)" : "rgba(244,63,94,0.08)",
+                  padding: "5px 9px", borderRadius: "6px",
+                  border: `1px solid ${llmTestResult.success ? "rgba(34,197,94,0.3)" : "rgba(244,63,94,0.3)"}`,
+                }}>
+                  {llmTestResult.success ? `✓ ${(llmTestResult.response || "").slice(0, 60)}` : `✗ ${(llmTestResult.error || "").slice(0, 60)}`}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* ── Knowledge Gate — Percentage Slider ── */}
+          <div data-testid="knowledge-gate-card" style={{ ...T.card, marginBottom: "20px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+              <Shield size={14} color={
+                config.knowledge_gate_pct <= 20 ? colors.brand.error
+                : config.knowledge_gate_pct <= 60 ? colors.brand.warning
+                : colors.brand.success
+              } />
+              <p style={{ ...T.sectionTitle, margin: 0 }}>Knowledge Gate</p>
+            </div>
+            <p style={T.sectionSub}>Controls how much the bot can use general AI knowledge beyond the knowledge base. Drag the slider or pick a preset.</p>
+
+            {/* Quick Presets */}
+            <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+              {[
+                { label: "Conservative", pct: 10, color: colors.brand.error, desc: "KB only" },
+                { label: "Balanced", pct: 50, color: colors.brand.warning, desc: "KB + labeled general" },
+                { label: "Open", pct: 85, color: colors.brand.success, desc: "Free to answer" },
+              ].map(preset => (
+                <button
+                  key={preset.label}
+                  data-testid={`gate-preset-${preset.label.toLowerCase()}`}
+                  onClick={() => setConfig(p => ({ ...p, knowledge_gate_pct: preset.pct, knowledge_gate: preset.pct <= 20 ? "strict" : "flexible" }))}
+                  style={{
+                    flex: 1, padding: "8px 10px", borderRadius: "10px", cursor: "pointer",
+                    backgroundColor: config.knowledge_gate_pct === preset.pct ? `${preset.color}12` : colors.bg.base,
+                    border: `1.5px solid ${config.knowledge_gate_pct === preset.pct ? preset.color : colors.border.default}`,
+                    textAlign: "center", transition: "all 0.2s ease",
+                  }}
+                >
+                  <span style={{ display: "block", fontFamily: fonts.heading, fontSize: "12px", fontWeight: "600", color: config.knowledge_gate_pct === preset.pct ? preset.color : colors.text.secondary }}>{preset.label}</span>
+                  <span style={{ display: "block", fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, marginTop: "2px" }}>{preset.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Gate Level Label */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: "14px", marginBottom: "8px" }}>
+              <span style={{
+                fontFamily: fonts.heading, fontSize: "14px", fontWeight: "700",
+                color: config.knowledge_gate_pct <= 20 ? colors.brand.error
+                     : config.knowledge_gate_pct <= 40 ? "#f59e0b"
+                     : config.knowledge_gate_pct <= 60 ? colors.brand.warning
+                     : config.knowledge_gate_pct <= 80 ? colors.brand.cyan
+                     : colors.brand.success,
+              }}>
+                {config.knowledge_gate_pct <= 20 ? "Strict"
+                 : config.knowledge_gate_pct <= 40 ? "Mostly Strict"
+                 : config.knowledge_gate_pct <= 60 ? "Balanced"
+                 : config.knowledge_gate_pct <= 80 ? "Mostly Open"
+                 : "Fully Open"}
+              </span>
+              <span style={{ fontFamily: fonts.mono, fontSize: "13px", fontWeight: "600", color: colors.text.primary }}>
+                {config.knowledge_gate_pct}%
+              </span>
+            </div>
+
+            {/* Slider Track */}
+            <div style={{ position: "relative", height: "36px", display: "flex", alignItems: "center" }}>
+              <input
+                data-testid="knowledge-gate-slider"
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                value={config.knowledge_gate_pct}
+                onChange={e => {
+                  const pct = parseInt(e.target.value);
+                  setConfig(p => ({ ...p, knowledge_gate_pct: pct, knowledge_gate: pct <= 20 ? "strict" : "flexible" }));
+                }}
+                style={{
+                  width: "100%", height: "6px", borderRadius: "3px",
+                  appearance: "none", WebkitAppearance: "none",
+                  background: `linear-gradient(to right, ${colors.brand.error} 0%, #f59e0b 25%, ${colors.brand.warning} 50%, ${colors.brand.cyan} 75%, ${colors.brand.success} 100%)`,
+                  outline: "none", cursor: "pointer",
+                }}
+              />
+            </div>
+
+            {/* Scale Labels */}
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2px" }}>
+              <span style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>KB Only</span>
+              <span style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Fully Open</span>
+            </div>
+
+            {/* Description */}
+            <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, lineHeight: "1.5", marginTop: "10px", padding: "8px 10px", backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.faint}` }}>
+              {config.knowledge_gate_pct <= 20
+                ? "The bot only answers from the knowledge base. Questions not covered are politely declined."
+                : config.knowledge_gate_pct <= 40
+                ? "The bot answers from the knowledge base only but acknowledges topics it doesn't have info on."
+                : config.knowledge_gate_pct <= 60
+                ? "The bot prefers the knowledge base but can use general knowledge with a clear disclaimer."
+                : config.knowledge_gate_pct <= 80
+                ? "The bot freely supplements with general knowledge. KB is preferred but not required."
+                : "The bot uses the full range of its knowledge. KB content is treated as a trusted reference."}
+            </p>
+            <p style={{ ...T.hint, marginTop: "8px" }}>Click &ldquo;Save Settings&rdquo; in the left panel to apply.</p>
+          </div>
+
+          {/* ── External API Keys ── */}
+          <div data-testid="api-keys-card" style={{ ...T.card, marginBottom: "20px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+              <Key size={14} color={colors.brand.cyan} />
+              <p style={{ ...T.sectionTitle, margin: 0 }}>External API Keys</p>
+            </div>
+            <p style={T.sectionSub}>
+              Generate <code style={{ fontFamily: fonts.mono, fontSize: "11px", backgroundColor: "rgba(96,165,250,0.1)", padding: "1px 5px", borderRadius: "4px" }}>bbk_...</code> API keys for external integrations. Use with <code style={{ fontFamily: fonts.mono, fontSize: "11px", backgroundColor: "rgba(96,165,250,0.1)", padding: "1px 5px", borderRadius: "4px" }}>POST /api/v1/chat</code>.
+            </p>
+
+            {/* New key revealed banner */}
+            {newKeyRevealed && (
+              <div data-testid="new-key-banner" style={{ margin: "12px 0", padding: "12px 14px", backgroundColor: "rgba(34,197,94,0.06)", border: `1px solid rgba(34,197,94,0.25)`, borderRadius: "10px" }}>
+                <p style={{ margin: "0 0 6px", fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: "#22c55e" }}>New API key created — copy it now, it won&apos;t be shown again</p>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <code data-testid="new-key-value" style={{ fontFamily: fonts.mono, fontSize: "12px", color: colors.text.primary, backgroundColor: colors.bg.base, padding: "6px 10px", borderRadius: "6px", border: `1px solid ${colors.border.default}`, flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{newKeyRevealed}</code>
+                  <button onClick={() => copyKey(newKeyRevealed)} style={{ ...T.btnSecondary, padding: "6px 12px" }}><Copy size={13} /> Copy</button>
+                  <button onClick={() => setNewKeyRevealed(null)} style={{ ...T.btnGhost, padding: "6px 10px" }}><X size={13} /></button>
+                </div>
+              </div>
+            )}
+
+            {/* Create new key */}
+            <div style={{ display: "flex", gap: "8px", marginTop: "12px", alignItems: "center" }}>
+              <input
+                value={newKeyLabel}
+                onChange={e => setNewKeyLabel(e.target.value)}
+                placeholder="Key label (e.g. Website Widget)"
+                data-testid="api-key-label-input"
+                onFocus={onFocus} onBlur={onBlur}
+                style={{ ...T.input, flex: 1, padding: "8px 12px" }}
+              />
+              <button onClick={createApiKey} disabled={creatingKey} data-testid="create-api-key-btn"
+                style={{ ...T.btnPrimary, padding: "8px 16px", whiteSpace: "nowrap", opacity: creatingKey ? 0.6 : 1 }}>
+                <Key size={13} /> {creatingKey ? "Creating..." : "Generate Key"}
+              </button>
+            </div>
+
+            {/* Existing keys */}
+            {apiKeys.length > 0 && (
+              <div style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                {apiKeys.map(k => (
+                  <div key={k.id} data-testid="api-key-row" style={{
+                    display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px",
+                    backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.subtle}`,
+                  }}>
+                    <code style={{ fontFamily: fonts.mono, fontSize: "11px", color: colors.text.secondary }}>{k.key_prefix}...</code>
+                    {k.label && <span style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.primary, fontWeight: 500 }}>{k.label}</span>}
+                    <span style={{ marginLeft: "auto", fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted }}>
+                      {k.usage_count || 0} calls
+                    </span>
+                    <button onClick={() => toggleApiKey(k.id)} data-testid="toggle-api-key-btn"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: k.is_active ? colors.brand.success : colors.text.muted, padding: 0 }}>
+                      {k.is_active ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+                    </button>
+                    <button onClick={() => revokeApiKey(k.id)} data-testid="revoke-api-key-btn"
+                      style={{ background: "none", border: "none", cursor: "pointer", color: colors.text.secondary, padding: "2px", transition: "color 0.2s" }}
+                      onMouseEnter={e => e.currentTarget.style.color = colors.brand.error}
+                      onMouseLeave={e => e.currentTarget.style.color = colors.text.secondary}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Usage example */}
+            <div style={{ marginTop: "14px", padding: "12px", backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.subtle}` }}>
+              <p style={{ margin: "0 0 6px", fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Usage Example</p>
+              <code style={{ fontFamily: fonts.mono, fontSize: "11px", color: colors.text.secondary, lineHeight: "1.6", whiteSpace: "pre-wrap", display: "block" }}>
+{`# Standard request
+curl -X POST ${window.location.origin}/api/v1/chat \\
+  -H "Authorization: Bearer bbk_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message": "Hello", "session_id": "optional-id"}'
+
+# Streaming (SSE) — tokens arrive in real time
+curl -N -X POST ${window.location.origin}/api/v1/chat/stream \\
+  -H "Authorization: Bearer bbk_your_key_here" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message": "Hello", "session_id": "optional-id"}'`}
+              </code>
+            </div>
+          </div>
+
+          {/* ── Cost Dashboard — per-instance month-to-date spend + sparkline ── */}
+          {costData && (
+            <div data-testid="cost-dashboard-card" style={{ ...T.card, marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                <DollarSign size={14} color="#22c55e" />
+                <p style={{ ...T.sectionTitle, margin: 0 }}>Cost Dashboard</p>
+                <span style={{ marginLeft: "auto", fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, fontWeight: "400" }}>
+                  Month-to-date · day {costData.month_to_date?.day_of_month}/{costData.month_to_date?.days_in_month}
+                </span>
+              </div>
+              <p style={T.sectionSub}>Estimated LLM spend for this instance. Anthropic uses published list pricing; Ollama is free.</p>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px", marginBottom: "14px" }}>
+                <div style={{ padding: "10px 12px", backgroundColor: "rgba(34,197,94,0.06)", border: `1px solid rgba(34,197,94,0.2)`, borderRadius: "8px" }}>
+                  <p style={{ margin: 0, fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>MTD Cost</p>
+                  <p data-testid="cost-mtd" style={{ margin: "2px 0 0", fontFamily: fonts.mono, fontSize: "18px", fontWeight: "700", color: "#22c55e" }}>
+                    ${(costData.month_to_date?.cost_usd || 0).toFixed(2)}
+                  </p>
+                </div>
+                <div style={{ padding: "10px 12px", backgroundColor: "rgba(251,191,36,0.06)", border: `1px solid rgba(251,191,36,0.2)`, borderRadius: "8px" }}>
+                  <p style={{ margin: 0, fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Forecast</p>
+                  <p data-testid="cost-forecast" style={{ margin: "2px 0 0", fontFamily: fonts.mono, fontSize: "18px", fontWeight: "700", color: colors.brand.warning }}>
+                    ${(costData.forecast_month_end_usd || 0).toFixed(2)}
+                  </p>
+                  <p style={{ margin: "1px 0 0", fontFamily: fonts.body, fontSize: "9px", color: colors.text.muted }}>by month-end</p>
+                </div>
+                <div style={{ padding: "10px 12px", backgroundColor: "rgba(96,165,250,0.06)", border: `1px solid rgba(96,165,250,0.2)`, borderRadius: "8px" }}>
+                  <p style={{ margin: 0, fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Calls / Tokens</p>
+                  <p data-testid="cost-calls" style={{ margin: "2px 0 0", fontFamily: fonts.mono, fontSize: "14px", fontWeight: "700", color: colors.brand.light }}>
+                    {(costData.month_to_date?.calls || 0).toLocaleString()}
+                  </p>
+                  <p style={{ margin: "1px 0 0", fontFamily: fonts.body, fontSize: "9px", color: colors.text.muted }}>
+                    {Math.round(((costData.month_to_date?.input_tokens || 0) + (costData.month_to_date?.output_tokens || 0)) / 1000)}k tokens
+                  </p>
+                </div>
+              </div>
+
+              {/* Sparkline — last 30 days */}
+              {costData.daily && costData.daily.length > 0 && (() => {
+                const max = Math.max(...costData.daily.map(d => d.cost_usd || 0), 0.0001);
+                const W = 360, H = 60, gap = 1;
+                const barW = (W - (costData.daily.length - 1) * gap) / costData.daily.length;
+                return (
+                  <div data-testid="cost-sparkline" style={{ padding: "8px 0 4px" }}>
+                    <p style={{ margin: "0 0 6px", fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Last 30 days · ${(costData.last_30d_cost_usd || 0).toFixed(2)} total
+                    </p>
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: `${H}px`, display: "block" }} preserveAspectRatio="none">
+                      {costData.daily.map((d, i) => {
+                        const cost = d.cost_usd || 0;
+                        const h = max > 0 ? (cost / max) * (H - 8) : 0;
+                        return (
+                          <rect
+                            key={i}
+                            x={i * (barW + gap)}
+                            y={H - h}
+                            width={barW}
+                            height={Math.max(h, 1)}
+                            fill={cost > 0 ? "#22c55e" : "rgba(148,163,184,0.2)"}
+                            opacity={cost > 0 ? 0.85 : 0.5}
+                          >
+                            <title>{`${d.date}: $${cost.toFixed(4)}`}</title>
+                          </rect>
+                        );
+                      })}
+                    </svg>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: "2px", fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted }}>
+                      <span>{costData.daily[0]?.date}</span>
+                      <span>{costData.daily[costData.daily.length - 1]?.date}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Per-model breakdown table */}
+              {costData.by_model && costData.by_model.length > 0 && (
+                <div style={{ marginTop: "12px" }}>
+                  <p style={{ margin: "0 0 6px", fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, textTransform: "uppercase", letterSpacing: "0.05em" }}>By Model</p>
+                  <div data-testid="cost-by-model" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    {costData.by_model.map((m, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 10px", backgroundColor: colors.bg.base, border: `1px solid ${colors.border.default}`, borderRadius: "6px" }}>
+                        <span style={{ fontFamily: fonts.mono, fontSize: "9px", padding: "1px 6px", borderRadius: "4px", backgroundColor: "rgba(96,165,250,0.12)", color: colors.brand.light, fontWeight: "600", textTransform: "uppercase" }}>
+                          {m.provider}
+                        </span>
+                        <span style={{ flex: 1, fontFamily: fonts.mono, fontSize: "11px", color: colors.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {m.model.replace(/^(anthropic|ollama|emergent):/, "")}
+                        </span>
+                        <span style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted }}>
+                          {m.calls.toLocaleString()} calls
+                        </span>
+                        <span style={{ fontFamily: fonts.mono, fontSize: "11px", color: "#22c55e", fontWeight: "700", minWidth: "60px", textAlign: "right" }}>
+                          ${m.cost_usd.toFixed(4)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {costData.month_to_date?.calls === 0 && (
+                <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.muted, fontStyle: "italic", margin: "8px 0 0" }}>
+                  No LLM calls yet this month. Costs will appear here once the bot starts replying.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
             <button onClick={save} disabled={saving} data-testid="save-settings-btn"
               style={{ ...T.btnPrimary, opacity: saving ? 0.6 : 1 }}>
               <Save size={13} /> {saving ? "Saving..." : "Save All Settings"}
             </button>
+            {orgId && botId && (
+              <button onClick={saveAsTemplate} disabled={savingTemplate} data-testid="save-as-template-btn"
+                style={{ ...T.btnSecondary, opacity: savingTemplate ? 0.6 : 1 }}>
+                <BookmarkPlus size={13} /> {savingTemplate ? "Saving..." : "Save as Template"}
+              </button>
+            )}
             <button onClick={() => setShowPreview(!showPreview)} data-testid="toggle-preview-btn"
               style={T.btnSecondary}>
               {showPreview ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -198,7 +837,7 @@ export default function BotSettings() {
                 </button>
               </div>
               <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.muted, marginBottom: "12px", marginTop: 0 }}>
-                Write ideal user/bot exchanges to show Claude exactly what "good" looks like.
+                Write ideal user/bot exchanges to show Claude exactly what &ldquo;good&rdquo; looks like.
               </p>
 
               {(config.manual_tone_examples || []).map((ex, i) => (
@@ -289,6 +928,7 @@ export default function BotSettings() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

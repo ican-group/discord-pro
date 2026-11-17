@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import api from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Zap, CheckCircle, AlertCircle, ExternalLink, RefreshCw, Radio, Hash, MessageSquare, AtSign, Link2, Server, Shield, Settings, Save, Eye, EyeOff, UserCheck } from "lucide-react";
+import { Zap, CheckCircle, AlertCircle, ExternalLink, RefreshCw, Radio, Hash, MessageSquare, AtSign, Link2, Server, Shield, Settings, Save, Eye, EyeOff, UserCheck, Megaphone, Plus, Trash2, Mail, ChevronDown } from "lucide-react";
 import { colors, fonts, T, onFocus, onBlur } from "../theme";
 
 const LISTEN_MODES = [
@@ -176,6 +176,192 @@ function AppCredentialsPanel() {
   );
 }
 
+
+function ShareInviteLink() {
+  const [link, setLink] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailName, setEmailName] = useState("");
+  const [emailNote, setEmailNote] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const fetchLink = async () => {
+    setLoading(true);
+    try {
+      const r = await api.get(`/discord/share-oauth-url`);
+      setLink(r.data?.url || "");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to generate link");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchLink(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copy = async () => {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      toast.success("Invite link copied");
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast.error("Couldn't copy. Long-press to copy manually.");
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!emailTo.trim() || !emailTo.includes("@")) {
+      toast.error("Enter a valid email address");
+      return;
+    }
+    setSending(true);
+    try {
+      await api.post(`/discord/send-invite-email`, {
+        to_email: emailTo.trim(),
+        recipient_name: emailName.trim() || null,
+        invite_url: link,
+        custom_note: emailNote.trim() || null,
+      });
+      toast.success(`Invite sent to ${emailTo}`);
+      setEmailOpen(false);
+      setEmailTo(""); setEmailName(""); setEmailNote("");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to send email");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (!link && !loading) return null;
+
+  return (
+    <div data-testid="share-invite-link" style={{
+      marginTop: "10px", padding: "12px 14px",
+      backgroundColor: colors.bg.base,
+      border: `1px solid ${colors.border.default}`, borderRadius: "10px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+        <Link2 size={13} color={colors.brand.light} />
+        <p style={{ margin: 0, fontFamily: fonts.heading, fontSize: "12px", fontWeight: "600", color: colors.text.primary }}>
+          Share invite link
+        </p>
+        <span style={{ fontFamily: fonts.body, fontSize: "10px", color: colors.text.muted, marginLeft: "auto" }}>
+          For another server admin
+        </span>
+      </div>
+      <p style={{ margin: "0 0 10px", fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, lineHeight: "1.5" }}>
+        Send this link to anyone with Manage Server permission on a Discord server. They click it, authorize the bot,
+        and it lands in your admin panel ready to configure. They never need to log into BitBot Pro.
+      </p>
+      <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>
+        <input
+          type="text" readOnly value={link || (loading ? "Loading…" : "")}
+          data-testid="share-invite-input"
+          onClick={(e) => e.target.select()}
+          style={{
+            flex: 1, padding: "8px 10px",
+            backgroundColor: colors.bg.surface, color: colors.text.primary,
+            border: `1px solid ${colors.border.subtle}`, borderRadius: "8px",
+            fontFamily: fonts.mono, fontSize: "11px", outline: "none",
+          }}
+        />
+        <button
+          onClick={copy} disabled={!link} data-testid="share-invite-copy"
+          style={{
+            padding: "8px 12px",
+            backgroundColor: copied ? "rgba(52,211,153,0.1)" : "rgba(96,165,250,0.08)",
+            border: `1px solid ${copied ? "rgba(52,211,153,0.3)" : "rgba(96,165,250,0.25)"}`,
+            borderRadius: "8px",
+            color: copied ? colors.brand.success : colors.brand.light,
+            fontFamily: fonts.body, fontSize: "11px", fontWeight: "600",
+            cursor: link ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: "5px",
+          }}
+        >
+          {copied ? <><CheckCircle size={11} /> Copied</> : <><Settings size={11} /> Copy</>}
+        </button>
+        <button
+          onClick={() => setEmailOpen(!emailOpen)} disabled={!link} data-testid="share-invite-email-toggle"
+          style={{
+            padding: "8px 12px",
+            backgroundColor: emailOpen ? "rgba(96,165,250,0.12)" : "rgba(96,165,250,0.08)",
+            border: `1px solid rgba(96,165,250,0.25)`,
+            borderRadius: "8px",
+            color: colors.brand.light,
+            fontFamily: fonts.body, fontSize: "11px", fontWeight: "600",
+            cursor: link ? "pointer" : "not-allowed",
+            display: "flex", alignItems: "center", gap: "5px",
+          }}
+        >
+          <Mail size={11} /> {emailOpen ? "Cancel" : "Email"}
+        </button>
+      </div>
+
+      {emailOpen && (
+        <div data-testid="share-email-form" style={{
+          marginTop: "10px",
+          padding: "12px",
+          backgroundColor: colors.bg.surface,
+          border: `1px solid ${colors.border.default}`,
+          borderRadius: "8px",
+        }}>
+          <p style={{ margin: "0 0 10px", fontFamily: fonts.heading, fontSize: "12px", fontWeight: "600", color: colors.text.primary }}>
+            Send invite via email
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+            <input
+              type="email" value={emailTo} onChange={(e) => setEmailTo(e.target.value)}
+              placeholder="recipient@example.com" data-testid="share-email-to"
+              onFocus={onFocus} onBlur={onBlur}
+              style={{ ...T.input, padding: "8px 10px", fontSize: "12px" }}
+            />
+            <input
+              type="text" value={emailName} onChange={(e) => setEmailName(e.target.value)}
+              placeholder="Recipient name (optional)" data-testid="share-email-name"
+              onFocus={onFocus} onBlur={onBlur}
+              style={{ ...T.input, padding: "8px 10px", fontSize: "12px" }}
+            />
+          </div>
+          <textarea
+            value={emailNote} onChange={(e) => setEmailNote(e.target.value)}
+            placeholder="Optional personal note (e.g., 'Hi! This will help us reply to support tickets faster.')"
+            data-testid="share-email-note"
+            rows={2}
+            onFocus={onFocus} onBlur={onBlur}
+            style={{ ...T.input, width: "100%", padding: "8px 10px", fontSize: "12px", resize: "vertical", marginBottom: "8px" }}
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={sendEmail} disabled={sending || !emailTo}
+              data-testid="share-email-send"
+              style={{
+                padding: "8px 16px",
+                backgroundColor: colors.brand.light,
+                color: "#0B1120", border: "none", borderRadius: "8px",
+                fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                cursor: (sending || !emailTo) ? "not-allowed" : "pointer",
+                opacity: (sending || !emailTo) ? 0.6 : 1,
+                display: "flex", alignItems: "center", gap: "6px",
+              }}
+            >
+              <Mail size={12} /> {sending ? "Sending…" : "Send Invite"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <p style={{ margin: "8px 0 0", fontFamily: fonts.body, fontSize: "10px", color: colors.text.muted, lineHeight: "1.5" }}>
+        Anyone with this link can invite the bot. The new server auto-links to <strong>this</strong> instance, and the
+        invited admin lands on a friendly thank-you page (no BitBot Pro login needed). To rotate, visit <a href="/admin/discord-app-setup" style={{ color: colors.brand.light }}>Discord App Setup</a>.
+      </p>
+    </div>
+  );
+}
+
+
 export default function DiscordSettings() {
   const { user, selectedInstance } = useAuth();
   const instanceId = selectedInstance?.id;
@@ -189,8 +375,31 @@ export default function DiscordSettings() {
   const [handoffCooldown, setHandoffCooldown] = useState(15);
   const [handoffFollowup, setHandoffFollowup] = useState("Is there anything else I can help with?");
   const [passiveMode, setPassiveMode] = useState(false);
+  const [scripted, setScripted] = useState({
+    enabled: false,
+    primary_message: "",
+    update_message: "",
+    variants: [],
+    acknowledgment_replies: [],
+    fallback_message: "",
+    max_attempts: 10,
+    reset_hours: 24,
+    rephrase_mode: "hybrid",
+    classify_intent: true,
+  });
+  const [scriptedCounters, setScriptedCounters] = useState({ active_counters: 0, total_counters: 0, stale_counters: 0, skips_last_24h: 0, reset_hours: 24 });
+  const [resettingCounters, setResettingCounters] = useState(false);
+  const [sandboxInput, setSandboxInput] = useState("is the bridge down?\nany update?\nthanks!");
+  const [sandboxTurns, setSandboxTurns] = useState([]);
+  const [sandboxRunning, setSandboxRunning] = useState(false);
+  const [sandboxOpen, setSandboxOpen] = useState(false);
+  const [scenarios, setScenarios] = useState([]);
+  const [scenariosOpen, setScenariosOpen] = useState(false);
+  const [runningScenario, setRunningScenario] = useState(null); // scenario id currently running, or "all"
+  const [newScenarioName, setNewScenarioName] = useState("");
   const [handoffChannels, setHandoffChannels] = useState([]);
   const [resumingHandoff, setResumingHandoff] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [existing, setExisting] = useState(null);
   const [status, setStatus] = useState({ status: "offline", bot_name: null });
   const [saving, setSaving] = useState(false);
@@ -226,13 +435,138 @@ export default function DiscordSettings() {
       setHandoffCooldown(r.data?.handoff_cooldown_minutes || 15);
       setHandoffFollowup(r.data?.handoff_followup_message || "Is there anything else I can help with?");
       setPassiveMode(r.data?.passive_mode || false);
+      const sc = r.data?.scripted_mode || {};
+      const DEFAULT_ACKS = ["You're welcome!", "Anytime — happy to help!", "No problem!", "Glad I could help."];
+      setScripted({
+        enabled: !!sc.enabled,
+        primary_message: sc.primary_message || "",
+        update_message: sc.update_message || "",
+        variants: Array.isArray(sc.variants) ? sc.variants : [],
+        acknowledgment_replies: (Array.isArray(sc.acknowledgment_replies) && sc.acknowledgment_replies.length > 0)
+          ? sc.acknowledgment_replies
+          : DEFAULT_ACKS,
+        fallback_message: sc.fallback_message || "",
+        max_attempts: sc.max_attempts || 10,
+        reset_hours: sc.reset_hours || 24,
+        rephrase_mode: sc.rephrase_mode || "hybrid",
+        classify_intent: sc.classify_intent !== false,
+      });
     }).catch(() => {});
   }, [instanceId]);
 
   const loadStatus = useCallback(() => {
     api.get(`/discord/status`).then(r => setStatus(r.data)).catch(() => {});
     api.get(`/discord/handoff-status`).then(r => setHandoffChannels(r.data?.channels || [])).catch(() => {});
+    // Always poll scripted counters — the backend returns 0/0 cheaply when Scripted Mode is off.
+    // (Previously gated on `scripted.enabled`, which caused the toggle to revert: deps changed
+    //  → useEffect re-fired loadConfig() → server state overwrote the unsaved toggle.)
+    api.get(`/discord/scripted-counters/count`).then(r => setScriptedCounters(r.data || { active_counters: 0, total_counters: 0, stale_counters: 0, skips_last_24h: 0, reset_hours: 24 })).catch(() => {});
   }, [instanceId]);
+
+  const handleResetScriptedCounters = async () => {
+    if (!window.confirm("Reset all Scripted Mode counters for this instance?\n\nEvery user's per-channel counter goes back to zero, so the next message from anyone will receive the Primary Message again. Analytics history (scripted_skips) is preserved.\n\nContinue?")) return;
+    setResettingCounters(true);
+    try {
+      const r = await api.post(`/discord/scripted-counters/reset`);
+      toast.success(`Reset ${r.data?.cleared || 0} user counter(s). The next message will get the Primary reply.`);
+      setScriptedCounters((p) => ({ ...p, active_counters: 0, total_counters: 0, stale_counters: 0 }));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to reset counters");
+    } finally {
+      setResettingCounters(false);
+    }
+  };
+
+  const runSandbox = async () => {
+    const messages = sandboxInput.split("\n").map(s => s.trim()).filter(Boolean);
+    if (messages.length === 0) { toast.error("Enter at least one message"); return; }
+    if (messages.length > 25) { toast.error("Max 25 messages per run"); return; }
+    setSandboxRunning(true);
+    try {
+      const r = await api.post(`/discord/scripted-mode/sandbox`, {
+        messages,
+        scripted_config: scripted, // use the UNSAVED form values
+      });
+      setSandboxTurns(r.data?.turns || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Sandbox run failed");
+    } finally {
+      setSandboxRunning(false);
+    }
+  };
+
+  const loadScenarios = useCallback(async () => {
+    try {
+      const r = await api.get(`/discord/scripted-mode/scenarios`);
+      setScenarios(r.data?.scenarios || []);
+    } catch {/* ignore */}
+  }, [instanceId]);
+
+  useEffect(() => { if (instanceId) loadScenarios(); }, [instanceId, loadScenarios]);
+
+  const saveCurrentAsScenario = async () => {
+    const name = (newScenarioName || "").trim();
+    if (!name) { toast.error("Enter a scenario name"); return; }
+    const messages = sandboxInput.split("\n").map(s => s.trim()).filter(Boolean);
+    if (messages.length === 0) { toast.error("Sandbox input is empty"); return; }
+    try {
+      await api.post(`/discord/scripted-mode/scenarios`, { name, messages });
+      toast.success(`Saved "${name}" — first run will capture the golden snapshot.`);
+      setNewScenarioName("");
+      loadScenarios();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to save scenario");
+    }
+  };
+
+  const runScenario = async (s) => {
+    setRunningScenario(s.id);
+    try {
+      await api.post(`/discord/scripted-mode/scenarios/${s.id}/run`, { scripted_config: scripted });
+      await loadScenarios();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Run failed");
+    } finally {
+      setRunningScenario(null);
+    }
+  };
+
+  const runAllScenarios = async () => {
+    if (scenarios.length === 0) { toast.error("No scenarios saved yet"); return; }
+    setRunningScenario("all");
+    try {
+      const r = await api.post(`/discord/scripted-mode/scenarios/run-all`, { scripted_config: scripted });
+      const { total, passed, failed, captured_golden } = r.data || {};
+      if (failed > 0) toast.error(`${failed}/${total} failed`);
+      else toast.success(`${passed} passed, ${captured_golden} captured — ${total}/${total} green`);
+      await loadScenarios();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Run-all failed");
+    } finally {
+      setRunningScenario(null);
+    }
+  };
+
+  const deleteScenario = async (s) => {
+    if (!window.confirm(`Delete scenario "${s.name}"?`)) return;
+    try {
+      await api.delete(`/discord/scripted-mode/scenarios/${s.id}`);
+      loadScenarios();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const saveScenarioGolden = async (s) => {
+    if (!window.confirm(`Promote the latest run of "${s.name}" to the new golden baseline?`)) return;
+    try {
+      await api.post(`/discord/scripted-mode/scenarios/${s.id}/save-golden`);
+      toast.success(`"${s.name}" golden updated.`);
+      loadScenarios();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Save-golden failed");
+    }
+  };
 
   useEffect(() => {
     loadConfig(); loadStatus();
@@ -253,6 +587,23 @@ export default function DiscordSettings() {
 
   const toggleChannel = (id) => setMonitoredChannelIds(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]);
 
+
+  const disconnectGuild = async () => {
+    if (!window.confirm("Disconnect this Discord server from BitBot Pro? This only clears the link in BitBot Pro — if the bot is still in the server, you must also remove it via Discord's Integrations page.")) {
+      return;
+    }
+    setDisconnecting(true);
+    try {
+      const r = await api.post(`/discord/disconnect`);
+      toast.success(r.data?.cleared_guild_id ? "Disconnected — UI is now in sync with Discord" : "No active connection to clear");
+      loadStatus();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to disconnect");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   const resumeHandoff = async () => {
     setResumingHandoff(true);
     try {
@@ -267,7 +618,7 @@ export default function DiscordSettings() {
   };
 
   const save = async () => {
-    const update = { is_active: isActive, listen_mode: listenMode, reply_style: replyStyle, monitored_channel_ids: monitoredChannelIds, staff_role_name: staffRoleName, handoff_cooldown_minutes: handoffCooldown, handoff_followup_message: handoffFollowup, passive_mode: passiveMode };
+    const update = { is_active: isActive, listen_mode: listenMode, reply_style: replyStyle, monitored_channel_ids: monitoredChannelIds, staff_role_name: staffRoleName, handoff_cooldown_minutes: handoffCooldown, handoff_followup_message: handoffFollowup, passive_mode: passiveMode, scripted_mode: scripted };
     if (token.trim()) update.bot_token = token.trim();
     setSaving(true);
     try { await api.put(`/discord/config`, update); toast.success("Discord settings saved"); setToken(""); loadConfig(); } catch { toast.error("Failed to save"); }
@@ -359,7 +710,7 @@ export default function DiscordSettings() {
                 borderRadius: "10px", marginBottom: "16px",
               }}>
                 <CheckCircle size={15} color={colors.brand.success} />
-                <div>
+                <div style={{ flex: 1 }}>
                   <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "500", color: colors.brand.success, margin: 0 }}>
                     Connected to "{existing.guild_name}"
                   </p>
@@ -367,24 +718,46 @@ export default function DiscordSettings() {
                     Guild ID: {existing.guild_id}
                   </p>
                 </div>
+                <button
+                  onClick={disconnectGuild}
+                  disabled={disconnecting}
+                  data-testid="disconnect-guild-btn"
+                  title="Clear this connection (use if the bot was removed from Discord externally)"
+                  style={{
+                    padding: "6px 12px",
+                    backgroundColor: "rgba(244,63,94,0.08)",
+                    border: `1px solid rgba(244,63,94,0.25)`,
+                    borderRadius: "8px",
+                    color: colors.brand.error,
+                    fontFamily: fonts.body, fontSize: "11px", fontWeight: "600",
+                    cursor: disconnecting ? "not-allowed" : "pointer",
+                    opacity: disconnecting ? 0.6 : 1,
+                    display: "flex", alignItems: "center", gap: "4px",
+                  }}
+                >
+                  <Trash2 size={11} /> {disconnecting ? "Disconnecting…" : "Disconnect"}
+                </button>
               </div>
             )}
 
             {oauthEnabled ? (
-              <button
-                onClick={inviteBot} disabled={inviting} data-testid="invite-bot-btn"
-                style={{
-                  width: "100%", padding: "13px 20px", backgroundColor: colors.brand.discord,
-                  color: "#FFFFFF", border: "none", borderRadius: "10px",
-                  fontSize: "14px", fontFamily: fonts.body, fontWeight: "600",
-                  cursor: inviting ? "not-allowed" : "pointer", opacity: inviting ? 0.7 : 1,
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
-                  transition: "all 0.2s",
-                }}
-              >
-                <Link2 size={16} />
-                {inviting ? "Redirecting to Discord..." : oauthConnected ? "Invite to Another Server" : "Invite Bot to Server"}
-              </button>
+              <>
+                <button
+                  onClick={inviteBot} disabled={inviting} data-testid="invite-bot-btn"
+                  style={{
+                    width: "100%", padding: "13px 20px", backgroundColor: colors.brand.discord,
+                    color: "#FFFFFF", border: "none", borderRadius: "10px",
+                    fontSize: "14px", fontFamily: fonts.body, fontWeight: "600",
+                    cursor: inviting ? "not-allowed" : "pointer", opacity: inviting ? 0.7 : 1,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                    transition: "all 0.2s",
+                  }}
+                >
+                  <Link2 size={16} />
+                  {inviting ? "Redirecting to Discord..." : oauthConnected ? "Invite to Another Server" : "Invite Bot to Server"}
+                </button>
+                <ShareInviteLink />
+              </>
             ) : (
               <div style={{ padding: "14px", backgroundColor: colors.bg.base, borderRadius: "10px", border: `1px solid ${colors.border.subtle}` }}>
                 <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.secondary, margin: 0 }}>
@@ -591,6 +964,613 @@ export default function DiscordSettings() {
               <p style={{ ...T.hint, marginTop: "12px", marginBottom: 0, padding: "8px 12px", backgroundColor: "rgba(96,165,250,0.04)", border: `1px solid rgba(96,165,250,0.15)`, borderRadius: "8px" }}>
                 <strong style={{ color: colors.text.primary }}>Tip:</strong> Best paired with <em>All Channels</em> listen mode in busy servers — the bot will quietly monitor every channel and only chime in when it has a useful answer.
               </p>
+            )}
+          </div>
+
+          {/* Scripted Mode (Maintenance / Incident replies) */}
+          <div style={{ ...T.card, marginBottom: "20px", borderColor: scripted.enabled ? "rgba(251,191,36,0.35)" : colors.border.default, backgroundColor: scripted.enabled ? "rgba(251,191,36,0.03)" : colors.bg.surface }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "14px" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                  <Megaphone size={15} color={scripted.enabled ? colors.brand.warning : colors.text.muted} />
+                  <p style={{ fontFamily: fonts.heading, fontSize: "15px", fontWeight: "600", color: colors.text.primary, margin: 0 }}>Scripted Mode</p>
+                  {scripted.enabled && (
+                    <span style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.brand.warning, backgroundColor: "rgba(251,191,36,0.12)", padding: "2px 8px", borderRadius: "6px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Active
+                    </span>
+                  )}
+                </div>
+                <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.secondary, margin: 0, lineHeight: "1.6" }}>
+                  Bypass the knowledge base and reply with a fixed maintenance/incident message. Useful for service outages, bridge pauses, or scheduled downtime.
+                  First reply to a user is verbatim; follow-ups get rephrased so it doesn{`'`}t feel robotic.
+                </p>
+              </div>
+              <button
+                onClick={() => setScripted(p => ({ ...p, enabled: !p.enabled }))}
+                data-testid="scripted-mode-toggle"
+                role="switch"
+                aria-checked={scripted.enabled}
+                style={{
+                  flexShrink: 0, width: "42px", height: "24px",
+                  backgroundColor: scripted.enabled ? colors.brand.warning : colors.bg.panel,
+                  border: `1px solid ${scripted.enabled ? colors.brand.warning : colors.border.default}`,
+                  borderRadius: "12px", cursor: "pointer", position: "relative", transition: "all 0.2s", padding: 0,
+                }}
+              >
+                <span style={{ position: "absolute", top: "2px", left: scripted.enabled ? "20px" : "2px", width: "18px", height: "18px", backgroundColor: "#FFFFFF", borderRadius: "50%", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+              </button>
+            </div>
+
+            {scripted.enabled && (
+              <div style={{ marginTop: "8px" }}>
+                {/* Reply 1 — Primary */}
+                <label style={T.label}>Reply 1 — Primary <span style={{ color: colors.brand.warning }}>*</span> <span style={{ color: colors.text.muted, fontWeight: "400" }}>· always sent first</span></label>
+                <textarea
+                  value={scripted.primary_message}
+                  onChange={e => setScripted(p => ({ ...p, primary_message: e.target.value }))}
+                  placeholder="USDCx bridge operations are currently paused, so minting and conversions are not processing at this time…"
+                  data-testid="scripted-primary"
+                  rows={5}
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={{ ...T.input, resize: "vertical", fontFamily: fonts.body, padding: "10px 12px" }}
+                />
+                <p style={T.hint}>Sent verbatim the FIRST time a user asks during an incident window — no AI involved here.</p>
+
+                <label style={{ ...T.label, marginTop: "16px" }}>Reply 2 — Update <span style={{ color: colors.text.muted, fontWeight: "400" }}>· always sent second</span></label>
+                <textarea
+                  value={scripted.update_message}
+                  onChange={e => setScripted(p => ({ ...p, update_message: e.target.value }))}
+                  placeholder="No new update yet — we're still working on it and will post here when there's news. Thanks for your patience."
+                  data-testid="scripted-update"
+                  rows={4}
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={{ ...T.input, resize: "vertical", fontFamily: fonts.body, padding: "10px 12px" }}
+                />
+                <p style={T.hint}>Sent verbatim the SECOND time. After this, the AI router takes over and picks from your <strong>Variants</strong>, <strong>Acknowledgments</strong>, or sends the <strong>Fallback</strong> if nothing fits.</p>
+
+                <div style={{
+                  marginTop: "14px",
+                  display: "flex", alignItems: "flex-start", gap: "12px",
+                  padding: "10px 12px",
+                  backgroundColor: scripted.classify_intent ? "rgba(96,165,250,0.05)" : colors.bg.base,
+                  border: `1px solid ${scripted.classify_intent ? "rgba(96,165,250,0.2)" : colors.border.default}`,
+                  borderRadius: "8px",
+                }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: colors.text.primary, margin: "0 0 4px" }}>
+                      Auto-detect intent (recommended)
+                    </p>
+                    <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, margin: 0, lineHeight: "1.5" }}>
+                      Uses Claude to classify each message. Stays silent on speculation, commentary, jokes, complaints, or off-topic chatter — replies only to real questions or update requests. Adds a tiny LLM call per message (~$0.0005).
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setScripted(p => ({ ...p, classify_intent: !p.classify_intent }))}
+                    data-testid="scripted-classify-toggle"
+                    role="switch"
+                    aria-checked={scripted.classify_intent}
+                    style={{
+                      flexShrink: 0, width: "38px", height: "22px",
+                      backgroundColor: scripted.classify_intent ? colors.brand.light : colors.bg.panel,
+                      border: `1px solid ${scripted.classify_intent ? colors.brand.light : colors.border.default}`,
+                      borderRadius: "11px", cursor: "pointer", position: "relative", padding: 0, transition: "all 0.2s",
+                    }}
+                  >
+                    <span style={{ position: "absolute", top: "2px", left: scripted.classify_intent ? "17px" : "2px", width: "16px", height: "16px", backgroundColor: "#FFFFFF", borderRadius: "50%", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                  </button>
+                </div>
+
+                {/* Rephrase mode */}
+                <label style={{ ...T.label, marginTop: "16px" }}>Rephrase Mode</label>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  {[
+                    { v: "hybrid", l: "Hybrid (recommended)", d: "AI rephrase, fallback to manual" },
+                    { v: "ai", l: "AI only", d: "Uses Claude tokens" },
+                    { v: "manual", l: "Manual variants only", d: "Zero AI cost" },
+                  ].map(({ v, l, d }) => (
+                    <button
+                      key={v}
+                      onClick={() => setScripted(p => ({ ...p, rephrase_mode: v }))}
+                      data-testid={`scripted-mode-${v}`}
+                      style={{
+                        flex: 1, padding: "10px 12px", textAlign: "left",
+                        backgroundColor: scripted.rephrase_mode === v ? "rgba(251,191,36,0.08)" : colors.bg.base,
+                        border: `1px solid ${scripted.rephrase_mode === v ? colors.brand.warning : colors.border.default}`,
+                        borderRadius: "8px",
+                        color: scripted.rephrase_mode === v ? colors.text.primary : colors.text.secondary,
+                        fontFamily: fonts.body, fontSize: "12px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ fontWeight: scripted.rephrase_mode === v ? "600" : "500" }}>{l}</div>
+                      <div style={{ fontSize: "10px", color: colors.text.muted, marginTop: "3px" }}>{d}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Manual variants */}
+                {(scripted.rephrase_mode === "manual" || scripted.rephrase_mode === "hybrid") && (
+                  <div style={{ marginTop: "16px" }}>
+                    <label style={T.label}>
+                      Manual Variants <span style={{ color: colors.text.muted, fontWeight: "400" }}>(optional)</span>
+                    </label>
+                    {scripted.variants.map((v, i) => (
+                      <div key={i} style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                        <textarea
+                          value={v}
+                          onChange={e => setScripted(p => ({ ...p, variants: p.variants.map((x, j) => j === i ? e.target.value : x) }))}
+                          placeholder={`Variant ${i + 1}…`}
+                          data-testid={`scripted-variant-${i}`}
+                          rows={2}
+                          onFocus={onFocus} onBlur={onBlur}
+                          style={{ ...T.input, flex: 1, resize: "vertical", fontFamily: fonts.body, padding: "8px 10px" }}
+                        />
+                        <button
+                          onClick={() => setScripted(p => ({ ...p, variants: p.variants.filter((_, j) => j !== i) }))}
+                          data-testid={`scripted-variant-del-${i}`}
+                          style={{ padding: "8px 10px", backgroundColor: "rgba(244,63,94,0.06)", border: `1px solid rgba(244,63,94,0.2)`, borderRadius: "8px", color: colors.brand.error, cursor: "pointer" }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setScripted(p => ({ ...p, variants: [...p.variants, ""] }))}
+                      data-testid="scripted-add-variant"
+                      style={{ padding: "8px 12px", backgroundColor: "rgba(96,165,250,0.06)", border: `1px solid rgba(96,165,250,0.2)`, borderRadius: "8px", color: colors.brand.light, cursor: "pointer", fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <Plus size={12} /> Add variant
+                    </button>
+                  </div>
+                )}
+
+                {/* ── AI Conversation Router (msg3+) — Acknowledgment Replies ── */}
+                {(scripted.rephrase_mode === "ai" || scripted.rephrase_mode === "hybrid") && (
+                  <div
+                    data-testid="scripted-acks-block"
+                    style={{
+                      marginTop: "20px",
+                      padding: "14px",
+                      backgroundColor: "rgba(96,165,250,0.04)",
+                      border: `1px solid rgba(96,165,250,0.18)`,
+                      borderRadius: "10px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                      <Zap size={13} color={colors.brand.light} />
+                      <p style={{ fontFamily: fonts.heading, fontSize: "13px", fontWeight: "600", color: colors.text.primary, margin: 0 }}>
+                        Acknowledgment Replies
+                      </p>
+                      <span style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.brand.light, backgroundColor: "rgba(96,165,250,0.12)", padding: "2px 8px", borderRadius: "6px", textTransform: "uppercase", letterSpacing: "0.05em", marginLeft: "auto" }}>
+                        Msg 3+ AI Router
+                      </span>
+                    </div>
+                    <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, margin: "0 0 12px", lineHeight: "1.5" }}>
+                      Short replies for &ldquo;thanks&rdquo;, &ldquo;ok&rdquo;, &ldquo;got it&rdquo;, etc. After Reply 1 and Reply 2 are sent, the AI router uses these whenever it detects a user is just acknowledging — never to answer a question. If a user keeps thanking you, the router cycles through these and only repeats once the list is exhausted.
+                    </p>
+                    {scripted.acknowledgment_replies.map((v, i) => (
+                      <div key={i} style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                        <input
+                          type="text"
+                          value={v}
+                          onChange={e => setScripted(p => ({ ...p, acknowledgment_replies: p.acknowledgment_replies.map((x, j) => j === i ? e.target.value : x) }))}
+                          placeholder={`Acknowledgment ${i + 1}…`}
+                          data-testid={`scripted-ack-${i}`}
+                          onFocus={onFocus} onBlur={onBlur}
+                          style={{ ...T.input, flex: 1, padding: "8px 10px" }}
+                        />
+                        <button
+                          onClick={() => setScripted(p => ({ ...p, acknowledgment_replies: p.acknowledgment_replies.filter((_, j) => j !== i) }))}
+                          data-testid={`scripted-ack-del-${i}`}
+                          style={{ padding: "8px 10px", backgroundColor: "rgba(244,63,94,0.06)", border: `1px solid rgba(244,63,94,0.2)`, borderRadius: "8px", color: colors.brand.error, cursor: "pointer" }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setScripted(p => ({ ...p, acknowledgment_replies: [...p.acknowledgment_replies, ""] }))}
+                      data-testid="scripted-add-ack"
+                      style={{ padding: "8px 12px", backgroundColor: "rgba(96,165,250,0.06)", border: `1px solid rgba(96,165,250,0.2)`, borderRadius: "8px", color: colors.brand.light, cursor: "pointer", fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <Plus size={12} /> Add acknowledgment
+                    </button>
+                  </div>
+                )}
+
+                {/* Max attempts + Reset hours */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "16px" }}>
+                  <div>
+                    <label style={T.label}>Max Replies per User</label>
+                    <input type="number" min="1" max="100"
+                      value={scripted.max_attempts}
+                      onChange={e => setScripted(p => ({ ...p, max_attempts: parseInt(e.target.value) || 1 }))}
+                      data-testid="scripted-max-attempts"
+                      onFocus={onFocus} onBlur={onBlur} style={T.input}
+                    />
+                    <p style={T.hint}>Hard cap on bot replies per user per cooldown window (default 10). After this, silent until the counter resets.</p>
+                  </div>
+                  <div>
+                    <label style={T.label}>Counter Reset (hours)</label>
+                    <input type="number" min="1" max="168"
+                      value={scripted.reset_hours}
+                      onChange={e => setScripted(p => ({ ...p, reset_hours: parseInt(e.target.value) || 1 }))}
+                      data-testid="scripted-reset-hours"
+                      onFocus={onFocus} onBlur={onBlur} style={T.input}
+                    />
+                    <p style={T.hint}>Timer starts from the last interaction — once the user goes idle this long, the counter and used-reply tracking reset (fresh conversation).</p>
+                  </div>
+                </div>
+
+                {/* Fallback */}
+                <label style={{ ...T.label, marginTop: "16px" }}>Fallback Message</label>
+                <textarea
+                  value={scripted.fallback_message}
+                  onChange={e => setScripted(p => ({ ...p, fallback_message: e.target.value }))}
+                  placeholder="For urgent issues please open a ticket or email support@…"
+                  data-testid="scripted-fallback"
+                  rows={3}
+                  onFocus={onFocus} onBlur={onBlur}
+                  style={{ ...T.input, resize: "vertical", fontFamily: fonts.body, padding: "10px 12px" }}
+                />
+                <p style={T.hint}>Sent after Max Attempts is reached, instead of another rephrase.</p>
+
+                {/* Reset Counters — admin debug helper */}
+                <div
+                  data-testid="scripted-counters-card"
+                  style={{
+                    marginTop: "16px",
+                    padding: "12px 14px",
+                    backgroundColor: scriptedCounters.active_counters > 0 ? "rgba(96,165,250,0.05)" : colors.bg.base,
+                    border: `1px solid ${scriptedCounters.active_counters > 0 ? "rgba(96,165,250,0.22)" : colors.border.default}`,
+                    borderRadius: "10px",
+                    display: "flex", alignItems: "center", gap: "12px",
+                  }}
+                >
+                  <RefreshCw size={15} color={colors.brand.light} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: colors.text.primary, margin: "0 0 2px" }}>
+                      Active user counters
+                      {" "}
+                      <span data-testid="scripted-counters-count" style={{ fontFamily: fonts.mono, color: colors.brand.light, marginLeft: "4px" }}>
+                        {scriptedCounters.active_counters}
+                      </span>
+                      {scriptedCounters.stale_counters > 0 && (
+                        <span data-testid="scripted-counters-stale" style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, marginLeft: "8px", fontWeight: "400" }}>
+                          + {scriptedCounters.stale_counters} idle (will auto-reset)
+                        </span>
+                      )}
+                    </p>
+                    <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, margin: 0, lineHeight: "1.5" }}>
+                      {scriptedCounters.active_counters > 0
+                        ? `${scriptedCounters.active_counters} user(s) mid-conversation. Reset to send everyone the Primary reply again — without waiting ${scriptedCounters.reset_hours || scripted.reset_hours}h.`
+                        : scriptedCounters.stale_counters > 0
+                          ? `No active conversations. ${scriptedCounters.stale_counters} idle row(s) will auto-clear on each user's next message — or hit Reset to clear them now.`
+                          : `No active counters. The next message from any user will receive the Primary reply.`}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleResetScriptedCounters}
+                    disabled={resettingCounters || (scriptedCounters.active_counters === 0 && scriptedCounters.stale_counters === 0)}
+                    data-testid="scripted-reset-counters-btn"
+                    style={{
+                      flexShrink: 0,
+                      padding: "8px 14px",
+                      backgroundColor: "rgba(96,165,250,0.08)",
+                      color: colors.brand.light,
+                      border: `1px solid rgba(96,165,250,0.3)`,
+                      borderRadius: "8px",
+                      fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                      cursor: (resettingCounters || (scriptedCounters.active_counters === 0 && scriptedCounters.stale_counters === 0)) ? "not-allowed" : "pointer",
+                      opacity: (resettingCounters || (scriptedCounters.active_counters === 0 && scriptedCounters.stale_counters === 0)) ? 0.5 : 1,
+                      display: "flex", alignItems: "center", gap: "6px",
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    <RefreshCw size={12} /> {resettingCounters ? "Resetting…" : "Reset Counters"}
+                  </button>
+                </div>
+
+                {/* ── Reply Sandbox — dry-run a conversation through the AI router ── */}
+                <div data-testid="sandbox-card" style={{ marginTop: "16px", border: `1px solid ${colors.border.default}`, borderRadius: "10px", overflow: "hidden" }}>
+                  <button
+                    onClick={() => setSandboxOpen(o => !o)}
+                    data-testid="sandbox-toggle"
+                    style={{
+                      width: "100%", display: "flex", alignItems: "center", gap: "10px",
+                      padding: "12px 14px", background: "none", border: "none", cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <Zap size={14} color={colors.brand.light} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontFamily: fonts.heading, fontSize: "13px", fontWeight: "600", color: colors.text.primary, margin: 0 }}>
+                        Reply Sandbox
+                      </p>
+                      <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, margin: "2px 0 0", lineHeight: "1.4" }}>
+                        Dry-run a sequence of user messages through the router — see intent, pool, picked reply at each step. Uses your current form values (no save needed).
+                      </p>
+                    </div>
+                    <ChevronDown size={16} color={colors.text.muted} style={{ transform: sandboxOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                  </button>
+
+                  {sandboxOpen && (
+                    <div style={{ padding: "0 14px 14px" }}>
+                      <label style={{ ...T.label, fontSize: "11px" }}>User messages (one per line, max 25)</label>
+                      <textarea
+                        value={sandboxInput}
+                        onChange={e => setSandboxInput(e.target.value)}
+                        data-testid="sandbox-input"
+                        rows={5}
+                        placeholder={"is the bridge down?\nany update?\nthanks!"}
+                        onFocus={onFocus} onBlur={onBlur}
+                        style={{ ...T.input, resize: "vertical", fontFamily: fonts.mono, fontSize: "12px", padding: "10px 12px" }}
+                      />
+                      <div style={{ display: "flex", gap: "8px", marginTop: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                        <button
+                          onClick={runSandbox}
+                          disabled={sandboxRunning}
+                          data-testid="sandbox-run-btn"
+                          style={{
+                            padding: "8px 14px",
+                            backgroundColor: colors.brand.warning,
+                            color: "#1a1a1a",
+                            border: "none",
+                            borderRadius: "8px",
+                            fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                            cursor: sandboxRunning ? "not-allowed" : "pointer",
+                            opacity: sandboxRunning ? 0.6 : 1,
+                            display: "flex", alignItems: "center", gap: "6px",
+                          }}
+                        >
+                          <Zap size={12} /> {sandboxRunning ? "Running…" : "Run Sandbox"}
+                        </button>
+                        {sandboxTurns.length > 0 && (
+                          <button
+                            onClick={() => setSandboxTurns([])}
+                            data-testid="sandbox-clear-btn"
+                            style={{ padding: "8px 12px", background: "none", border: `1px solid ${colors.border.default}`, borderRadius: "8px", color: colors.text.secondary, cursor: "pointer", fontFamily: fonts.body, fontSize: "12px" }}
+                          >
+                            Clear results
+                          </button>
+                        )}
+                        <input
+                          type="text"
+                          value={newScenarioName}
+                          onChange={e => setNewScenarioName(e.target.value)}
+                          placeholder="Save as scenario…"
+                          data-testid="scenario-name-input"
+                          onFocus={onFocus} onBlur={onBlur}
+                          style={{ ...T.input, padding: "6px 10px", fontSize: "12px", maxWidth: "200px" }}
+                        />
+                        <button
+                          onClick={saveCurrentAsScenario}
+                          disabled={!newScenarioName.trim()}
+                          data-testid="scenario-save-btn"
+                          style={{
+                            padding: "8px 12px",
+                            background: "none",
+                            border: `1px solid ${colors.brand.light}`,
+                            color: colors.brand.light,
+                            borderRadius: "8px",
+                            cursor: newScenarioName.trim() ? "pointer" : "not-allowed",
+                            opacity: newScenarioName.trim() ? 1 : 0.5,
+                            fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                          }}
+                        >
+                          + Save
+                        </button>
+                        <p style={{ fontSize: "10px", color: colors.text.muted, margin: 0, marginLeft: "auto", fontFamily: fonts.body }}>
+                          Each message uses ~2 small Claude calls — costs apply.
+                        </p>
+                      </div>
+
+                      {sandboxTurns.length > 0 && (
+                        <div data-testid="sandbox-results" style={{ marginTop: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {sandboxTurns.map((turn, i) => {
+                            const poolColors = {
+                              primary: { bg: "rgba(96,165,250,0.08)", border: "rgba(96,165,250,0.3)", fg: colors.brand.light },
+                              update: { bg: "rgba(96,165,250,0.08)", border: "rgba(96,165,250,0.3)", fg: colors.brand.light },
+                              variant: { bg: "rgba(168,85,247,0.08)", border: "rgba(168,85,247,0.3)", fg: "#a855f7" },
+                              ack: { bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.3)", fg: "#22c55e" },
+                              fallback: { bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.3)", fg: colors.brand.warning },
+                              silent: { bg: "rgba(148,163,184,0.06)", border: "rgba(148,163,184,0.2)", fg: colors.text.muted },
+                            };
+                            const c = poolColors[turn.pool_name] || poolColors.silent;
+                            return (
+                              <div
+                                key={i}
+                                data-testid={`sandbox-turn-${i}`}
+                                style={{
+                                  border: `1px solid ${c.border}`,
+                                  borderRadius: "8px",
+                                  padding: "10px 12px",
+                                  backgroundColor: c.bg,
+                                }}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px", flexWrap: "wrap" }}>
+                                  <span style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, fontWeight: "600" }}>#{i + 1}</span>
+                                  <span style={{ fontFamily: fonts.mono, fontSize: "10px", padding: "2px 7px", borderRadius: "5px", backgroundColor: c.fg, color: "#0a0a0a", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                    {turn.pool_name}
+                                  </span>
+                                  {turn.intent && (
+                                    <span style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.secondary, border: `1px solid ${colors.border.default}`, padding: "1px 6px", borderRadius: "5px" }}>
+                                      intent: {turn.intent}
+                                    </span>
+                                  )}
+                                  <span style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, marginLeft: "auto" }}>
+                                    count after: {turn.count_after}
+                                  </span>
+                                </div>
+                                <p style={{ margin: "0 0 6px", fontFamily: fonts.body, fontSize: "12px", color: colors.text.primary }}>
+                                  <span style={{ color: colors.text.muted, fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.05em", marginRight: "6px" }}>User:</span>
+                                  {turn.user_message}
+                                </p>
+                                {turn.bot_reply ? (
+                                  <p data-testid={`sandbox-turn-${i}-reply`} style={{ margin: 0, fontFamily: fonts.body, fontSize: "12px", color: c.fg, fontWeight: "500" }}>
+                                    <span style={{ color: colors.text.muted, fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.05em", marginRight: "6px", fontWeight: "600" }}>Bot:</span>
+                                    {turn.bot_reply}
+                                  </p>
+                                ) : (
+                                  <p data-testid={`sandbox-turn-${i}-silent`} style={{ margin: 0, fontFamily: fonts.body, fontSize: "11px", fontStyle: "italic", color: colors.text.muted }}>
+                                    Silent — {turn.skip_reason || "no reply"}
+                                  </p>
+                                )}
+                                {turn.pool_considered && turn.pool_considered.length > 0 && turn.pool_name !== "primary" && turn.pool_name !== "update" && (
+                                  <details style={{ marginTop: "6px" }}>
+                                    <summary style={{ fontSize: "10px", color: colors.text.muted, cursor: "pointer", fontFamily: fonts.body }}>
+                                      Pool considered ({turn.pool_considered.length})
+                                    </summary>
+                                    <ul style={{ margin: "4px 0 0", padding: "0 0 0 18px", fontFamily: fonts.mono, fontSize: "10px", color: colors.text.secondary }}>
+                                      {turn.pool_considered.map((p, j) => <li key={j}>{p}</li>)}
+                                    </ul>
+                                  </details>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Saved Scenarios — regression suite for Scripted Mode copy ── */}
+                <div data-testid="scenarios-card" style={{ marginTop: "16px", border: `1px solid ${colors.border.default}`, borderRadius: "10px", overflow: "hidden" }}>
+                  <button
+                    onClick={() => setScenariosOpen(o => !o)}
+                    data-testid="scenarios-toggle"
+                    style={{
+                      width: "100%", display: "flex", alignItems: "center", gap: "10px",
+                      padding: "12px 14px", background: "none", border: "none", cursor: "pointer", textAlign: "left",
+                    }}
+                  >
+                    <CheckCircle size={14} color={colors.brand.success || "#22c55e"} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontFamily: fonts.heading, fontSize: "13px", fontWeight: "600", color: colors.text.primary, margin: 0 }}>
+                        Saved Scenarios
+                        {scenarios.length > 0 && (
+                          <span style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, marginLeft: "8px", fontWeight: "400" }}>
+                            ({scenarios.length})
+                          </span>
+                        )}
+                      </p>
+                      <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, margin: "2px 0 0", lineHeight: "1.4" }}>
+                        Snapshot test your golden conversations. First run captures the baseline; later runs flag any change in intent/pool routing.
+                      </p>
+                    </div>
+                    <ChevronDown size={16} color={colors.text.muted} style={{ transform: scenariosOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                  </button>
+
+                  {scenariosOpen && (
+                    <div style={{ padding: "0 14px 14px" }}>
+                      <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
+                        <button
+                          onClick={runAllScenarios}
+                          disabled={runningScenario !== null || scenarios.length === 0}
+                          data-testid="scenarios-run-all-btn"
+                          style={{
+                            padding: "8px 14px",
+                            backgroundColor: colors.brand.light,
+                            color: "#0a0a0a",
+                            border: "none",
+                            borderRadius: "8px",
+                            fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                            cursor: (runningScenario !== null || scenarios.length === 0) ? "not-allowed" : "pointer",
+                            opacity: (runningScenario !== null || scenarios.length === 0) ? 0.5 : 1,
+                            display: "flex", alignItems: "center", gap: "6px",
+                          }}
+                        >
+                          <Zap size={12} /> {runningScenario === "all" ? "Running…" : "Run all"}
+                        </button>
+                        <p style={{ fontSize: "10px", color: colors.text.muted, margin: 0, fontFamily: fonts.body }}>
+                          Uses your current form values.
+                        </p>
+                      </div>
+
+                      {scenarios.length === 0 ? (
+                        <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.muted, fontStyle: "italic", margin: 0 }}>
+                          No scenarios saved yet. Type some messages in the Sandbox above, then enter a name and click <strong>+ Save</strong>.
+                        </p>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                          {scenarios.map((s) => {
+                            const lr = s.last_run || {};
+                            const status = lr.status; // pass | fail | captured_golden | undefined
+                            const badgeStyle = status === "pass"
+                              ? { bg: "rgba(34,197,94,0.1)", border: "rgba(34,197,94,0.3)", fg: "#22c55e", label: "PASS" }
+                              : status === "fail"
+                                ? { bg: "rgba(244,63,94,0.1)", border: "rgba(244,63,94,0.3)", fg: colors.brand.error, label: `FAIL (${lr.failures?.length || 0})` }
+                                : status === "captured_golden"
+                                  ? { bg: "rgba(251,191,36,0.1)", border: "rgba(251,191,36,0.3)", fg: colors.brand.warning, label: "GOLDEN CAPTURED" }
+                                  : { bg: "rgba(148,163,184,0.06)", border: "rgba(148,163,184,0.2)", fg: colors.text.muted, label: "NOT RUN" };
+                            return (
+                              <div
+                                key={s.id}
+                                data-testid={`scenario-row-${s.id}`}
+                                style={{
+                                  padding: "10px 12px",
+                                  border: `1px solid ${badgeStyle.border}`,
+                                  backgroundColor: badgeStyle.bg,
+                                  borderRadius: "8px",
+                                  display: "flex", alignItems: "center", gap: "10px",
+                                }}
+                              >
+                                <span
+                                  data-testid={`scenario-status-${s.id}`}
+                                  style={{ fontFamily: fonts.mono, fontSize: "10px", padding: "2px 8px", borderRadius: "5px", backgroundColor: badgeStyle.fg, color: "#0a0a0a", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.05em", flexShrink: 0 }}
+                                >
+                                  {badgeStyle.label}
+                                </span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <p style={{ margin: 0, fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: colors.text.primary }}>
+                                    {s.name}
+                                  </p>
+                                  <p style={{ margin: "2px 0 0", fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted }}>
+                                    {s.messages?.length || 0} message(s)
+                                    {lr.ran_at && ` · ran ${new Date(lr.ran_at).toLocaleString()}`}
+                                  </p>
+                                </div>
+                                <button
+                                  onClick={() => runScenario(s)}
+                                  disabled={runningScenario !== null}
+                                  data-testid={`scenario-run-${s.id}`}
+                                  style={{ padding: "5px 10px", background: "none", border: `1px solid ${colors.border.default}`, borderRadius: "6px", color: colors.text.secondary, cursor: runningScenario !== null ? "not-allowed" : "pointer", fontFamily: fonts.body, fontSize: "11px", opacity: runningScenario === null ? 1 : 0.5 }}
+                                >
+                                  {runningScenario === s.id ? "…" : "Run"}
+                                </button>
+                                {status === "fail" && (
+                                  <button
+                                    onClick={() => saveScenarioGolden(s)}
+                                    data-testid={`scenario-save-golden-${s.id}`}
+                                    title="Promote this run to be the new golden"
+                                    style={{ padding: "5px 10px", background: "none", border: `1px solid rgba(251,191,36,0.4)`, borderRadius: "6px", color: colors.brand.warning, cursor: "pointer", fontFamily: fonts.body, fontSize: "11px" }}
+                                  >
+                                    Re-bless
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => deleteScenario(s)}
+                                  data-testid={`scenario-delete-${s.id}`}
+                                  style={{ padding: "5px 8px", background: "none", border: "none", color: colors.text.muted, cursor: "pointer" }}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginTop: "16px", padding: "10px 12px", backgroundColor: "rgba(251,191,36,0.06)", border: `1px solid rgba(251,191,36,0.18)`, borderRadius: "8px" }}>
+                  <p style={{ margin: 0, fontFamily: fonts.body, fontSize: "11px", color: colors.text.secondary, lineHeight: "1.5" }}>
+                    <strong style={{ color: colors.brand.warning }}>Heads up:</strong> while Scripted Mode is ON, the bot ignores the Knowledge Base completely and replies only with the configured messages. Disable it once your incident is resolved.
+                  </p>
+                </div>
+              </div>
             )}
           </div>
 

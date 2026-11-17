@@ -2,57 +2,8 @@
 import pytest
 import requests
 import os
-import re
-import time
 
-BASE_URL = os.environ.get("BACKEND_URL", "").rstrip("/")
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "you@example.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me")
-SERVER_LOG = os.environ.get("SERVER_LOG", "/tmp/server.log")
-
-
-def _extract_verification_code(email):
-    time.sleep(0.5)
-    try:
-        with open(SERVER_LOG) as f:
-            log = f.read()
-        matches = re.findall(rf"To: {re.escape(email)}\nCode: (\d{{6}})", log)
-        return matches[-1] if matches else None
-    except Exception:
-        return None
-
-
-def setup_module(module):
-    """Register and verify testuser@example.com before this module's tests run."""
-    resp = requests.post(f"{BASE_URL}/api/auth/register", json={
-        "email": "testuser@example.com",
-        "username": "testuser",
-        "password": "Test@123",
-    })
-    if resp.status_code == 400 and "already registered" in resp.text.lower():
-        return
-    if resp.status_code != 200:
-        return
-    code = _extract_verification_code("testuser@example.com")
-    if code:
-        requests.post(f"{BASE_URL}/api/auth/verify", json={
-            "email": "testuser@example.com", "code": code
-        })
-
-
-def teardown_module(module):
-    """Delete testuser@example.com after all tests in this module."""
-    login = requests.post(f"{BASE_URL}/api/auth/login", json={
-        "email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD
-    })
-    if login.status_code != 200:
-        return
-    token = login.json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    users = requests.get(f"{BASE_URL}/api/admin/users", headers=headers).json()
-    user = next((u for u in users if u["email"] == "testuser@example.com"), None)
-    if user:
-        requests.delete(f"{BASE_URL}/api/admin/users/{user['id']}", headers=headers)
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 
 
 @pytest.fixture
@@ -64,7 +15,7 @@ def session():
 
 @pytest.fixture
 def admin_token(session):
-    r = session.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+    r = session.post(f"{BASE_URL}/api/auth/login", json={"email": "admin@bridgebot.tech", "password": os.environ.get("TEST_ADMIN_PASSWORD", "")})
     assert r.status_code == 200
     return r.cookies.get("bf_access_token")
 
@@ -81,7 +32,7 @@ class TestForgotPassword:
     """Test POST /api/auth/forgot-password"""
 
     def test_forgot_password_valid_email(self, session):
-        r = session.post(f"{BASE_URL}/api/auth/forgot-password", json={"email": ADMIN_EMAIL})
+        r = session.post(f"{BASE_URL}/api/auth/forgot-password", json={"email": "admin@bridgebot.tech"})
         assert r.status_code == 200
         data = r.json()
         assert "message" in data
@@ -106,7 +57,7 @@ class TestResetPassword:
     def test_reset_password_invalid_code(self, session):
         """Wrong code → 400 with error detail"""
         r = session.post(f"{BASE_URL}/api/auth/reset-password", json={
-            "email": ADMIN_EMAIL,
+            "email": "admin@bridgebot.tech",
             "code": "000000",
             "new_password": "NewPass@123"
         })
@@ -118,7 +69,7 @@ class TestResetPassword:
     def test_reset_password_short_password(self, session):
         """Password < 6 chars → 400"""
         r = session.post(f"{BASE_URL}/api/auth/reset-password", json={
-            "email": ADMIN_EMAIL,
+            "email": "admin@bridgebot.tech",
             "code": "123456",
             "new_password": "abc"
         })
@@ -153,7 +104,7 @@ class TestResetPassword:
         assert "successful" in r.json().get("message", "").lower()
 
         # 4. Login with new password
-        r = session.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": "testuser@example.com", "password": "Test@123_tmp"})
+        r = session.post(f"{BASE_URL}/api/auth/login", json={"email": "testuser@example.com", "password": "Test@123_tmp"})
         assert r.status_code == 200
 
         # 5. Restore original password
@@ -213,7 +164,7 @@ class TestAdminUsers:
 
     def test_regular_user_cannot_access_admin_users(self, session):
         # Login as regular user (may return 403 if no instances assigned, which is expected)
-        r = session.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": "testuser@example.com", "password": "Test@123"})
+        r = session.post(f"{BASE_URL}/api/auth/login", json={"email": "testuser@example.com", "password": "Test@123"})
         assert r.status_code in [200, 403], f"Login returned unexpected status: {r.status_code}"
         # Even if login returned 403 (no instances), cookies may be set; try accessing admin/users
         r2 = session.get(f"{BASE_URL}/api/admin/users")

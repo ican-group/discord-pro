@@ -19,6 +19,8 @@ function CredentialField({ label, value, onChange, placeholder, isSecret, testId
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           data-testid={testId}
+          autoComplete={isSecret ? "new-password" : "off"}
+          name={`dc-${testId}`}
           style={{ ...T.input, paddingRight: isSecret ? "40px" : undefined }}
           onFocus={onFocus}
           onBlur={onBlur}
@@ -106,6 +108,7 @@ export default function DiscordAppSetup() {
   const [loadingConnections, setLoadingConnections] = useState(false);
   const [clearConnections, setClearConnections] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [purging, setPurging] = useState(false);
 
   const suggestedRedirect = `${window.location.origin}/api/discord/callback`;
 
@@ -156,6 +159,22 @@ export default function DiscordAppSetup() {
       setConnections([]);
     } finally {
       setLoadingConnections(false);
+    }
+  };
+
+
+  const handlePurgeAll = async () => {
+    if (!window.confirm("Purge ALL Discord server connections across every instance?\n\nThis clears the guild mapping on every instance — bots will need to be re-invited to servers. Knowledge bases, users, and app credentials are NOT affected.\n\nContinue?")) {
+      return;
+    }
+    setPurging(true);
+    try {
+      const r = await api.post(`/discord/purge-all-connections`);
+      toast.success(`Purged ${r.data?.connections_cleared || 0} stale connection(s)`);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to purge");
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -338,6 +357,37 @@ export default function DiscordAppSetup() {
             >
               <Trash2 size={14} /> Clear All Discord App Settings
             </button>
+
+            <div style={{ height: "1px", backgroundColor: "rgba(244,63,94,0.15)", margin: "18px 0" }} />
+
+            <p style={{ fontFamily: fonts.heading, fontSize: "13px", fontWeight: "600", color: colors.text.primary, margin: "0 0 6px" }}>
+              Purge all stale server connections
+            </p>
+            <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.secondary, lineHeight: "1.6", margin: "0 0 12px" }}>
+              Removes every Discord server &harr; instance mapping in the database (the green Connected To rows on each
+              instance{`'`}s Discord page). Useful when the bot was removed from servers externally, multiple stale
+              connections piled up, or you{`'`}re re-onboarding after rotating the Discord App.
+              <br /><br />
+              <strong style={{ color: colors.text.primary }}>Doesn{`'`}t touch:</strong> knowledge bases, instances, users, or app credentials.
+            </p>
+            <button
+              onClick={handlePurgeAll}
+              disabled={purging}
+              data-testid="purge-all-connections-btn"
+              style={{
+                padding: "10px 16px",
+                backgroundColor: "rgba(244,63,94,0.08)",
+                color: colors.brand.error,
+                border: `1px solid rgba(244,63,94,0.3)`,
+                borderRadius: "10px",
+                fontFamily: fonts.body, fontSize: "12px", fontWeight: "600",
+                cursor: purging ? "not-allowed" : "pointer",
+                opacity: purging ? 0.6 : 1,
+                display: "flex", alignItems: "center", gap: "6px",
+              }}
+            >
+              <Trash2 size={14} /> {purging ? "Purging..." : "Purge All Server Connections"}
+            </button>
           </div>
         </div>
 
@@ -384,7 +434,7 @@ export default function DiscordAppSetup() {
             </a>
 
             <StepCard step="1" title="Create the Application">
-              On the Developer Portal, click <b>New Application</b>, name it (e.g. "BridgeBot"), and accept the terms.
+              On the Developer Portal, click <b>New Application</b>, name it (e.g. "BitBot Pro"), and accept the terms.
             </StepCard>
 
             <StepCard step="2" title="Set App Branding">

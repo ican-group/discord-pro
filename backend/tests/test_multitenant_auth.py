@@ -5,88 +5,18 @@ Tests: auth flow, instance management, user assignment, protected APIs
 import pytest
 import requests
 import os
-import re
-import time
 
-BASE_URL = os.environ.get('BACKEND_URL', '').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "you@example.com")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-me")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@bridgebot.tech")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", os.environ.get("TEST_ADMIN_PASSWORD", ""))
 TEST_USER_EMAIL = os.environ.get("TEST_USER_EMAIL", "testuser@example.com")
 TEST_USER_PASSWORD = os.environ.get("TEST_USER_PASSWORD", "Test@123")
-TEST_USER_USERNAME = "testuser"
-SERVER_LOG = os.environ.get("SERVER_LOG", "/tmp/server.log")
-
-
-def _extract_verification_code(email):
-    """Read the most recent verification code for an email from the server log."""
-    time.sleep(0.5)
-    try:
-        with open(SERVER_LOG) as f:
-            log = f.read()
-        matches = re.findall(
-            rf"To: {re.escape(email)}\nCode: (\d{{6}})", log
-        )
-        return matches[-1] if matches else None
-    except Exception:
-        return None
-
-
-def setup_module(module):
-    """Register, verify, and assign the test user before any test in this module runs."""
-    # Register
-    resp = requests.post(f"{BASE_URL}/api/auth/register", json={
-        "email": TEST_USER_EMAIL,
-        "username": TEST_USER_USERNAME,
-        "password": TEST_USER_PASSWORD,
-    })
-    if resp.status_code not in (200, 400):
-        return
-    already_existed = resp.status_code == 400 and "already registered" in resp.text.lower()
-
-    # Verify (skip if already existed and presumably already verified)
-    if not already_existed:
-        code = _extract_verification_code(TEST_USER_EMAIL)
-        if code:
-            requests.post(f"{BASE_URL}/api/auth/verify", json={
-                "email": TEST_USER_EMAIL, "code": code
-            })
-
-    # Assign to first available instance so login returns 200
-    admin_login = requests.post(f"{BASE_URL}/api/auth/login", json={
-        "email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD
-    })
-    if admin_login.status_code != 200:
-        return
-    token = admin_login.json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    instances = requests.get(f"{BASE_URL}/api/admin/instances", headers=headers).json()
-    if instances:
-        requests.post(
-            f"{BASE_URL}/api/admin/instances/{instances[0]['id']}/assign-user",
-            json={"user_email": TEST_USER_EMAIL},
-            headers=headers,
-        )
-
-
-def teardown_module(module):
-    """Delete the test user after all tests in this module have run."""
-    login = requests.post(f"{BASE_URL}/api/auth/login", json={
-        "email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD
-    })
-    if login.status_code != 200:
-        return
-    token = login.json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    users = requests.get(f"{BASE_URL}/api/admin/users", headers=headers).json()
-    user = next((u for u in users if u["email"] == TEST_USER_EMAIL), None)
-    if user:
-        requests.delete(f"{BASE_URL}/api/admin/users/{user['id']}", headers=headers)
 
 
 @pytest.fixture(scope="module")
 def admin_token():
-    resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+    resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
     assert resp.status_code == 200, f"Admin login failed: {resp.text}"
     data = resp.json()
     return data["token"], data.get("instance_id") or data.get("instances", [{}])[0].get("id", "")
@@ -104,7 +34,7 @@ class TestAuthFlow:
     """Auth endpoints: register, verify, login, me"""
 
     def test_admin_login_success(self):
-        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
+        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD})
         assert resp.status_code == 200
         data = resp.json()
         assert "token" in data
@@ -112,11 +42,11 @@ class TestAuthFlow:
         assert data["user"]["role"] == "superadmin"
 
     def test_login_invalid_password(self):
-        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": ADMIN_EMAIL, "password": "wrongpass"})
+        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": ADMIN_EMAIL, "password": "wrongpass"})
         assert resp.status_code in [401, 400]
 
     def test_login_unregistered_user(self):
-        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": "notexist@example.com", "password": "pass"})
+        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": "notexist@example.com", "password": "pass"})
         assert resp.status_code in [401, 404, 400]
 
     def test_get_me_with_valid_token(self, admin_headers):
@@ -130,33 +60,24 @@ class TestAuthFlow:
         assert resp.status_code == 401
 
     def test_register_new_user(self):
+        # Register a brand new user
         import random
         email = f"testregister_{random.randint(1000,9999)}@example.com"
-        resp = requests.post(f"{BASE_URL}/api/auth/register", json={
-            "email": email, "username": f"testreg{random.randint(1000,9999)}", "password": "Test@123"
-        })
+        resp = requests.post(f"{BASE_URL}/api/auth/register", json={"email": email, "password": "Test@123"})
         assert resp.status_code == 200
         data = resp.json()
         assert "message" in data or "email" in str(data)
 
     def test_register_duplicate_user(self):
-        resp = requests.post(f"{BASE_URL}/api/auth/register", json={
-            "email": ADMIN_EMAIL, "username": "administrator", "password": "Test@123"
-        })
+        resp = requests.post(f"{BASE_URL}/api/auth/register", json={"email": ADMIN_EMAIL, "password": "Test@123"})
         assert resp.status_code in [400, 409]
 
     def test_verify_wrong_code(self):
-        import random
-        # Use a freshly registered but unverified user so we can test code rejection
-        tmp_email = f"unverified_{random.randint(10000,99999)}@example.com"
-        requests.post(f"{BASE_URL}/api/auth/register", json={
-            "email": tmp_email, "username": f"unverified{random.randint(10000,99999)}", "password": "Test@123"
-        })
-        resp = requests.post(f"{BASE_URL}/api/auth/verify", json={"email": tmp_email, "code": "000000"})
+        resp = requests.post(f"{BASE_URL}/api/auth/verify", json={"email": TEST_USER_EMAIL, "code": "000000"})
         assert resp.status_code in [400, 401]
 
     def test_testuser_login(self):
-        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email_or_username": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD})
+        resp = requests.post(f"{BASE_URL}/api/auth/login", json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD})
         assert resp.status_code == 200
         data = resp.json()
         assert "token" in data
@@ -198,7 +119,7 @@ class TestInstanceManagement:
             pytest.skip("No instance created")
         # Login as testuser and check instances
         login_resp = requests.post(f"{BASE_URL}/api/auth/login",
-                                   json={"email_or_username": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD})
+                                   json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD})
         assert login_resp.status_code == 200
         data = login_resp.json()
         assert "instances" in data
