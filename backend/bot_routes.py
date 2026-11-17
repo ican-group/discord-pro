@@ -6,9 +6,46 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
+import os
+
+import outbound_guard as _outbound
 import v2_helpers as h
 
 router = APIRouter(prefix="/v2/orgs", tags=["v2-bots"])
+
+# New bots use a supported provider with no key; the owner adds their own
+# Anthropic or OpenAI key before AI chat works (spec 009, R3.1). The legacy
+# Emergent Universal Key is not available on self-hosted deployments.
+DEFAULT_NEW_BOT_LLM_CONFIG = {"provider": "anthropic", "model": None}
+
+
+def _new_bot_llm_config() -> dict:
+    return dict(DEFAULT_NEW_BOT_LLM_CONFIG)
+
+
+_LLM_SECRET_FIELDS = ("anthropic_api_key", "openai_api_key")
+
+
+def _public_llm_config(cfg) -> dict:
+    """``llm_config`` without API key values (spec 009): only whether each is set."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    out = {k: v for k, v in cfg.items() if k not in _LLM_SECRET_FIELDS}
+    for k in _LLM_SECRET_FIELDS:
+        out[f"{k}_set"] = bool(cfg.get(k))
+    return out
+
+
+def _strip_llm_secrets(doc: dict) -> dict:
+    """Never return stored provider API keys in bot/template responses."""
+    if isinstance(doc, dict) and "llm_config" in doc:
+        doc["llm_config"] = _public_llm_config(doc.get("llm_config"))
+    return doc
+
+
+def _with_llm_status(bot: dict) -> dict:
+    """Attach ``llm_configured`` (no secrets) for the UI (spec 009, R3.2)."""
+    bot["llm_configured"] = h.llm_configured(bot.get("llm_config"))
+    return bot
 
 
 # ── Models ──
@@ -56,15 +93,19 @@ async def list_bots(org_id: str, request: Request):
     """List all bots in the organisation."""
     user, org = await h.require_org_member(request)
     bots = await h._db.bots.find(
-        {"org_id": org_id}, {"_id": 0}
+        {"org_id": org["id"]}, {"_id": 0}
     ).sort("name", 1).to_list(100)
 
     # Attach connection counts per bot
     for bot in bots:
-        bot["connection_count"] = await h._db.connections.count_documents({"bot_id": bot["id"]})
-        bot["active_connection_count"] = await h._db.connections.count_documents(
-            {"bot_id": bot["id"], "enabled": True}
+        bot["connection_count"] = await h._db.connections.count_documents(
+            {"bot_id": bot["id"], "org_id": org["id"]}
         )
+        bot["active_connection_count"] = await h._db.connections.count_documents(
+            {"bot_id": bot["id"], "org_id": org["id"], "enabled": True}
+        )
+        _with_llm_status(bot)
+        _strip_llm_secrets(bot)
     return {"bots": bots}
 
 
@@ -72,11 +113,14 @@ async def list_bots(org_id: str, request: Request):
 async def create_bot(org_id: str, body: BotCreate, request: Request):
     """Create a new AI bot in the organisation."""
     user, org = await h.require_org_member(request)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Bot name is required")
     now = h._now()
     bot = {
         "id": h._uuid(),
-        "org_id": org_id,
-        "name": body.name.strip(),
+        "org_id": org["id"],
+        "name": name,
         "description": (body.description or "").strip(),
         "persona": body.persona or "",
         "custom_instructions": body.custom_instructions or "",
@@ -86,7 +130,7 @@ async def create_bot(org_id: str, body: BotCreate, request: Request):
         "knowledge_gate_pct": 50,
         "fallback_message": "",
         "acknowledgment_replies": {},
-        "llm_config": {"provider": "emergent", "model": None},
+        "llm_config": _new_bot_llm_config(),
         "created_by": user["id"],
         "created_at": now,
         "updated_at": now,
@@ -95,7 +139,7 @@ async def create_bot(org_id: str, body: BotCreate, request: Request):
     bot.pop("_id", None)
     bot["connection_count"] = 0
     bot["active_connection_count"] = 0
-    return bot
+    return _with_llm_status(bot)
 
 
 @router.post("/{org_id}/bots/{bot_id}/clone")
@@ -105,7 +149,7 @@ async def clone_bot(org_id: str, bot_id: str, request: Request):
     now = h._now()
     clone = {
         "id": h._uuid(),
-        "org_id": org_id,
+        "org_id": org["id"],
         "name": f"{source['name']} (Copy)",
         "description": source.get("description", ""),
         "persona": source.get("persona", ""),
@@ -116,7 +160,7 @@ async def clone_bot(org_id: str, bot_id: str, request: Request):
         "knowledge_gate_pct": source.get("knowledge_gate_pct", 50),
         "fallback_message": source.get("fallback_message", ""),
         "acknowledgment_replies": source.get("acknowledgment_replies", {}),
-        "llm_config": source.get("llm_config", {"provider": "emergent", "model": None}),
+        "llm_config": source.get("llm_config") or _new_bot_llm_config(),
         "created_by": user["id"],
         "cloned_from": bot_id,
         "created_at": now,
@@ -126,17 +170,22 @@ async def clone_bot(org_id: str, bot_id: str, request: Request):
     clone.pop("_id", None)
     clone["connection_count"] = 0
     clone["active_connection_count"] = 0
-    return clone
+    _with_llm_status(clone)
+    return _strip_llm_secrets(clone)
 
 
 @router.get("/{org_id}/bots/{bot_id}")
 async def get_bot(org_id: str, bot_id: str, request: Request):
     """Get bot details including connection summary."""
     user, org, bot = await h.require_bot_access(request, bot_id)
-    bot["connection_count"] = await h._db.connections.count_documents({"bot_id": bot_id})
-    bot["active_connection_count"] = await h._db.connections.count_documents(
-        {"bot_id": bot_id, "enabled": True}
+    bot["connection_count"] = await h._db.connections.count_documents(
+        {"bot_id": bot_id, "org_id": org["id"]}
     )
+    bot["active_connection_count"] = await h._db.connections.count_documents(
+        {"bot_id": bot_id, "org_id": org["id"], "enabled": True}
+    )
+    _with_llm_status(bot)
+    _strip_llm_secrets(bot)
     # Get knowledge source count
     legacy_instance_id = bot.get("legacy_instance_id")
     if legacy_instance_id:
@@ -161,7 +210,7 @@ async def update_bot(org_id: str, bot_id: str, body: BotUpdate, request: Request
         val = getattr(body, field, None)
         if val is not None:
             update[field] = val.strip() if isinstance(val, str) else val
-    await h._db.bots.update_one({"id": bot_id}, {"$set": update})
+    await h._db.bots.update_one({"id": bot_id, "org_id": org["id"]}, {"$set": update})
     return {"ok": True}
 
 
@@ -169,16 +218,18 @@ async def update_bot(org_id: str, bot_id: str, body: BotUpdate, request: Request
 async def delete_bot(org_id: str, bot_id: str, request: Request):
     """Delete a bot and its connections (not the accounts)."""
     user, org, bot = await h.require_bot_access(request, bot_id)
-    active = await h._db.connections.count_documents({"bot_id": bot_id, "enabled": True})
+    active = await h._db.connections.count_documents(
+        {"bot_id": bot_id, "org_id": org["id"], "enabled": True}
+    )
     if active > 0:
         raise HTTPException(
             400,
             f"Bot has {active} active connection(s). Disable them first or use force=true."
         )
     # Delete connections
-    await h._db.connections.delete_many({"bot_id": bot_id})
+    await h._db.connections.delete_many({"bot_id": bot_id, "org_id": org["id"]})
     # Delete the bot
-    await h._db.bots.delete_one({"id": bot_id})
+    await h._db.bots.delete_one({"id": bot_id, "org_id": org["id"]})
     return {"ok": True, "deleted_connections": active}
 
 
@@ -198,7 +249,8 @@ async def get_bot_settings(org_id: str, bot_id: str, request: Request):
         "knowledge_gate_pct": bot.get("knowledge_gate_pct", 50),
         "fallback_message": bot.get("fallback_message", ""),
         "acknowledgment_replies": bot.get("acknowledgment_replies", {}),
-        "llm_config": bot.get("llm_config", {}),
+        "llm_config": _public_llm_config(bot.get("llm_config")),
+        "llm_configured": h.llm_configured(bot.get("llm_config")),
         "api_query_enabled": bot.get("api_query_enabled", False),
         "api_base_url": bot.get("api_base_url", ""),
     }
@@ -210,11 +262,15 @@ async def update_bot_settings(org_id: str, bot_id: str, body: BotSettingsUpdate,
     user, org, bot = await h.require_bot_access(request, bot_id)
     update = {"updated_at": h._now()}
     for field in body.model_fields_set:
+        if field == "llm_config":
+            # Provider/model/keys change only via the validated, key-preserving
+            # /llm-config endpoint (spec 009): never overwrite stored keys here.
+            continue
         val = getattr(body, field)
         if val is not None:
             update[field] = val
     if len(update) > 1:  # more than just updated_at
-        await h._db.bots.update_one({"id": bot_id}, {"$set": update})
+        await h._db.bots.update_one({"id": bot_id, "org_id": org["id"]}, {"$set": update})
     return {"ok": True}
 
 
@@ -239,7 +295,7 @@ async def save_bot_as_template(org_id: str, bot_id: str, request: Request):
     now = h._now()
     template = {
         "id": h._uuid(),
-        "org_id": org_id,
+        "org_id": org["id"],
         "name": template_name,
         "description": description,
         "source_bot_id": bot_id,
@@ -253,7 +309,7 @@ async def save_bot_as_template(org_id: str, bot_id: str, request: Request):
 
     await h._db.bot_templates.insert_one(template)
     template.pop("_id", None)
-    return template
+    return _strip_llm_secrets(template)
 
 
 @router.get("/{org_id}/templates")
@@ -261,26 +317,25 @@ async def list_templates(org_id: str, request: Request):
     """List all saved bot templates in the organisation."""
     user, org = await h.require_org_member(request)
     templates = await h._db.bot_templates.find(
-        {"org_id": org_id}, {"_id": 0}
+        {"org_id": org["id"]}, {"_id": 0}
     ).sort("created_at", -1).to_list(100)
-    return {"templates": templates}
+    return {"templates": [_strip_llm_secrets(t) for t in templates]}
 
 
 @router.post("/{org_id}/templates/{template_id}/create-bot")
 async def create_bot_from_template(org_id: str, template_id: str, request: Request):
     """Create a new bot from a saved template."""
-    user, org = await h.require_org_member(request)
-    template = await h._db.bot_templates.find_one({"id": template_id, "org_id": org_id})
-    if not template:
-        raise HTTPException(404, "Template not found")
+    user, org, template = await h.require_template_access(request, template_id)
 
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     bot_name = (body.get("name") or f"{template['name']}").strip()
 
     now = h._now()
+    if not bot_name:
+        raise HTTPException(400, "Bot name is required")
     bot = {
         "id": h._uuid(),
-        "org_id": org_id,
+        "org_id": org["id"],
         "name": bot_name,
         "description": template.get("description", ""),
         "created_by": user["id"],
@@ -297,20 +352,21 @@ async def create_bot_from_template(org_id: str, template_id: str, request: Reque
     if not bot.get("acknowledgment_replies"):
         bot["acknowledgment_replies"] = {}
     if not bot.get("llm_config"):
-        bot["llm_config"] = {"provider": "emergent", "model": None}
+        bot["llm_config"] = _new_bot_llm_config()
 
     await h._db.bots.insert_one(bot)
     bot.pop("_id", None)
     bot["connection_count"] = 0
     bot["active_connection_count"] = 0
-    return bot
+    _with_llm_status(bot)
+    return _strip_llm_secrets(bot)
 
 
 @router.delete("/{org_id}/templates/{template_id}")
 async def delete_template(org_id: str, template_id: str, request: Request):
     """Delete a bot template."""
-    user, org = await h.require_org_member(request)
-    result = await h._db.bot_templates.delete_one({"id": template_id, "org_id": org_id})
+    user, org, template = await h.require_template_access(request, template_id)
+    result = await h._db.bot_templates.delete_one({"id": template_id, "org_id": org["id"]})
     if result.deleted_count == 0:
         raise HTTPException(404, "Template not found")
     return {"ok": True}
@@ -366,6 +422,9 @@ async def get_bot_llm_config(org_id: str, bot_id: str, request: Request):
         "allowed_anthropic_models": list(refs.get("allowed_anthropic", {}).keys()),
         "allowed_openai_models": list(refs.get("allowed_openai", {}).keys()),
         "default_models": refs.get("defaults", {}),
+        "llm_configured": h.llm_configured(cfg),
+        "emergent_available": h.emergent_available(),
+        "ollama_enabled": _outbound.ollama_enabled(os.environ),
     }
 
 
@@ -387,15 +446,23 @@ async def put_bot_llm_config(org_id: str, bot_id: str, body: LLMConfigUpdate, re
         raise HTTPException(400, f"Anthropic model must be one of: {list(allowed_anthropic.keys())}")
     if provider == "openai" and model and model not in allowed_openai:
         raise HTTPException(400, f"OpenAI model must be one of: {list(allowed_openai.keys())}")
+    ollama_base_url = (body.ollama_base_url or "").strip() or None
+    if provider == "ollama":
+        # Only operator-allowlisted origins (spec 010); stored in normalised form.
+        try:
+            ollama_base_url = _outbound.check_ollama_base_url(
+                ollama_base_url or os.environ.get("OLLAMA_BASE_URL") or "", os.environ)
+        except _outbound.OutboundBlocked as exc:
+            raise HTTPException(400, str(exc))
     new_cfg = {
         "provider": provider,
         "model": model,
         "anthropic_api_key": (body.anthropic_api_key.strip() if body.anthropic_api_key else None) or existing.get("anthropic_api_key"),
         "openai_api_key": (body.openai_api_key.strip() if body.openai_api_key else None) or existing.get("openai_api_key"),
-        "ollama_base_url": (body.ollama_base_url or "").strip() or None,
+        "ollama_base_url": ollama_base_url,
     }
     await h._db.bots.update_one(
-        {"id": bot_id},
+        {"id": bot_id, "org_id": org["id"]},
         {"$set": {"llm_config": new_cfg, "updated_at": h._now()}}
     )
     # Clear cached LLM sessions for this bot
@@ -418,6 +485,7 @@ async def put_bot_llm_config(org_id: str, bot_id: str, body: LLMConfigUpdate, re
         "openai_api_key_set": bool(openai_key),
         "openai_api_key_preview": (openai_key[:7] + "…" + openai_key[-4:]) if len(openai_key) > 12 else "",
         "ollama_base_url": new_cfg.get("ollama_base_url") or "",
+        "llm_configured": h.llm_configured(new_cfg),
     }
 
 
@@ -440,5 +508,10 @@ async def test_bot_llm_config(org_id: str, bot_id: str, request: Request):
             platform="test",
         )
         return {"success": True, "response": resp}
+    except HTTPException as e:
+        return {"success": False, "error": str(e.detail)}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        # Never echo raw exception text (may contain upstream content; spec 010).
+        import logging
+        logging.getLogger(__name__).warning("LLM test failed: %s", type(e).__name__)
+        return {"success": False, "error": "The AI provider test failed."}

@@ -29,6 +29,9 @@ def _matches(doc, flt):
         if isinstance(cond, dict) and "$exists" in cond:
             if present != bool(cond["$exists"]):
                 return False
+        elif isinstance(cond, dict) and "$ne" in cond:
+            if present and value == cond["$ne"]:
+                return False
         elif isinstance(cond, dict) and "$in" in cond:
             values = value if isinstance(value, list) else [value]
             if not present or not any(v in cond["$in"] for v in values):

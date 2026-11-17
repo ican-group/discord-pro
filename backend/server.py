@@ -47,6 +47,7 @@ import api_diagnostics_routes
 import telegram_routes
 import zendesk_routes
 import v2_helpers
+import outbound_guard as _outbound
 import org_routes
 import bot_routes
 import account_routes
@@ -298,6 +299,11 @@ app = FastAPI(**_DOCS_KWARGS)
 api_router = APIRouter(prefix="/api")
 
 
+# SECURITY (spec 011): the URL-import routes below this guard (/knowledge/sources/url,
+# /url/crawl, /url/crawl-stream, /url/rescrape, /bulk-rescrape, /github/*) fetch
+# user-supplied URLs with redirect-following httpx clients and NO SSRF protection.
+# They must not be enabled (this guard, APP_MODE=api) until every fetch goes through
+# outbound_guard.guarded_request (or an equivalent pinned, no-redirect fetch).
 class _KnowledgeBaseGuard:
     """Pure ASGI middleware: in APP_MODE=api, every existing MongoDB Knowledge Base
     route (/api/knowledge and everything beneath it, including legacy and streaming
@@ -352,6 +358,13 @@ ALLOWED_OPENAI_MODELS = {
     "o4-mini": "o4-mini",
 }
 DEFAULT_OPENAI_MODEL = "gpt-4o"
+
+# Shown when a bot's provider has no key (spec 009, R3.3). New bots default to
+# Anthropic with no key, so the owner must add their own before chat works.
+_MISSING_ANTHROPIC_KEY = ("No Anthropic API key is configured for this bot. "
+                          "Add one in Bot Settings → AI Provider.")
+_MISSING_OPENAI_KEY = ("No OpenAI API key is configured for this bot. "
+                       "Add one in Bot Settings → AI Provider.")
 
 # Per-instance Discord bot tracking
 # Guild-to-instance mapping for shared token routing
@@ -1431,7 +1444,7 @@ async def _call_anthropic(session_id: str, user_message: str, system_prompt: str
                           instance_id: str, model_short: str, api_key: str) -> tuple:
     """LLM call via direct Anthropic SDK. Returns (text, in_tok, out_tok) using real usage."""
     if not api_key:
-        raise HTTPException(status_code=500, detail="Anthropic API key not configured for this instance")
+        raise HTTPException(status_code=500, detail=_MISSING_ANTHROPIC_KEY)
     api_model = ALLOWED_ANTHROPIC_MODELS.get(model_short)
     if not api_model:
         raise HTTPException(status_code=500, detail=f"Model '{model_short}' is not in the Anthropic allowlist")
@@ -1460,24 +1473,45 @@ async def _call_anthropic(session_id: str, user_message: str, system_prompt: str
     in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else _estimate_tokens(system_prompt) + _estimate_tokens(user_message)
     out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else _estimate_tokens(text)
     return text, in_tok, out_tok
+def _ollama_http_client(timeout: float = 120.0):
+    """HTTP client for Ollama (spec 010): never follows redirects, ignores proxy env vars."""
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False)
+
+
+async def _ollama_target(base_url: str) -> tuple:
+    """(url, headers, extensions) for an allowed, DNS-checked, IP-pinned Ollama
+    endpoint, or HTTPException 400 with a safe message (spec 010)."""
+    try:
+        return await _outbound.prepare_ollama_request(
+            base_url or os.environ.get("OLLAMA_BASE_URL") or "", os.environ, "/api/chat")
+    except _outbound.OutboundBlocked as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 async def _call_ollama(session_id: str, user_message: str, system_prompt: str,
                        instance_id: str, model: str, base_url: str) -> tuple:
-    """LLM call via Ollama. Returns (text, in_tok, out_tok). Ollama returns eval counts directly."""
-    base_url = (base_url or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+    """LLM call via Ollama. Returns (text, in_tok, out_tok). Ollama returns eval counts directly.
+    Error details never include the upstream response body (spec 010)."""
+    url, headers, extensions = await _ollama_target(base_url)
     key = f"{session_id}_{instance_id}_ollama_{model}"
     history = llm_history.get(key) or []
     history.append({"role": "user", "content": user_message})
     messages = [{"role": "system", "content": system_prompt}] + history
     payload = {"model": model, "messages": messages, "stream": False}
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with _ollama_http_client() as client:
         try:
-            r = await client.post(f"{base_url}/api/chat", json=payload)
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=502, detail=f"Ollama error {e.response.status_code}: {e.response.text[:200]}")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=502, detail=f"Ollama unreachable at {base_url}: {e}")
-    data = r.json()
+            r = await client.post(url, json=payload, headers=headers, extensions=extensions)
+        except httpx.HTTPError as e:
+            logger.warning("Ollama request failed: %s", type(e).__name__)
+            raise HTTPException(status_code=502, detail="Could not reach the Ollama server.")
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"The Ollama server returned HTTP {r.status_code}.")
+    try:
+        data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(status_code=502, detail="The Ollama server returned an invalid response.")
     text = (data.get("message") or {}).get("content") or ""
     history.append({"role": "assistant", "content": text})
     llm_history[key] = history[-40:]
@@ -1488,7 +1522,7 @@ async def _call_openai(session_id: str, user_message: str, system_prompt: str,
                        instance_id: str, model: str, api_key: str) -> tuple:
     """LLM call via direct OpenAI SDK. Returns (text, in_tok, out_tok) using real usage."""
     if not api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured for this instance")
+        raise HTTPException(status_code=500, detail=_MISSING_OPENAI_KEY)
     api_model = ALLOWED_OPENAI_MODELS.get(model)
     if not api_model:
         raise HTTPException(status_code=500, detail=f"Model '{model}' is not in the OpenAI allowlist")
@@ -1743,6 +1777,8 @@ async def _stream_anthropic(session_id: str, user_message: str, system_prompt: s
     """Yield text chunks from Anthropic streaming API. Returns (async_generator, finalize_fn).
     finalize_fn must be called after consuming the generator to get (full_text, in_tok, out_tok)."""
     import anthropic as _anthropic
+    if not api_key:
+        raise HTTPException(status_code=500, detail=_MISSING_ANTHROPIC_KEY)
     client = _anthropic.AsyncAnthropic(api_key=api_key)
     api_model = ALLOWED_ANTHROPIC_MODELS.get(model_short)
     if not api_model:
@@ -1788,8 +1824,9 @@ async def _stream_anthropic(session_id: str, user_message: str, system_prompt: s
 
 async def _stream_ollama(session_id: str, user_message: str, system_prompt: str,
                          instance_id: str, model: str, base_url: str):
-    """Yield text chunks from Ollama streaming. Returns (async_generator, finalize_fn)."""
-    base_url = (base_url or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434").rstrip("/")
+    """Yield text chunks from Ollama streaming. Returns (async_generator, finalize_fn).
+    The destination is checked before streaming starts (spec 010)."""
+    url, req_headers, extensions = await _ollama_target(base_url)
     key = f"{session_id}_{instance_id}_ollama_{model}"
     history = llm_history.get(key) or []
     history.append({"role": "user", "content": user_message})
@@ -1803,9 +1840,12 @@ async def _stream_ollama(session_id: str, user_message: str, system_prompt: str,
     async def generate():
         nonlocal in_tok, out_tok
         try:
-            async with httpx.AsyncClient(timeout=120.0) as hclient:
-                async with hclient.stream("POST", f"{base_url}/api/chat", json=payload) as resp:
-                    resp.raise_for_status()
+            async with _ollama_http_client() as hclient:
+                async with hclient.stream("POST", url, json=payload, headers=req_headers,
+                                          extensions=extensions) as resp:
+                    if resp.status_code != 200:
+                        yield f"\n[Error: the Ollama server returned HTTP {resp.status_code}]"
+                        return
                     async for line in resp.aiter_lines():
                         if not line.strip():
                             continue
@@ -1821,8 +1861,8 @@ async def _stream_ollama(session_id: str, user_message: str, system_prompt: str,
                             in_tok = int(chunk.get("prompt_eval_count") or 0) or _estimate_tokens(system_prompt + user_message)
                             out_tok = int(chunk.get("eval_count") or 0) or _estimate_tokens("".join(full_text_parts))
         except Exception as e:
-            logger.error(f"Ollama stream error: {e}")
-            yield f"\n[Error: Ollama unavailable: {e}]"
+            logger.error("Ollama stream error: %s", type(e).__name__)
+            yield "\n[Error: the Ollama server could not be reached]"
 
     async def finalize():
         full = "".join(full_text_parts)
@@ -1837,7 +1877,7 @@ async def _stream_openai(session_id: str, user_message: str, system_prompt: str,
                          instance_id: str, model: str, api_key: str):
     """Yield text chunks from OpenAI streaming API. Returns (async_generator, finalize_fn)."""
     if not api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured for this instance")
+        raise HTTPException(status_code=500, detail=_MISSING_OPENAI_KEY)
     api_model = ALLOWED_OPENAI_MODELS.get(model)
     if not api_model:
         raise HTTPException(status_code=500, detail=f"Model '{model}' not in allowlist")

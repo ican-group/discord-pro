@@ -17,6 +17,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Optional
 
+import outbound_guard as _outbound
 import security_utils as _sec
 import webhook_auth as _webhook_auth
 from log_redaction import sanitize_for_log
@@ -88,14 +89,21 @@ class ZendeskOAuthClientConfig(BaseModel):
 # ────────────────── Helpers ──────────────────
 
 def _normalize_subdomain(raw: str) -> str:
-    """Normalize 'midnight-gd.zendesk.com', 'https://midnight-gd.zendesk.com/', etc. → 'midnight-gd'."""
-    s = raw.strip().rstrip("/")
-    if "://" in s:
-        s = s.split("://", 1)[1]
-    if ".zendesk.com" in s:
-        s = s.split(".zendesk.com", 1)[0]
-    s = s.split("/")[0].lower()
-    return s
+    """Normalize 'midnight-gd.zendesk.com', 'https://midnight-gd.zendesk.com/', etc. → 'midnight-gd'.
+    Anything that is not a single DNS label is rejected with 400 (spec 010)."""
+    try:
+        return _outbound.normalize_zendesk_subdomain(raw)
+    except _outbound.OutboundBlocked as exc:
+        raise HTTPException(400, str(exc))
+
+
+def _zd_url(subdomain, path: str) -> str:
+    """The only way this module builds a Zendesk URL: https://<label>.zendesk.com<path>.
+    Stored subdomains are re-validated before any token is sent (spec 010)."""
+    try:
+        return _outbound.zendesk_url(subdomain, path)
+    except _outbound.OutboundBlocked as exc:
+        raise HTTPException(400, str(exc))
 
 
 def _generate_pkce() -> tuple:
@@ -176,7 +184,7 @@ async def _ensure_valid_token(cfg: dict) -> str:
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
-                f"https://{cfg['subdomain']}.zendesk.com/oauth/tokens",
+                _zd_url(cfg.get("subdomain"), "/oauth/tokens"),
                 json={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
@@ -223,7 +231,7 @@ async def _ensure_valid_token(cfg: dict) -> str:
 async def _zendesk_request(cfg: dict, method: str, path: str, body: dict = None):
     """Zendesk API call. Auto-selects Bearer (OAuth) or Basic (legacy) auth."""
     subdomain = cfg.get("subdomain", "")
-    url = f"https://{subdomain}.zendesk.com/api/v2{path}"
+    url = _zd_url(subdomain, f"/api/v2{path}")
 
     if cfg.get("auth_type") == "oauth":
         token = await _ensure_valid_token(cfg)
@@ -309,7 +317,7 @@ async def zendesk_oauth_start(body: ZendeskOAuthStartRequest, request: Request):
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     })
-    auth_url = f"https://{subdomain}.zendesk.com/oauth/authorizations/new?{params}"
+    auth_url = f"{_zd_url(subdomain, '/oauth/authorizations/new')}?{params}"
     return {"redirect_url": auth_url, "subdomain": subdomain}
 
 
@@ -378,7 +386,7 @@ async def zendesk_oauth_callback(request: Request):
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
-                f"https://{subdomain}.zendesk.com/oauth/tokens",
+                _zd_url(subdomain, "/oauth/tokens"),
                 json=token_payload,
             )
             if resp.status_code != 200:
@@ -413,7 +421,7 @@ async def zendesk_oauth_callback(request: Request):
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             me_resp = await client.get(
-                f"https://{subdomain}.zendesk.com/api/v2/users/me.json",
+                _zd_url(subdomain, "/api/v2/users/me.json"),
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             )
             if me_resp.status_code == 403:
@@ -606,7 +614,7 @@ async def delete_zendesk_config(request: Request):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.delete(
-                    f"https://{cfg['subdomain']}.zendesk.com/api/v2/oauth/tokens/current.json",
+                    _zd_url(cfg.get("subdomain"), "/api/v2/oauth/tokens/current.json"),
                     headers={"Authorization": f"Bearer {cfg['oauth_access_token']}"},
                 )
         except Exception:

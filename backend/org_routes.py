@@ -67,9 +67,28 @@ async def create_org(body: OrgCreate, request: Request):
     """Create a new organisation. The creator becomes the owner.
     If workspace_id is provided, the org is scoped to that workspace and
     the user must have workspace admin+ access. If omitted, the org is
-    assigned to the user's first workspace (or left unscoped for legacy compat)."""
+    assigned to a workspace the user administers (superadmins: their first
+    workspace), or left unscoped for legacy compat. The workspace's org limit
+    applies either way (spec 009, R1.5)."""
     user = await h._authed_user(request)
-    ws_id = body.workspace_id
+    name = (body.name or "").strip()
+    if not name:
+        raise h.HTTPException(400, "Organisation name is required")
+    ws_id = (body.workspace_id or "").strip() or None
+    if not ws_id and not h._is_platform_superadmin(user):
+        # Auto-assign only to a workspace the caller administers (spec 009, R1.5);
+        # plain workspace members must not create orgs inside the workspace.
+        admin_membership = await h._db.workspace_members.find_one(
+            {"user_id": user["id"], "role": {"$in": ["owner", "admin"]}}, {"workspace_id": 1}
+        )
+        if admin_membership:
+            ws_id = admin_membership["workspace_id"]
+    elif not ws_id:
+        first_membership = await h._db.workspace_members.find_one(
+            {"user_id": user["id"]}, {"workspace_id": 1}
+        )
+        if first_membership:
+            ws_id = first_membership["workspace_id"]
     if ws_id:
         # Validate workspace access — must be workspace admin or higher
         ws = await h._get_workspace(ws_id)
@@ -82,16 +101,9 @@ async def create_org(body: OrgCreate, request: Request):
         limit = ws.get("billing", {}).get("limits", {}).get("max_organisations", 100)
         if current_org_count >= limit:
             raise h.HTTPException(400, f"Organisation limit reached ({limit}) for this workspace")
-    else:
-        # Auto-assign to user's first workspace if they have one
-        first_membership = await h._db.workspace_members.find_one(
-            {"user_id": user["id"]}, {"workspace_id": 1}
-        )
-        if first_membership:
-            ws_id = first_membership["workspace_id"]
     org = {
         "id": h._uuid(),
-        "name": body.name.strip(),
+        "name": name,
         "description": (body.description or "").strip(),
         "workspace_id": ws_id,
         "owner_id": user["id"],
@@ -124,7 +136,7 @@ async def update_org(org_id: str, body: OrgUpdate, request: Request):
         update["name"] = body.name.strip()
     if body.description is not None:
         update["description"] = body.description.strip()
-    await h._db.organisations.update_one({"id": org_id}, {"$set": update})
+    await h._db.organisations.update_one({"id": org["id"]}, {"$set": update})
     return {"ok": True}
 
 
@@ -132,17 +144,18 @@ async def update_org(org_id: str, body: OrgUpdate, request: Request):
 async def delete_org(org_id: str, request: Request):
     """Delete an organisation and all its bots, connections, templates."""
     user = await h._authed_user(request)
+    org_id = h.resolve_target_org_id(request)
     org = await h._db.organisations.find_one({"id": org_id})
     if not org:
         raise HTTPException(404, "Organisation not found")
-    if user.get("role") != "superadmin" and org.get("owner_id") != user["id"]:
+    if not h._is_platform_superadmin(user) and org.get("owner_id") != user["id"]:
         raise HTTPException(403, "Only the org owner or superadmin can delete an organisation")
     # Remove related data
-    await h._db.bots.delete_many({"org_id": org_id})
-    await h._db.connections.delete_many({"org_id": org_id})
-    await h._db.connected_accounts.delete_many({"org_id": org_id})
-    await h._db.bot_templates.delete_many({"org_id": org_id})
-    await h._db.organisations.delete_one({"id": org_id})
+    await h._db.bots.delete_many({"org_id": org["id"]})
+    await h._db.connections.delete_many({"org_id": org["id"]})
+    await h._db.connected_accounts.delete_many({"org_id": org["id"]})
+    await h._db.bot_templates.delete_many({"org_id": org["id"]})
+    await h._db.organisations.delete_one({"id": org["id"]})
     return {"ok": True}
 
 
@@ -166,17 +179,18 @@ async def list_members(org_id: str, request: Request):
 async def add_member(org_id: str, body: AddMember, request: Request):
     """Add a user to the organisation."""
     user, org = await h.require_org_admin(request)
+    role = h.validate_org_role(body.role)
     target = await h._db.users.find_one({"id": body.user_id}, {"_id": 0})
     if not target:
         raise h.HTTPException(404, "User not found")
     if body.user_id in org.get("member_ids", []):
         raise h.HTTPException(409, "User is already a member")
     await h._db.organisations.update_one(
-        {"id": org_id},
+        {"id": org["id"]},
         {
             "$addToSet": {"member_ids": body.user_id},
             "$set": {
-                f"member_roles.{body.user_id}": body.role or "member",
+                f"member_roles.{body.user_id}": role,
                 "updated_at": h._now(),
             },
         },
@@ -193,7 +207,7 @@ async def remove_member(org_id: str, member_id: str, request: Request):
     if member_id not in org.get("member_ids", []):
         raise h.HTTPException(404, "User is not a member")
     await h._db.organisations.update_one(
-        {"id": org_id},
+        {"id": org["id"]},
         {
             "$pull": {"member_ids": member_id},
             "$unset": {f"member_roles.{member_id}": ""},
@@ -207,13 +221,14 @@ async def remove_member(org_id: str, member_id: str, request: Request):
 async def update_member_role(org_id: str, member_id: str, body: AddMember, request: Request):
     """Change a member's org role."""
     user, org = await h.require_org_admin(request)
+    role = h.validate_org_role(body.role)
     if member_id not in org.get("member_ids", []):
         raise h.HTTPException(404, "User is not a member")
-    if member_id == org.get("owner_id") and body.role != "admin":
+    if member_id == org.get("owner_id") and role != "admin":
         raise h.HTTPException(400, "Cannot demote the owner")
     await h._db.organisations.update_one(
-        {"id": org_id},
-        {"$set": {f"member_roles.{member_id}": body.role, "updated_at": h._now()}},
+        {"id": org["id"]},
+        {"$set": {f"member_roles.{member_id}": role, "updated_at": h._now()}},
     )
     return {"ok": True}
 
@@ -227,13 +242,13 @@ async def org_overview(org_id: str, request: Request):
     user, org = await h.require_org_member(request)
 
     # Counts
-    bots = await h._db.bots.find({"org_id": org_id}, {"_id": 0}).to_list(100)
+    bots = await h._db.bots.find({"org_id": org["id"]}, {"_id": 0}).to_list(100)
     bot_ids = [b["id"] for b in bots]
     legacy_ids = [b.get("legacy_instance_id", b["id"]) for b in bots]
 
-    account_count = await h._db.connected_accounts.count_documents({"org_id": org_id})
-    connection_count = await h._db.connections.count_documents({"org_id": org_id})
-    active_connections = await h._db.connections.count_documents({"org_id": org_id, "enabled": True})
+    account_count = await h._db.connected_accounts.count_documents({"org_id": org["id"]})
+    connection_count = await h._db.connections.count_documents({"org_id": org["id"]})
+    active_connections = await h._db.connections.count_documents({"org_id": org["id"], "enabled": True})
     suggestion_count = await h._db.v2_suggestions.count_documents({"bot_id": {"$in": bot_ids}})
     pending_suggestions = await h._db.v2_suggestions.count_documents({"bot_id": {"$in": bot_ids}, "status": "pending"})
 
@@ -287,7 +302,7 @@ async def org_overview(org_id: str, request: Request):
 
     # Connection breakdown by provider
     conn_pipeline = [
-        {"$match": {"org_id": org_id}},
+        {"$match": {"org_id": org["id"]}},
         {"$group": {"_id": "$provider", "total": {"$sum": 1},
                     "active": {"$sum": {"$cond": ["$enabled", 1, 0]}}}},
     ]
@@ -297,7 +312,7 @@ async def org_overview(org_id: str, request: Request):
 
     # Connection breakdown by response_mode
     mode_pipeline = [
-        {"$match": {"org_id": org_id}},
+        {"$match": {"org_id": org["id"]}},
         {"$group": {"_id": "$response_mode", "count": {"$sum": 1}}},
     ]
     mode_breakdown = {}

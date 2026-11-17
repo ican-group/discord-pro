@@ -15,7 +15,9 @@ from datetime import datetime, timezone
 from typing import Optional, List
 from urllib.parse import urlparse
 
-import httpx
+import json as _json
+
+import outbound_guard as _outbound
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -47,54 +49,11 @@ def decrypt_value(ciphertext: str) -> str:
         return ""
 
 # ── SSRF Protection ─────────────────────────────────────────────────────
-
-BLOCKED_NETWORKS = [
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.0.0.0/24"),
-    ipaddress.ip_network("192.0.2.0/24"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("198.18.0.0/15"),
-    ipaddress.ip_network("198.51.100.0/24"),
-    ipaddress.ip_network("203.0.113.0/24"),
-    ipaddress.ip_network("224.0.0.0/4"),
-    ipaddress.ip_network("240.0.0.0/4"),
-    ipaddress.ip_network("255.255.255.255/32"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("::ffff:127.0.0.0/104"),
-    ipaddress.ip_network("::ffff:10.0.0.0/104"),
-    ipaddress.ip_network("::ffff:172.16.0.0/108"),
-    ipaddress.ip_network("::ffff:192.168.0.0/112"),
-]
-
-def _is_safe_url(url: str) -> tuple[bool, str]:
-    """Validate URL is safe for outbound requests. Returns (is_safe, reason)."""
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False, "Invalid URL"
-    if parsed.scheme not in ("http", "https"):
-        return False, f"Scheme '{parsed.scheme}' not allowed"
-    hostname = parsed.hostname
-    if not hostname:
-        return False, "No hostname"
-    # Resolve DNS
-    try:
-        addrs = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
-    except socket.gaierror:
-        return False, f"DNS resolution failed for {hostname}"
-    for family, _, _, _, sockaddr in addrs:
-        ip = ipaddress.ip_address(sockaddr[0])
-        for net in BLOCKED_NETWORKS:
-            if ip in net:
-                return False, f"Resolved to blocked address {ip}"
-    return True, "OK"
+# All outbound integration traffic goes through outbound_guard.guarded_request
+# (spec 011): strict URL parsing, public-address check of every DNS answer, IP
+# pinning with TLS verification against the real host name, no redirects, no
+# proxies, sanitised headers and fixed error messages. The previous blocklist
+# (_is_safe_url) followed redirects before checking them and resolved DNS twice.
 
 MAX_RESPONSE_SIZE = 500_000  # 500KB — ordinary API execution
 MAX_DOC_RESPONSE_SIZE = 2_000_000  # 2MB — OpenAPI / documentation downloads
@@ -105,65 +64,41 @@ async def safe_api_request(
     method: str, url: str, headers: dict = None, params: dict = None,
     timeout: float = REQUEST_TIMEOUT, max_size: int = MAX_RESPONSE_SIZE
 ) -> dict:
-    """Execute an SSRF-safe outbound HTTP request. Returns structured result."""
+    """Execute an SSRF-safe outbound GET. Returns structured result.
+
+    Response data is only returned for successful (2xx) responses; errors carry
+    fixed messages (status code + reason phrase) and never upstream content.
+    Redirects are reported, not followed.
+    """
     if method.upper() != "GET":
         return {"success": False, "status": 0, "error": "Only GET requests are allowed"}
 
-    safe, reason = _is_safe_url(url)
-    if not safe:
-        return {"success": False, "status": 0, "error": f"URL blocked: {reason}"}
-
     start = datetime.now(timezone.utc)
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout, follow_redirects=True, max_redirects=3
-        ) as client:
-            resp = await client.get(url, headers=headers or {}, params=params or {})
+        resp = await _outbound.guarded_request(
+            "GET", url, env=os.environ, headers=headers, params=params,
+            timeout=timeout, max_size=max_size)
+    except _outbound.OutboundBlocked as exc:
+        return {"success": False, "status": 0, "error": f"URL blocked: {exc}"}
+    except _outbound.OutboundError as exc:
+        return {"success": False, "status": 0, "error": str(exc)}
 
-            # Check final redirect destination
-            final_url = str(resp.url)
-            safe2, reason2 = _is_safe_url(final_url)
-            if not safe2:
-                return {"success": False, "status": 0, "error": f"Redirect blocked: {reason2}"}
-
-            content_len = len(resp.content)
-            if content_len > max_size:
-                return {"success": False, "status": resp.status_code,
-                        "error": f"Response too large ({content_len} bytes, max {max_size})"}
-
-            duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-            try:
-                data = resp.json()
-            except Exception:
-                data = resp.text[:10000]
-
-            is_ok = resp.status_code < 400
-            error_msg = None
-            if not is_ok:
-                # Build a descriptive error message for HTTP errors
-                reason = resp.reason_phrase or ""
-                body_preview = ""
-                if isinstance(data, dict):
-                    body_preview = data.get("message") or data.get("error") or data.get("detail") or ""
-                elif isinstance(data, str):
-                    body_preview = data[:200]
-                if body_preview:
-                    error_msg = f"HTTP {resp.status_code} {reason}: {body_preview}"
-                else:
-                    error_msg = f"HTTP {resp.status_code} {reason}"
-
-            return {
-                "success": is_ok,
-                "status": resp.status_code,
-                "data": data,
-                "duration_ms": duration_ms,
-                "response_size": content_len,
-                "error": error_msg,
-            }
-    except httpx.TimeoutException:
-        return {"success": False, "status": 0, "error": "Request timed out"}
-    except Exception as e:
-        return {"success": False, "status": 0, "error": str(e)[:300]}
+    duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+    status = resp["status"]
+    content = resp["content"]
+    base = {"status": status, "duration_ms": duration_ms, "response_size": len(content)}
+    if resp["truncated"]:
+        return {**base, "success": False, "error": f"Response too large (max {max_size} bytes)"}
+    if 300 <= status < 400:
+        return {**base, "success": False,
+                "error": f"Redirect not followed (HTTP {status}). Configure the final URL instead."}
+    if status >= 400:
+        return {**base, "success": False, "error": f"HTTP {status} {resp['reason']}".strip()}
+    try:
+        data = _json.loads(content)
+    except ValueError:
+        data = content.decode("utf-8", "replace")[:10000]
+    return {**base, "success": True, "data": data, "error": None}
 
 
 # ── Enhanced OpenAPI Parser ──────────────────────────────────────────────

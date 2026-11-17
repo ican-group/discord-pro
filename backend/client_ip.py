@@ -31,6 +31,13 @@ UNKNOWN_CLIENT = "unknown"
 # trusted proxy. Lower-case for case-insensitive lookup.
 CF_CONNECTING_IP = "cf-connecting-ip"
 
+# Every header that can carry a client address. Only client_ip.py names them
+# (R-IP.1). Inbound, all are ignored except CF_CONNECTING_IP from a trusted
+# proxy; outbound (spec 011), API integrations may never send any of them.
+CLIENT_ADDRESS_HEADERS = frozenset({
+    "forwarded", "x-forwarded-for", "x-real-ip", CF_CONNECTING_IP, "true-client-ip", "x-client-ip",
+})
+
 TRUSTED_PROXY_ENV = "TRUSTED_PROXY_IPS"
 
 # Upper bound on header length we are willing to parse.

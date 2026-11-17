@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+import outbound_guard as _outbound
 import v2_helpers as h
 
 router = APIRouter(prefix="/v2/orgs", tags=["v2-accounts"])
@@ -44,6 +45,17 @@ def _validate_provider(provider: str):
         raise HTTPException(400, f"Invalid provider: {provider}. Must be one of: {', '.join(VALID_PROVIDERS)}")
 
 
+def _validated_credentials(provider: str, credentials: dict) -> dict:
+    """Normalise/validate credential fields that decide where secrets are sent (spec 010)."""
+    creds = dict(credentials or {})
+    if provider == "zendesk" and creds.get("subdomain") not in (None, ""):
+        try:
+            creds["subdomain"] = _outbound.normalize_zendesk_subdomain(creds["subdomain"])
+        except _outbound.OutboundBlocked as exc:
+            raise HTTPException(400, str(exc))
+    return creds
+
+
 def _safe_account(account: dict) -> dict:
     """Return account with credentials masked — never send raw secrets to frontend."""
     safe = {k: v for k, v in account.items() if k != "credentials"}
@@ -72,16 +84,18 @@ async def list_accounts(org_id: str, request: Request):
     """List all connected accounts for the organisation."""
     user, org = await h.require_org_member(request)
     accounts = await h._db.connected_accounts.find(
-        {"org_id": org_id}, {"_id": 0}
+        {"org_id": org["id"]}, {"_id": 0}
     ).sort("name", 1).to_list(200)
 
     result = []
     for acc in accounts:
         safe = _safe_account(acc)
         # Count connections using this account
-        safe["connection_count"] = await h._db.connections.count_documents({"account_id": acc["id"]})
+        safe["connection_count"] = await h._db.connections.count_documents(
+            {"account_id": acc["id"], "org_id": org["id"]}
+        )
         safe["active_connection_count"] = await h._db.connections.count_documents(
-            {"account_id": acc["id"], "enabled": True}
+            {"account_id": acc["id"], "org_id": org["id"], "enabled": True}
         )
         result.append(safe)
     return {"accounts": result}
@@ -92,15 +106,16 @@ async def create_account(org_id: str, body: AccountCreate, request: Request):
     """Connect a new provider account to the organisation."""
     user, org = await h.require_org_member(request)
     _validate_provider(body.provider)
+    credentials = _validated_credentials(body.provider, body.credentials)
 
     now = h._now()
     account = {
         "id": h._uuid(),
-        "org_id": org_id,
+        "org_id": org["id"],
         "provider": body.provider,
         "name": body.name.strip(),
         "status": "connected",
-        "credentials": body.credentials,
+        "credentials": credentials,
         "metadata": body.metadata or {},
         "created_by": user["id"],
         "created_at": now,
@@ -119,13 +134,15 @@ async def get_account(org_id: str, account_id: str, request: Request):
     """Get account details (credentials masked)."""
     user, org, account = await h.require_account_access(request, account_id)
     safe = _safe_account(account)
-    safe["connection_count"] = await h._db.connections.count_documents({"account_id": account_id})
+    safe["connection_count"] = await h._db.connections.count_documents(
+        {"account_id": account_id, "org_id": org["id"]}
+    )
     safe["active_connection_count"] = await h._db.connections.count_documents(
-        {"account_id": account_id, "enabled": True}
+        {"account_id": account_id, "org_id": org["id"], "enabled": True}
     )
     # List connections using this account
     connections = await h._db.connections.find(
-        {"account_id": account_id}, {"_id": 0}
+        {"account_id": account_id, "org_id": org["id"]}, {"_id": 0}
     ).to_list(100)
     safe["connections"] = connections
     return safe
@@ -141,7 +158,7 @@ async def update_account(org_id: str, account_id: str, body: AccountUpdate, requ
     if body.credentials is not None:
         # Merge new credentials with existing (partial update)
         existing_creds = account.get("credentials", {})
-        for k, v in body.credentials.items():
+        for k, v in _validated_credentials(account.get("provider"), body.credentials).items():
             if v is not None and v != "":
                 existing_creds[k] = v
         update["credentials"] = existing_creds
@@ -150,7 +167,7 @@ async def update_account(org_id: str, account_id: str, body: AccountUpdate, requ
         existing_meta = account.get("metadata", {})
         existing_meta.update(body.metadata)
         update["metadata"] = existing_meta
-    await h._db.connected_accounts.update_one({"id": account_id}, {"$set": update})
+    await h._db.connected_accounts.update_one({"id": account_id, "org_id": org["id"]}, {"$set": update})
     return {"ok": True}
 
 
@@ -158,17 +175,16 @@ async def update_account(org_id: str, account_id: str, body: AccountUpdate, requ
 async def disconnect_account(org_id: str, account_id: str, request: Request):
     """Mark an account as disconnected. Warns if active connections exist."""
     user, org, account = await h.require_account_access(request, account_id)
-    active = await h._db.connections.count_documents({"account_id": account_id, "enabled": True})
-    if active > 0:
-        # Don't block, but warn
-        pass
+    active = await h._db.connections.count_documents(
+        {"account_id": account_id, "org_id": org["id"], "enabled": True}
+    )
     await h._db.connected_accounts.update_one(
-        {"id": account_id},
+        {"id": account_id, "org_id": org["id"]},
         {"$set": {"status": "disconnected", "updated_at": h._now()}}
     )
     # Disable all connections using this account
     await h._db.connections.update_many(
-        {"account_id": account_id, "enabled": True},
+        {"account_id": account_id, "org_id": org["id"], "enabled": True},
         {"$set": {"enabled": False, "updated_at": h._now(), "disabled_reason": "account_disconnected"}}
     )
     return {
@@ -189,7 +205,7 @@ async def reconnect_account(org_id: str, account_id: str, request: Request):
     if not creds:
         raise HTTPException(400, "No credentials stored. Update credentials first.")
     await h._db.connected_accounts.update_one(
-        {"id": account_id},
+        {"id": account_id, "org_id": org["id"]},
         {"$set": {"status": "connected", "updated_at": h._now()}}
     )
     return {"ok": True}
@@ -223,10 +239,14 @@ async def test_account(org_id: str, account_id: str, request: Request):
             b64 = base64.b64encode(f"{email}/token:{api_token}".encode()).decode()
             headers["Authorization"] = f"Basic {b64}"
 
-        url = f"https://{subdomain}.zendesk.com/api/v2/users/me.json"
+        try:
+            url = _outbound.zendesk_url(subdomain, "/api/v2/users/me.json")
+        except _outbound.OutboundBlocked as exc:
+            raise HTTPException(400, str(exc))
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, headers=headers, allow_redirects=False,
+                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         u = data.get("user", {})
@@ -251,7 +271,8 @@ async def test_account(org_id: str, account_id: str, request: Request):
         url = "https://discord.com/api/v10/users/@me"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers={"Authorization": f"Bot {token}"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, headers={"Authorization": f"Bot {token}"}, allow_redirects=False,
+                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return {"ok": True, "username": data.get("username"), "id": data.get("id")}
@@ -267,7 +288,7 @@ async def test_account(org_id: str, account_id: str, request: Request):
         url = f"https://api.telegram.org/bot{token}/getMe"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     data = await resp.json()
                     if data.get("ok"):
                         r = data.get("result", {})
@@ -286,12 +307,12 @@ async def test_account(org_id: str, account_id: str, request: Request):
 async def delete_account(org_id: str, account_id: str, request: Request):
     """Delete a connected account. Fails if it has active connections."""
     user, org = await h.require_org_admin(request)
-    account = await h._db.connected_accounts.find_one({"id": account_id, "org_id": org_id})
+    account = await h._db.connected_accounts.find_one({"id": account_id, "org_id": org["id"]})
     if not account:
         raise HTTPException(404, "Account not found")
     # Check for active connections using this account
     active_conns = await h._db.connections.count_documents({"account_id": account_id, "enabled": True})
     if active_conns > 0:
         raise HTTPException(400, f"Cannot delete: {active_conns} active connection(s) use this account. Disconnect them first.")
-    await h._db.connected_accounts.delete_one({"id": account_id})
+    await h._db.connected_accounts.delete_one({"id": account_id, "org_id": org["id"]})
     return {"ok": True}

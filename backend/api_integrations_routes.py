@@ -3,12 +3,14 @@ API Integrations Router — CRUD, discovery, execution, activity logging.
 Mounted as a sub-router of the main api_router in server.py.
 """
 
+import os
+import re
 import uuid
 import json as _json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import quote
 
-import httpx
 from fastapi import APIRouter, HTTPException, Depends, Request
 
 from api_integrations import (
@@ -20,7 +22,80 @@ from api_integrations import (
     MAX_API_CALLS_PER_MESSAGE, MAX_RESPONSE_SIZE, MAX_DOC_RESPONSE_SIZE,
 )
 
+import outbound_guard as _outbound
+
 logger = logging.getLogger("bridgebot.api_integrations")
+
+# ── Outbound URL / credential policy (spec 011) ──────────────────────────
+VALID_AUTH_TYPES = ("none", "api_key_header", "bearer", "api_key_query")
+_QUERY_PARAM_NAME = re.compile(r"[A-Za-z0-9_.\-]{1,64}")
+
+
+def _parse_url(raw, label: str) -> dict:
+    try:
+        return _outbound.parse_integration_url(raw, os.environ)
+    except _outbound.OutboundBlocked as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {label}: {exc}")
+
+
+def _validated_base_url(raw) -> str:
+    u = _parse_url(raw, "base URL")
+    if "?" in u["target"]:
+        raise HTTPException(status_code=400, detail="Invalid base URL: it must not contain a query string.")
+    return (u["origin"] + u["target"]).rstrip("/")
+
+
+def _validated_doc_url(raw) -> str:
+    if not (raw or "").strip():
+        return ""
+    u = _parse_url(raw, "documentation URL")
+    return u["origin"] + u["target"]
+
+
+def _validated_auth_fields(auth_type, header_name, query_param) -> dict:
+    """Auth type and the header/query names that carry the secret. The header
+    can never be Host, a hop-by-hop, proxy or forwarding header."""
+    out = {}
+    if auth_type is not None:
+        if auth_type not in VALID_AUTH_TYPES:
+            raise HTTPException(status_code=400, detail=f"auth_type must be one of: {', '.join(VALID_AUTH_TYPES)}")
+        out["auth_type"] = auth_type
+    if header_name is not None:
+        name = header_name.strip()
+        if name:
+            try:
+                name = _outbound.validate_header_name(name)
+            except _outbound.OutboundBlocked as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid auth header name: {exc}")
+        out["auth_header_name"] = name
+    if query_param is not None:
+        qp = query_param.strip()
+        if qp and not _QUERY_PARAM_NAME.fullmatch(qp):
+            raise HTTPException(status_code=400, detail="Invalid auth query parameter name.")
+        out["auth_query_param"] = qp
+    return out
+
+
+def _origin(url: str):
+    try:
+        return _outbound.parse_integration_url(url, os.environ)["origin"]
+    except _outbound.OutboundBlocked:
+        return None
+
+
+def _join(base: str, path: str) -> str:
+    """base + path where path always starts with '/', so it can never change the host."""
+    path = path or ""
+    return base + (path if path.startswith("/") else "/" + path)
+
+
+def _credentials_for(integration: dict, url: str) -> tuple:
+    """(headers, params) for ``url``: the integration's credentials are sent only
+    to the integration's own origin (base URL), never to other hosts."""
+    base_origin = _origin(integration.get("base_url", ""))
+    if base_origin and _origin(url) == base_origin:
+        return _build_auth_headers(integration), _build_auth_params(integration)
+    return {"Accept": "application/json"}, {}
 
 router = APIRouter(prefix="/integrations", tags=["API Integrations"])
 
@@ -49,7 +124,7 @@ def _build_auth_headers(integration: dict) -> dict:
     if not raw_value:
         return headers
     if auth_type == "api_key_header":
-        hname = integration.get("auth_header_name", "Authorization")
+        hname = integration.get("auth_header_name") or "Authorization"
         headers[hname] = raw_value
     elif auth_type == "bearer":
         headers["Authorization"] = f"Bearer {raw_value}"
@@ -97,20 +172,23 @@ async def get_integration(integration_id: str, request: Request):
 async def create_integration(body: IntegrationCreate, request: Request):
     db = _require_db()
     instance_id = await _get_instance_access(request)
+    base_url = _validated_base_url(body.base_url)
+    doc_url = _validated_doc_url(body.doc_source_url)
+    auth = _validated_auth_fields(body.auth_type, body.auth_header_name, body.auth_query_param)
     now = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
         "instance_id": instance_id,
         "name": body.name.strip(),
         "description": body.description.strip(),
-        "base_url": body.base_url.strip().rstrip("/"),
-        "auth_type": body.auth_type,
-        "auth_header_name": body.auth_header_name.strip(),
-        "auth_query_param": body.auth_query_param.strip(),
+        "base_url": base_url,
+        "auth_type": auth["auth_type"],
+        "auth_header_name": auth["auth_header_name"],
+        "auth_query_param": auth["auth_query_param"],
         "auth_encrypted_value": encrypt_value(body.auth_value) if body.auth_value else "",
         "auth_value_set": bool(body.auth_value),
         "doc_source_type": body.doc_source_type,
-        "doc_source_url": body.doc_source_url.strip(),
+        "doc_source_url": doc_url,
         "enabled": body.enabled,
         "endpoint_count": 0,
         "enabled_endpoint_count": 0,
@@ -139,7 +217,10 @@ async def update_integration(integration_id: str, body: IntegrationUpdate, reque
         if val is not None:
             updates[field] = val.strip() if isinstance(val, str) else val
             if field == "base_url":
-                updates[field] = updates[field].rstrip("/")
+                updates[field] = _validated_base_url(val)
+            elif field == "doc_source_url":
+                updates[field] = _validated_doc_url(val)
+    updates.update(_validated_auth_fields(body.auth_type, body.auth_header_name, body.auth_query_param))
 
     if body.auth_value is not None and body.auth_value != "":
         updates["auth_encrypted_value"] = encrypt_value(body.auth_value)
@@ -175,10 +256,10 @@ async def test_connection(integration_id: str, request: Request):
     if not intg:
         raise HTTPException(status_code=404, detail="Integration not found")
 
-    headers = _build_auth_headers(intg)
-    params = _build_auth_params(intg)
     base = intg["base_url"].rstrip("/")
     doc_url = intg.get("doc_source_url", "")
+    if _origin(base) is None:
+        raise HTTPException(status_code=400, detail="The integration's base URL is not allowed. Update it first.")
     now = datetime.now(timezone.utc).isoformat()
 
     # Build a prioritised list of URLs to probe:
@@ -198,7 +279,7 @@ async def test_connection(integration_id: str, request: Request):
         sort=[("path", 1)]
     )
     if param_free_ep:
-        probes.append({"url": base + param_free_ep["path"], "label": f"GET {param_free_ep['path']}", "method": "GET"})
+        probes.append({"url": _join(base, param_free_ep["path"]), "label": f"GET {param_free_ep['path']}", "method": "GET"})
 
     # Then parameterised endpoints with valid example values
     first_ep = await db.api_endpoints.find_one(
@@ -218,9 +299,9 @@ async def test_connection(integration_id: str, request: Request):
                 if not example_val:
                     # Use a type-appropriate placeholder that won't break URL routing
                     example_val = "1" if pdef.get("type") in ("integer", "number") else "test"
-                safe_path = safe_path.replace(f"{{{pname}}}", str(example_val))
+                safe_path = safe_path.replace(f"{{{pname}}}", quote(str(example_val), safe=""))
             probes.append({
-                "url": base + safe_path,
+                "url": _join(base, safe_path),
                 "label": f"GET {ep_path} (example params)",
                 "method": "GET",
                 "expect_404": True,  # Placeholder params may 404 — that's OK for connectivity
@@ -240,6 +321,7 @@ async def test_connection(integration_id: str, request: Request):
     for probe in probes:
         # Documentation probes use larger size limit
         size_limit = MAX_DOC_RESPONSE_SIZE if probe.get("is_doc") else MAX_RESPONSE_SIZE
+        headers, params = _credentials_for(intg, probe["url"])
         result = await safe_api_request(
             probe["method"], probe["url"], headers=headers, params=params,
             timeout=8.0, max_size=size_limit,
@@ -317,7 +399,6 @@ async def discover_endpoints(integration_id: str, request: Request):
 
     doc_type = intg.get("doc_source_type", "openapi")
     doc_url = intg.get("doc_source_url", "")
-    headers = _build_auth_headers(intg)
 
     if not doc_url and doc_type != "manual":
         raise HTTPException(status_code=400, detail="No documentation source URL configured")
@@ -325,17 +406,11 @@ async def discover_endpoints(integration_id: str, request: Request):
     parsed_endpoints = []
     try:
         if doc_type in ("openapi", "swagger"):
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(doc_url, headers=headers)
-                resp.raise_for_status()
-                spec = resp.json()
+            spec = await _fetch_documentation(intg, doc_url)
             parsed_endpoints = parse_openapi_spec(spec)
 
         elif doc_type == "custom_reference":
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(doc_url, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            data = await _fetch_documentation(intg, doc_url)
             if isinstance(data, list):
                 parsed_endpoints = parse_gridscan_reference(data)
             elif isinstance(data, dict) and "endpoints" in data:
@@ -350,12 +425,11 @@ async def discover_endpoints(integration_id: str, request: Request):
         else:
             raise HTTPException(status_code=400, detail=f"Cannot auto-discover for doc type '{doc_type}'")
 
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch docs: {str(e)[:200]}")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse docs: {str(e)[:200]}")
+        logger.warning("Documentation parse failed: %s", type(e).__name__)
+        raise HTTPException(status_code=500, detail="Failed to parse the documentation.")
 
     if not parsed_endpoints:
         raise HTTPException(status_code=400, detail="No endpoints found in the documentation")
@@ -409,6 +483,20 @@ async def discover_endpoints(integration_id: str, request: Request):
         {"id": integration_id}, {"$set": {"last_doc_sync": now, "updated_at": now}}
     )
     return {"new": new_count, "updated": updated_count, "total": new_count + updated_count}
+
+
+async def _fetch_documentation(intg: dict, doc_url: str):
+    """Fetch and JSON-decode a documentation URL through the outbound guard.
+    Credentials are attached only if the documentation lives on the base origin."""
+    headers, params = _credentials_for(intg, doc_url)
+    result = await safe_api_request("GET", doc_url, headers=headers, params=params,
+                                    timeout=30.0, max_size=MAX_DOC_RESPONSE_SIZE)
+    if not result.get("success"):
+        raise HTTPException(status_code=502, detail=f"Failed to fetch docs: {result.get('error') or 'request failed'}")
+    data = result.get("data")
+    if not isinstance(data, (dict, list)):
+        raise HTTPException(status_code=400, detail="The documentation is not valid JSON.")
+    return data
 
 
 async def _refresh_endpoint_counts(integration_id: str, instance_id: str):
@@ -556,11 +644,19 @@ async def execute_endpoint(integration: dict, endpoint: dict, parameters: dict =
             if placeholder in final_path:
                 if pval is None and p.get("required"):
                     return {"success": False, "status": 0, "error": f"Missing required param: {pname}"}
-                final_path = final_path.replace(placeholder, str(pval or ""))
+                # Encoded so a value can never add path segments, a host, a query or a fragment.
+                final_path = final_path.replace(placeholder, quote(str(pval if pval is not None else ""), safe=""))
         elif p.get("in") == "query" and pval is not None:
             query_params[pname] = str(pval)
 
+    if not final_path.startswith("/"):
+        final_path = "/" + final_path
     full_url = f"{base_url}{final_path}"
+    base_origin = _origin(base_url)
+    if base_origin is None or _origin(full_url) != base_origin:
+        return {"success": False, "status": 0, "url": full_url,
+                "endpoint_id": endpoint.get("id"), "integration_id": integration.get("id"),
+                "error": "URL blocked: the endpoint does not resolve to the integration's base URL."}
     headers = _build_auth_headers(integration)
     auth_params = _build_auth_params(integration)
     query_params.update(auth_params)

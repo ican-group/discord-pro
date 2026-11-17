@@ -4,6 +4,7 @@ for the Workspace → Organisation → Bot → Account → Connection model.
 """
 from fastapi import HTTPException, Request
 from datetime import datetime, timezone
+import os
 import uuid
 
 _db = None
@@ -116,13 +117,36 @@ async def require_workspace_owner(request: Request, ws_id: str = None) -> tuple:
 
 # ── Organisation-level access (updated with workspace inheritance) ──
 
+ORG_ROLES = ("member", "admin")
+
+
+def resolve_target_org_id(request: Request) -> str:
+    """The organisation a request targets (spec 009, R1.1/R1.2).
+
+    The ``{org_id}`` URL path parameter is authoritative. An ``X-Org-ID``
+    header, if sent, must name the same organisation; a mismatch is rejected
+    so a caller can never be authorised for one org and act on another.
+    The header alone is only used by routes without ``{org_id}`` in the path.
+    """
+    path_org = (request.path_params.get("org_id") or "").strip()
+    header_org = request.headers.get("X-Org-ID", "").strip()
+    if path_org:
+        if header_org and header_org != path_org:
+            raise HTTPException(400, "X-Org-ID header does not match the organisation in the URL")
+        return path_org
+    if "org_id" in request.path_params:
+        raise HTTPException(400, "Organisation ID required")
+    if not header_org:
+        raise HTTPException(400, "X-Org-ID header required")
+    return header_org
+
+
 async def require_org_member(request: Request) -> tuple:
     """Returns (user, org) — raises 403 if user is not an org member.
-    Workspace owners/admins get implicit access to all orgs in their workspace."""
+    Workspace owners/admins get implicit access to all orgs in their workspace.
+    The org is the one in the URL path (see ``resolve_target_org_id``)."""
     user = await _authed_user(request)
-    org_id = request.headers.get("X-Org-ID", "").strip()
-    if not org_id:
-        raise HTTPException(400, "X-Org-ID header required")
+    org_id = resolve_target_org_id(request)
     org = await _db.organisations.find_one({"id": org_id}, {"_id": 0})
     if not org:
         raise HTTPException(404, "Organisation not found")
@@ -179,6 +203,60 @@ async def require_account_access(request: Request, account_id: str) -> tuple:
     if not account:
         raise HTTPException(404, "Connected account not found in this organisation")
     return user, org, account
+
+
+async def require_template_access(request: Request, template_id: str) -> tuple:
+    """Returns (user, org, template) — verifies the template belongs to the org."""
+    user, org = await require_org_member(request)
+    template = await _db.bot_templates.find_one(
+        {"id": template_id, "org_id": org["id"]}, {"_id": 0}
+    )
+    if not template:
+        raise HTTPException(404, "Template not found")
+    return user, org, template
+
+
+def validate_org_role(role) -> str:
+    """Organisation roles are ``member`` or ``admin`` (spec 009, R1.5)."""
+    if role is None:
+        return "member"
+    if not isinstance(role, str) or role.strip().lower() not in ORG_ROLES:
+        raise HTTPException(400, "Role must be 'member' or 'admin'")
+    return role.strip().lower()
+
+
+def llm_configured(llm_config) -> bool:
+    """True when a bot's LLM provider has what it needs to answer (spec 009, R3.2).
+
+    No secret values are returned — only whether the provider can be used.
+    """
+    cfg = llm_config if isinstance(llm_config, dict) else {}
+    provider = (cfg.get("provider") or "emergent").lower()
+    if provider == "anthropic":
+        return bool(cfg.get("anthropic_api_key"))
+    if provider == "openai":
+        return bool(cfg.get("openai_api_key"))
+    if provider == "ollama":
+        import outbound_guard
+        try:
+            outbound_guard.check_ollama_base_url(
+                cfg.get("ollama_base_url") or os.environ.get("OLLAMA_BASE_URL") or "", os.environ)
+            return True
+        except outbound_guard.OutboundBlocked:
+            return False
+    return emergent_available()
+
+
+def emergent_available() -> bool:
+    """Whether the legacy Emergent Universal Key path can work on this deployment."""
+    import os
+    import importlib.util
+    if not (os.environ.get("CLAUDE_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")):
+        return False
+    try:
+        return importlib.util.find_spec("emergentintegrations") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def mask_credential(value: str) -> str:

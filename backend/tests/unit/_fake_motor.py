@@ -81,7 +81,15 @@ def _project(doc, projection):
 def _apply_update(doc, update):
     _apply_set(doc, update.get("$set", {}))
     for k in update.get("$unset", {}):
-        doc.pop(k, None)
+        parts = k.split(".")
+        cur = doc
+        for part in parts[:-1]:
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if isinstance(cur, dict):
+            cur.pop(parts[-1], None)
+    for k, v in update.get("$pull", {}).items():
+        if isinstance(doc.get(k), list):
+            doc[k] = [x for x in doc[k] if x != v]
     for k, v in update.get("$inc", {}).items():
         doc[k] = (doc.get(k) or 0) + v
     for k, v in update.get("$addToSet", {}).items():
@@ -110,6 +118,12 @@ class _Cursor:
     async def to_list(self, n=None, length=None):
         n = n if n is not None else length
         return [_project(d, self._projection) for d in self._docs[: n or None]]
+
+    def __aiter__(self):
+        async def gen():
+            for d in list(self._docs):
+                yield _project(d, self._projection)
+        return gen()
 
 
 class Store:

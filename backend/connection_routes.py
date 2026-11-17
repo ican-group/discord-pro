@@ -100,7 +100,7 @@ async def list_connections(org_id: str, bot_id: str, request: Request):
     """List all connections for a bot."""
     user, org, bot = await h.require_bot_access(request, bot_id)
     connections = await h._db.connections.find(
-        {"bot_id": bot_id, "org_id": org_id}, {"_id": 0}
+        {"bot_id": bot_id, "org_id": org["id"]}, {"_id": 0}
     ).sort("name", 1).to_list(200)
 
     # Enrich with account info
@@ -108,7 +108,7 @@ async def list_connections(org_id: str, bot_id: str, request: Request):
     accounts = {}
     if account_ids:
         accs = await h._db.connected_accounts.find(
-            {"id": {"$in": account_ids}}, {"_id": 0, "credentials": 0}
+            {"id": {"$in": account_ids}, "org_id": org["id"]}, {"_id": 0, "credentials": 0}
         ).to_list(200)
         accounts = {a["id"]: a for a in accs}
 
@@ -134,7 +134,7 @@ async def create_connection(org_id: str, bot_id: str, body: ConnectionCreate, re
 
     # Verify account belongs to this org
     account = await h._db.connected_accounts.find_one(
-        {"id": body.account_id, "org_id": org_id}, {"_id": 0}
+        {"id": body.account_id, "org_id": org["id"]}, {"_id": 0}
     )
     if not account:
         raise HTTPException(404, "Connected account not found in this organisation")
@@ -145,7 +145,7 @@ async def create_connection(org_id: str, bot_id: str, body: ConnectionCreate, re
         raise HTTPException(400, f"Invalid response_mode. Must be one of: {', '.join(RESPONSE_MODES)}")
 
     # Check for overlapping routes
-    overlaps = await _check_overlap(org_id, bot_id, body.account_id, body.destination)
+    overlaps = await _check_overlap(org["id"], bot_id, body.account_id, body.destination)
     if overlaps:
         overlap_names = [o.get("name", o["id"]) for o in overlaps]
         raise HTTPException(
@@ -157,7 +157,7 @@ async def create_connection(org_id: str, bot_id: str, body: ConnectionCreate, re
     now = h._now()
     connection = {
         "id": h._uuid(),
-        "org_id": org_id,
+        "org_id": org["id"],
         "bot_id": bot_id,
         "account_id": body.account_id,
         "provider": account["provider"],
@@ -186,14 +186,14 @@ async def get_connection(org_id: str, bot_id: str, conn_id: str, request: Reques
     """Get connection details with effective (resolved) settings."""
     user, org, bot = await h.require_bot_access(request, bot_id)
     conn = await h._db.connections.find_one(
-        {"id": conn_id, "bot_id": bot_id, "org_id": org_id}, {"_id": 0}
+        {"id": conn_id, "bot_id": bot_id, "org_id": org["id"]}, {"_id": 0}
     )
     if not conn:
         raise HTTPException(404, "Connection not found")
 
     # Enrich
     account = await h._db.connected_accounts.find_one(
-        {"id": conn["account_id"]}, {"_id": 0, "credentials": 0}
+        {"id": conn["account_id"], "org_id": org["id"]}, {"_id": 0, "credentials": 0}
     ) or {}
     conn["account_name"] = account.get("name", "Unknown")
     conn["account_provider"] = account.get("provider", "unknown")
@@ -214,7 +214,7 @@ async def update_connection(org_id: str, bot_id: str, conn_id: str,
     """Update a connection's settings."""
     user, org, bot = await h.require_bot_access(request, bot_id)
     conn = await h._db.connections.find_one(
-        {"id": conn_id, "bot_id": bot_id, "org_id": org_id}, {"_id": 0}
+        {"id": conn_id, "bot_id": bot_id, "org_id": org["id"]}, {"_id": 0}
     )
     if not conn:
         raise HTTPException(404, "Connection not found")
@@ -229,7 +229,7 @@ async def update_connection(org_id: str, bot_id: str, conn_id: str,
     if body.destination is not None:
         # Check overlap with new destination
         overlaps = await _check_overlap(
-            org_id, bot_id, conn["account_id"], body.destination, exclude_conn_id=conn_id
+            org["id"], bot_id, conn["account_id"], body.destination, exclude_conn_id=conn_id
         )
         if overlaps:
             overlap_names = [o.get("name", o["id"]) for o in overlaps]
@@ -246,7 +246,7 @@ async def update_connection(org_id: str, bot_id: str, conn_id: str,
     if body.override_flags is not None:
         update["override_flags"] = body.override_flags
 
-    await h._db.connections.update_one({"id": conn_id}, {"$set": update})
+    await h._db.connections.update_one({"id": conn_id, "bot_id": bot_id, "org_id": org["id"]}, {"$set": update})
     return {"ok": True}
 
 
@@ -255,13 +255,14 @@ async def toggle_connection(org_id: str, bot_id: str, conn_id: str, request: Req
     """Toggle a connection's enabled state."""
     user, org, bot = await h.require_bot_access(request, bot_id)
     conn = await h._db.connections.find_one(
-        {"id": conn_id, "bot_id": bot_id, "org_id": org_id}, {"_id": 0}
+        {"id": conn_id, "bot_id": bot_id, "org_id": org["id"]}, {"_id": 0}
     )
     if not conn:
         raise HTTPException(404, "Connection not found")
     new_state = not conn.get("enabled", True)
     await h._db.connections.update_one(
-        {"id": conn_id}, {"$set": {"enabled": new_state, "updated_at": h._now()}}
+        {"id": conn_id, "bot_id": bot_id, "org_id": org["id"]},
+        {"$set": {"enabled": new_state, "updated_at": h._now()}}
     )
     return {"ok": True, "enabled": new_state}
 
@@ -271,7 +272,7 @@ async def connection_activity(org_id: str, bot_id: str, conn_id: str, request: R
     """Get recent conversation activity for a connection."""
     user, org, bot = await h.require_bot_access(request, bot_id)
     conn = await h._db.connections.find_one(
-        {"id": conn_id, "bot_id": bot_id, "org_id": org_id}, {"_id": 0}
+        {"id": conn_id, "bot_id": bot_id, "org_id": org["id"]}, {"_id": 0}
     )
     if not conn:
         raise HTTPException(404, "Connection not found")
@@ -334,7 +335,8 @@ async def list_bot_suggestions(org_id: str, bot_id: str, request: Request,
     conns_map = {}
     if conn_ids:
         conns = await h._db.connections.find(
-            {"id": {"$in": conn_ids}}, {"_id": 0, "id": 1, "name": 1, "provider": 1, "response_mode": 1}
+            {"id": {"$in": conn_ids}, "bot_id": bot_id, "org_id": org["id"]},
+            {"_id": 0, "id": 1, "name": 1, "provider": 1, "response_mode": 1}
         ).to_list(100)
         conns_map = {c["id"]: c for c in conns}
 
@@ -362,8 +364,13 @@ async def update_suggestion(org_id: str, bot_id: str, suggestion_id: str, reques
         raise HTTPException(400, "Status must be accepted, dismissed, or pending")
 
     from bson import ObjectId
+    from bson.errors import InvalidId
+    try:
+        oid = ObjectId(suggestion_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(404, "Suggestion not found")
     result = await h._db.v2_suggestions.update_one(
-        {"_id": ObjectId(suggestion_id), "bot_id": bot_id},
+        {"_id": oid, "bot_id": bot_id},
         {"$set": {"status": new_status, "reviewed_by": user["id"], "reviewed_at": h._now()}}
     )
     if result.matched_count == 0:
