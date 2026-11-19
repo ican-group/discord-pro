@@ -24,7 +24,7 @@ is deployed, mounted or committed.
 | 6B | Release-candidate preparation: legacy cleanup, security review, key rotation, MongoDB file-limit and backup rehearsals, RC images, configuration audit, K-H protocol, cutover plan | **Accepted** (2026-11-19, RC1 tree `05d31ae188ec`) |
 | 6C | Private beta preparation: B-ACCT account creation by invitation, decisions B-API/changelog/new database, zlib fix, gateway Identify-spacing fix, real-service validation and beta activation plans | **Accepted** (2026-11-19, beta1 tree `4219354d1469`) |
 | 6D | Private beta activation preflight (manifests, isolation, DNS/Caddy, beta database, e-mail, model allowlist) | **Preflight PASS (conditional), awaiting activation approval** (2026-11-19): `beta-preflight-6d.md`, `beta-activation-checklist.md`, `deploy/proposed/beta/`. Nothing started on BBP1; no code change |
-| 7 | Production cutover and data reset (§15 procedure) | **Not authorised** |
+| 7 | Production cutover (direct replacement at bitbotpro.io / api.bitbotpro.io; new database `bitbotpro_v12`, decision 6C-D) | **API CUT OVER 2026-11-19 11:01 UTC** — release `aa55976b` (tag `bitbotpro-spec012-r1`), image `spec012-beta1-4219354d1469` serving api.bitbotpro.io; Spec 012 frontend live on Emergent; legacy container `bitbotpro-api` stopped (kept); config fix: `ALLOWED_HOSTS` += `10.50.0.20` (Caddy health checks). **Real-service validation (V1–V5) pending; no testers invited.** Runbook: `phase7-cutover-runbook.md` |
 
 ## Phase 2 — core foundation
 

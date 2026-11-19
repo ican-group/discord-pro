@@ -53,7 +53,7 @@ x-env: &env
   PUBLIC_API_URL: https://api.bitbotpro.io
   PUBLIC_APP_URL: https://bitbotpro.io
   CORS_ORIGINS: https://bitbotpro.io
-  ALLOWED_HOSTS: api.bitbotpro.io,127.0.0.1,localhost
+  ALLOWED_HOSTS: api.bitbotpro.io,10.50.0.20,127.0.0.1,localhost   # 10.50.0.20: Caddy active health checks send the upstream address as Host
   TRUSTED_PROXIES: 10.50.0.1                 # Caddy over WireGuard (the Spec 012 variable name, finding P-1)
   FROM_EMAIL: noreply@bitbotpro.io
   WEBCHAT_DAILY_LIMIT_PER_INSTANCE: "500"
