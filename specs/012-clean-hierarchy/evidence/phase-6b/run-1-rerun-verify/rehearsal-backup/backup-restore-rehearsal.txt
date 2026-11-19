@@ -1,0 +1,88 @@
+== [1/6] representative Spec 012 database (real API, test-only keys)
+{"audit_events": 11, "collections": 41, "documents": 69}
+== [2/6] backup: mongodump --gzip --archive (read-only on the source)
+archive: bbp_rh_src-20261119T043442Z.archive.gz bytes=13287 mode=600 sha256=c63a4798b676b10105b7718e691d9656b760fb6b29f321aab8c8d82cd091f372
+== [3/6] integrity: checksum, gzip stream, archive readable by mongorestore (dry run)
+bbp_rh_src-20261119T043442Z.archive.gz: OK
+gzip: ok
+mongorestore --dryRun: ok
+negative control: a corrupted archive is rejected by the integrity checks
+== [4/6] restore into a SEPARATE disposable mongod under a different database name
+restored into bbp-6b-br-dst/bbp_rh_restored
+== [5/6] validation: documents, relationships, credentials, indexes, validators, lifecycle, audit
+{
+  "checks": {
+    "audit_history_identical": {
+      "detail": {
+        "events": 11
+      },
+      "ok": true
+    },
+    "credentials_decrypt": {
+      "detail": {
+        "encrypted_values": 9,
+        "undecryptable": 0
+      },
+      "ok": true
+    },
+    "documents_identical": {
+      "detail": {
+        "documents": 69,
+        "mismatched": []
+      },
+      "ok": true
+    },
+    "indexes_identical": {
+      "detail": {
+        "different": [],
+        "indexes": 120
+      },
+      "ok": true
+    },
+    "lifecycle_states_preserved": {
+      "detail": {
+        "states": {
+          "active": 7,
+          "archived": 1,
+          "suspended": 1
+        }
+      },
+      "ok": true
+    },
+    "relationships_intact": {
+      "detail": {
+        "bots": 3,
+        "enterprises": 2,
+        "instances": 4,
+        "organisations": 2,
+        "orphans": 0
+      },
+      "ok": true
+    },
+    "restored_is_spec012": {
+      "ok": true
+    },
+    "same_collections": {
+      "detail": {
+        "restored": 41,
+        "source": 41
+      },
+      "ok": true
+    },
+    "ttl_indexes_present": {
+      "detail": {
+        "ttl_collections": 13
+      },
+      "ok": true
+    },
+    "validators_identical": {
+      "detail": {
+        "different": []
+      },
+      "ok": true
+    }
+  },
+  "failures": [],
+  "ok": true
+}
+== [6/6] done: disposable containers and network are removed on exit

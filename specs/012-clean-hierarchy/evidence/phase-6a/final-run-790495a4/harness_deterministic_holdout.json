@@ -1,0 +1,88 @@
+{
+  "mode": "deterministic",
+  "set": "holdout",
+  "corpus_digest": "3b366d11f2dae6b2",
+  "provider": "scripted",
+  "model": "claude-sonnet-4-6",
+  "measurement": "SCRIPTED (plumbing only, not accuracy)",
+  "policy": {
+    "knowledge.allowed_sources": "<evaluation source>",
+    "knowledge.minimum_mode": "strict_knowledge_only",
+    "knowledge.semantic_verification": false
+  },
+  "config": {
+    "ai.provider": "anthropic",
+    "ai.model": "claude-sonnet-4-6",
+    "knowledge.mode": "strict_knowledge_only",
+    "knowledge.insufficient_fallback": "Please contact our support team."
+  },
+  "metrics": {
+    "answerable": 12,
+    "correct_refused": 0,
+    "citation_correct": 12,
+    "unsupported_total": 25,
+    "unsupported_accepted": 9,
+    "by_category": {
+      "omits_condition": {
+        "total": 5,
+        "accepted": 0
+      },
+      "reverses_requirement": {
+        "total": 3,
+        "accepted": 1
+      },
+      "unsupported_conclusion": {
+        "total": 3,
+        "accepted": 3
+      },
+      "changes_money": {
+        "total": 1,
+        "accepted": 0
+      },
+      "changes_number": {
+        "total": 6,
+        "accepted": 1
+      },
+      "changes_permission": {
+        "total": 1,
+        "accepted": 0
+      },
+      "role_swap": {
+        "total": 3,
+        "accepted": 3
+      },
+      "changes_exception": {
+        "total": 1,
+        "accepted": 1
+      },
+      "changes_date": {
+        "total": 1,
+        "accepted": 0
+      },
+      "follows_injection": {
+        "total": 1,
+        "accepted": 0
+      }
+    },
+    "must_refuse": {
+      "total": 2,
+      "refused": 2,
+      "answered_examples": []
+    }
+  },
+  "provider_calls": {
+    "calls": 38,
+    "errors": {},
+    "latency_ms": {
+      "p50": 0.1,
+      "p95": 0.1,
+      "max": 3.2,
+      "mean": 0.2
+    },
+    "tokens": {
+      "input": 2260,
+      "output": 560
+    },
+    "estimated_cost": null
+  }
+}

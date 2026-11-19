@@ -23,7 +23,7 @@ from unittest import mock
 
 from tests.unit._support import BACKEND_DIR  # noqa: F401
 
-HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("fastapi", "motor", "httpx", "bcrypt", "jwt", "jose", "cryptography"))
+HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("fastapi", "motor", "httpx", "cryptography"))
 
 TEST_ENV = {
     "APP_MODE": "api", "APP_ENV": "production", "CORS_ORIGINS": "https://bitbotpro.io",
@@ -38,30 +38,16 @@ INTERNAL = "INTERNAL-SERVICE-CONTENT-must-not-leak"
 PUBLIC_IP = "203.0.114.10"
 EVIL_IP = "203.0.114.66"
 
-server = None
-client = None
-
-
 def setUpModule():
-    global server, client
+    """Spec 012 Phase 6B: the legacy server (and its routes) is retired; the Spec 011 guard
+    module ``api_integrations`` is kept, unmounted, as the port source (release blocker
+    B-API). Only the module-level protections run here; the route-level tests are listed in
+    ``specs/012-clean-hierarchy/security-traceability.md`` and must be rebuilt in the port."""
     if not HAVE_DEPS:
         return
     for k in ("CLAUDE_API_KEY", "EMERGENT_LLM_KEY", "API_INTEGRATIONS_ALLOW_PRIVATE_NETWORKS"):
         os.environ.pop(k, None)
     os.environ.update(TEST_ENV)
-    sys.modules.pop("server", None)
-    import server as _server  # noqa: E402
-    from fastapi.testclient import TestClient
-    server = _server
-    client = TestClient(server.app)
-
-
-def tearDownModule():
-    global server, client
-    mc = getattr(server, "mongo_client", None)
-    if mc is not None:
-        mc.close()
-    server = client = None
 
 
 def run(coro):
@@ -252,19 +238,14 @@ class GuardedRequestTests(_Base):
 # ══════════════════════════ route-level behaviour ══════════════════════════
 
 @unittest.skipUnless(HAVE_DEPS, "backend dependencies not installed")
-class IntegrationRouteTests(_Base):
+@unittest.skipUnless(HAVE_DEPS, "backend dependencies not installed")
+class EndpointExecutionTests(_Base):
+    """Spec 011 endpoint execution (module level): the destination stays fixed."""
     def setUp(self):
         super().setUp()
         from tests.unit._fake_motor import patch_motor
         import api_integrations
         self.store = patch_motor(self)
-        self.store.col("users").append({"id": "alice", "email": "alice@example.org", "username": "alice",
-                                        "role": "user", "is_verified": True, "token_version": 0, "hashed_password": "x"})
-        self.store.col("organisations").append({"id": "org-a", "name": "A", "workspace_id": "ws-a",
-                                                "owner_id": "alice", "member_ids": ["alice"]})
-        self.store.col("bots").append({"id": "bot-a", "org_id": "org-a", "name": "Bot"})
-        self.h = {"Authorization": f"Bearer {server.create_access_token('alice', 'alice@example.org', 'user', 0)}",
-                  "X-Instance-ID": "bot-a"}
         self.store.col("api_integrations").append({
             "id": "i1", "instance_id": "bot-a", "name": "Pools", "base_url": "https://api.example.com/v1",
             "auth_type": "bearer", "auth_header_name": "", "auth_query_param": "",
@@ -282,17 +263,6 @@ class IntegrationRouteTests(_Base):
             ep["path"] = path
         intg = self.store.col("api_integrations")[0]
         return run(r.execute_endpoint(intg, ep, params))
-
-    def test_execute_legitimate_call(self):
-        r = client.post("/api/integrations/test-endpoint", headers=self.h,
-                        json={"integration_id": "i1", "endpoint_id": "ep1", "parameters": {"pool_id": "pool1xyz", "limit": 3}})
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["success"], r.json())
-        req = self.requests[0]
-        self.assertEqual(req.headers["host"], "api.example.com")
-        self.assertEqual(req.url.path, "/v1/pools/pool1xyz")
-        self.assertEqual(req.headers["authorization"], f"Bearer {SECRET}")
-        self.assertNotIn(SECRET, r.text)
 
     def test_path_parameters_cannot_change_destination(self):
         for value in ("@evil.example", "//evil.example/x", "../../admin", "x?y=1#z", "x\r\nHost: evil.example",
@@ -322,77 +292,6 @@ class IntegrationRouteTests(_Base):
         self.assertFalse(r["success"])
         self.assertIn("URL blocked", r["error"])
         self.assertEqual(self.requests, [])
-
-    def test_credentials_never_sent_to_documentation_on_another_origin(self):
-        spec = {"openapi": "3.0.0", "paths": {"/pools": {"get": {"summary": "List pools"}}}}
-        self.handler = lambda req: self.json_response(200, spec)
-        r = client.post("/api/integrations/i1/discover", headers=self.h)
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.hosts_contacted(), ["docs.example.com"])
-        self.assertNotIn("authorization", self.requests[0].headers)
-
-    def test_credentials_sent_to_documentation_on_the_same_origin(self):
-        self.store.col("api_integrations")[0]["doc_source_url"] = "https://api.example.com/openapi.json"
-        self.handler = lambda req: self.json_response(200, {"openapi": "3.0.0", "paths": {}})
-        client.post("/api/integrations/i1/discover", headers=self.h)
-        self.assertEqual(self.requests[0].headers.get("authorization"), f"Bearer {SECRET}")
-
-    def test_discover_does_not_follow_redirects_or_leak(self):
-        self.handler = lambda req: self.json_response(302, {"x": INTERNAL}, headers={"Location": "http://10.0.0.1/"})
-        r = client.post("/api/integrations/i1/discover", headers=self.h)
-        self.assertEqual(r.status_code, 502)
-        self.assertIn("Redirect not followed", r.json()["detail"])
-        self.assertEqual(len(self.requests), 1)
-        self.assertNotIn(INTERNAL, r.text)
-
-    def test_discover_to_internal_doc_url_is_blocked(self):
-        for doc in ("https://bitbotpro-mongo:27017/", "https://169.254.169.254/latest/meta-data/",
-                    "https://internal-alias.example.com/openapi.json"):
-            with self.subTest(doc=doc):
-                self.requests.clear()
-                self.store.col("api_integrations")[0]["doc_source_url"] = doc
-                r = client.post("/api/integrations/i1/discover", headers=self.h)
-                self.assertEqual(r.status_code, 502, r.text)
-                self.assertEqual(self.requests, [])
-
-    def test_test_connection_sends_credentials_only_to_base_origin(self):
-        self.store.col("api_endpoints").clear()       # probe the docs URL and health paths
-        self.handler = lambda req: self.json_response(404, {})
-        r = client.post("/api/integrations/i1/test-connection", headers=self.h)
-        self.assertEqual(r.status_code, 200, r.text)
-        for req in self.requests:
-            has_auth = "authorization" in req.headers
-            self.assertEqual(has_auth, req.headers["host"] == "api.example.com", req.headers["host"])
-        self.assertIn("docs.example.com", self.hosts_contacted())
-
-    def create(self, **body):
-        base = {"name": "X", "base_url": "https://api.example.com/v1"}
-        base.update(body)
-        return client.post("/api/integrations", headers=self.h, json=base)
-
-    def test_create_and_update_validation(self):
-        bad = [
-            {"base_url": "http://api.example.com"}, {"base_url": "https://bitbotpro-mongo:27017"},
-            {"base_url": "https://169.254.169.254"}, {"base_url": "https://2130706433/"},
-            {"base_url": "https://user:pw@api.example.com"}, {"base_url": "https://api.example.com/v1?x=1"},
-            {"base_url": "https://api.example.com#x"}, {"doc_source_url": "https://localhost/openapi.json"},
-            {"doc_source_url": "file:///etc/passwd"}, {"auth_type": "api_key_header", "auth_header_name": "Host"},
-            {"auth_type": "api_key_header", "auth_header_name": "X-Forwarded-For"},
-            {"auth_type": "api_key_header", "auth_header_name": "X-Key\r\nHost: evil"},
-            {"auth_type": "oauth-magic"}, {"auth_type": "api_key_query", "auth_query_param": "a&b=c"},
-        ]
-        n = len(self.store.col("api_integrations"))
-        for body in bad:
-            with self.subTest(body=body):
-                r = self.create(**body)
-                self.assertEqual(r.status_code, 400, r.text)
-                r = client.put("/api/integrations/i1", headers=self.h, json=body)
-                self.assertEqual(r.status_code, 400, r.text)
-        self.assertEqual(len(self.store.col("api_integrations")), n)
-        self.assertEqual(self.store.col("api_integrations")[0]["base_url"], "https://api.example.com/v1")
-        r = self.create(base_url="https://API.example.com/v1/", auth_type="api_key_header", auth_header_name="X-API-Key")
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["base_url"], "https://api.example.com/v1")
 
 
 # ══════════════════════════ TLS verification with IP pinning ══════════════════════════
@@ -495,7 +394,7 @@ class SourceGuardTests(unittest.TestCase):
     """No integration module may open its own HTTP clients (all traffic via outbound_guard)."""
 
     def test_integration_modules_have_no_raw_http_clients(self):
-        for name in ("api_integrations.py", "api_integrations_routes.py", "api_diagnostics.py", "api_diagnostics_routes.py"):
+        for name in ("api_integrations.py", "api_integrations_routes.py"):      # diagnostics retired (D-Q12)
             with self.subTest(module=name):
                 text = (Path(BACKEND_DIR) / name).read_text()
                 for needle in ("httpx.", "aiohttp", "requests.get", "requests.post", "urlopen", "follow_redirects=True"):

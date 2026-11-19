@@ -3,10 +3,17 @@
 
 !requirements.txt
 !*.py
+!core/*.py
+!api/*.py
+!persistence/*.py
+!runtime/*.py
 !docker-entrypoint.sh
 !zendesk_sidebar_app/assets/**
 !tests/unit/**
 !tests/integration/**
+!tests/contract/**
+!tests/knowledge_eval/**
+!tests/e2e/**
 
 # Never send these, even inside allowed paths.
 **/__pycache__

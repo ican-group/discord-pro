@@ -1,0 +1,60 @@
+TREE=790495a48348e6052854a973d810576502c61724
+== build exit 0
+#23 840.7 Ran 1242 tests in 837.223s
+#23 840.7 OK (skipped=86)
+== unit (verbose)
+Ran 1242 tests in 815.187s
+OK (skipped=86)
+   webchat: run=36 skipped=0 failed=0
+   telegram: run=40 skipped=0 failed=0
+   discord: run=87 skipped=0 failed=0
+   zendesk: run=86 skipped=0 failed=0
+   knowledge: run=79 skipped=0 failed=0
+   deletion: run=33 skipped=0 failed=0
+   phase6a: run=19 skipped=0 failed=0
+   matrix: run=2 skipped=0 failed=0
+== security 009-011
+Ran 240 tests in 23.895s
+
+OK
+== matrix
+matrix cases 134 requests 938
+== knowledge harness (scripted; plumbing only)
+   deterministic corpus exit 0
+   deterministic holdout exit 0
+   verifier holdout exit 0
+   end_to_end holdout exit 0
+== contract drift
+154 routes, 56 samples
+routes.json: no drift
+== mongo run 1
+Ran 50 tests in 134.400s
+OK (skipped=7)
+== mongo run 2
+Ran 50 tests in 141.160s
+OK (skipped=7)
+== mongo run 3
+Ran 50 tests in 130.866s
+OK (skipped=7)
+== load
+Ran 7 tests in 270.014s
+OK
+== frontend jest
+Test Suites: 13 passed, 13 total
+Tests:       132 passed, 132 total
+== frontend build (production API origin)
+Compiled with warnings.
+   app12 warnings: 0
+== e2e frontend build (same origin)
+Compiled with warnings.
+== e2e HTTP journeys (real frontend/backend boundary)
+Ran 11 tests in 15.902s
+OK
+== e2e browser (Playwright, Chromium)
+  23 passed (1.9m)
+   server worker errors: 0
+== cleaned: 0
+== production
+bitbotpro-api bitbotpro-api:spec011-f245d7ed3bdb Up 26 hours (healthy)
+
+[exited with code 0]

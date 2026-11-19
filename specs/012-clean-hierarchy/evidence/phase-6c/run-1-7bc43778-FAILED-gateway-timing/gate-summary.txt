@@ -1,0 +1,165 @@
+0
+LOGS=/tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795069170
+TREE=7bc437783b7ebc9d630c463ae2e89553172f9453
+FRONTEND_TREE=1a54c99f4c568cd9ea164e2d7ecc2bf0874e389b
+LOCKS: requirements.txt=4065d46c3abebcbc yarn.lock=2f88ea42122a289e e2e/package-lock.json=5bced45fe8c6df08
+BASE=python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+TEST_IMAGE=bitbotpro-api-test:spec012-beta1-7bc437783b7e
+RC_IMAGE=bitbotpro-api:spec012-beta1-7bc437783b7e
+== test image build exit 1
+#23 814.9 Ran 1052 tests in 811.640s
+#23 814.9 FAILED (failures=1, skipped=86)
+== RC image build exit 0
+
+Error response from daemon: No such image: bitbotpro-api-test:spec012-beta1-7bc437783b7e
+rc image id=sha256:3e621c2376089ab3baaced4ca880dc8be123b0fefba4c2b0a4f70224c44b4576 size=301100996
+== unit (verbose, in the test image)
+   webchat: run=0 skipped=0 failed=0
+   telegram: run=0 skipped=0 failed=0
+   discord: run=0 skipped=0 failed=0
+   zendesk: run=0 skipped=0 failed=0
+   knowledge: run=0 skipped=0 failed=0
+   deletion: run=0 skipped=0 failed=0
+   phase6a: run=0 skipped=0 failed=0
+   registration_b_acct: run=0 skipped=0 failed=0
+   auth_members: run=0 skipped=0 failed=0
+   usage_accounting: run=0 skipped=0 failed=0
+   key_rotation: run=0 skipped=0 failed=0
+   production_wiring: run=0 skipped=0 failed=0
+   matrix: run=0 skipped=0 failed=0
+   kept_security_009_011: run=0 skipped=0 failed=0
+   spec012_security: run=0 skipped=0 failed=0
+   skipped by module: {}
+== matrix
+Unable to find image 'bitbotpro-api-test:spec012-beta1-7bc437783b7e' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+== knowledge harness (scripted; plumbing only)
+   deterministic corpus exit 125
+   deterministic holdout exit 125
+   verifier holdout exit 125
+   end_to_end holdout exit 125
+== contract drift
+Unable to find image 'bitbotpro-api-test:spec012-beta1-7bc437783b7e' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+diff: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795069170/contract/routes.json: No such file or directory
+== mongo run 1
+== mongo run 2
+== mongo run 3
+== load
+== rehearsal: MongoDB open-file limit
+   exit 125
+   == 1. today's configuration (no ulimits in compose = Docker default)
+   limits(soft/hard)=1024/524288 max_connections=409 fds_idle=28
+   -- Spec 012 database prepared and seeded:
+   Unable to find image 'bitbotpro-api-test:spec012-beta1-7bc437783b7e' locally
+   docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+   
+   Run 'docker run --help' for more information
+== rehearsal: backup and restore
+   exit 125
+   == [1/6] representative Spec 012 database (real API, test-only keys)
+== RC image checks
+user=10001:10001 healthcheck=["CMD","python","/app/healthcheck.py"] labels={"io.bitbotpro.source-tree":"7bc437783b7ebc9d630c463ae2e89553172f9453","io.bitbotpro.spec":"012","org.opencontainers.image.description":"BitBotPro Spec 012 API and worker","org.opencontainers.image.revision":"7bc437783b7ebc9d630c463ae2e89553172f9453","org.opencontainers.image.title":"bitbotpro-api"}
+   env: no secret-like variables (GPG_KEY = public signing-key fingerprint of the python base image)
+   history: no secret-like build steps
+__pycache__
+api
+client_ip.py
+core
+docker-entrypoint.sh
+email_delivery.py
+healthcheck.py
+log_redaction.py
+outbound_guard.py
+password_policy.py
+persistence
+rate_limit.py
+runtime
+runtime_config.py
+security_utils.py
+server.py
+webhook_auth.py
+worker.py
+zendesk_sidebar_app
+   retained legacy sources, manage.py and tests are NOT in the image
+   python packages in image: 35
+   api container: healthy user=10001:10001 readonly=true
+   worker container: unhealthy
+   GET /api/health=200 /api/ready=200 foreign Host=400 /api/enterprises (no session)=401 /docs=404
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795069170/rc_api.log:0
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795069170/rc_worker.log:0
+   legacy database: container exited exit=3; 2 refusal line(s); workspaces untouched=workspaces
+   bad configuration: exit 78 (configuration error: JWT_SECRET is required (at least 32 characters).)
+== RC image vulnerability scan (offline tarball, Trivy)
+   trivy exit 0
+   by severity: {'LOW': 69, 'HIGH': 47, 'MEDIUM': 114, 'UNKNOWN': 10}
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libacl1 2.3.2-2+b1 - CVE-2026-54369 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libncursesw6 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119373 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119374 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119379 debian
+    HIGH libsystemd0 257.13-1~deb13u1 - CVE-2026-16742 debian
+    HIGH libtinfo6 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH libudev1 257.13-1~deb13u1 - CVE-2026-16742 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH ncurses-base 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH ncurses-bin 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH perl-base 5.40.1-6+deb13u1 - CVE-2026-9538 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+   zlib1g findings: []
+== frontend jest
+Test Suites: 11 passed, 11 total
+Tests:       105 passed, 105 total
+== frontend build (production API origin, CI=true)
+Compiled successfully.
+   warnings: 0
+== e2e frontend build (same origin)
+Compiled successfully.
+== e2e HTTP journeys (real frontend/backend boundary)
+Unable to find image 'bitbotpro-api-test:spec012-beta1-7bc437783b7e' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+== e2e browser (Playwright, Chromium)
+Unable to find image 'bitbotpro-api-test:spec012-beta1-7bc437783b7e' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information

@@ -95,8 +95,11 @@ class ActivatedUsageTests(unittest.TestCase):
                 self.assertNotIn('"frontend", ".env"', src)
 
     def test_server_requires_public_urls_in_production(self):
-        src = (BACKEND_DIR / "server.py").read_text(encoding="utf-8")
-        self.assertIn("required=(APP_ENV == _rc.APP_ENV_PRODUCTION)", src)
+        """Spec 012 (Phase 6B): the production wiring refuses to start without both public URLs
+        (behaviour: tests/unit/test_production_app.py::ConfigTests)."""
+        src = (BACKEND_DIR / "api" / "production.py").read_text(encoding="utf-8")
+        self.assertIn('_origin("PUBLIC_API_URL", env.get("PUBLIC_API_URL"), app_env=app_env, required=True)', src)
+        self.assertIn('_origin("PUBLIC_APP_URL", env.get("PUBLIC_APP_URL"), app_env=app_env, required=True)', src)
 
     def test_public_url_accessor(self):
         self.assertEqual(rc.public_url("PUBLIC_APP_URL", {"PUBLIC_APP_URL": " https://bitbotpro.io/ "}),

@@ -1,0 +1,60 @@
+test_concurrent_first_insert_race_on_new_keys (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_concurrent_first_insert_race_on_new_keys) ... ok
+test_concurrent_increments_on_one_key_are_never_lost (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_concurrent_increments_on_one_key_are_never_lost) ... ok
+test_conversation_appends_are_atomic_and_instance_scoped (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_conversation_appends_are_atomic_and_instance_scoped)
+Same upsert as server.save_conversation (spec 008 Stage 4). ... ok
+test_expired_window_restarts_even_if_document_remains (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_expired_window_restarts_even_if_document_remains) ... ok
+test_invitation_claim_has_exactly_one_winner (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_invitation_claim_has_exactly_one_winner)
+Same conditional update as server.accept_invite (spec 008 Stage 8). ... ok
+test_oauth_state_consumed_exactly_once (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_oauth_state_consumed_exactly_once) ... ok
+test_single_use_code_consumption_under_concurrency (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_single_use_code_consumption_under_concurrency) ... ok
+test_ttl_index_command_on_disposable_db (tests.integration.test_mongo_atomicity.MongoAtomicityTests.test_ttl_index_command_on_disposable_db) ... ok
+test_concurrent_oauth_callbacks (tests.integration.test_spec012_load.LoadTests.test_concurrent_oauth_callbacks) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_concurrent_tenant_operations (tests.integration.test_spec012_load.LoadTests.test_concurrent_tenant_operations) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_credential_rotation_and_deletion_races (tests.integration.test_spec012_load.LoadTests.test_credential_rotation_and_deletion_races) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_discord_gateway_event_burst (tests.integration.test_spec012_load.LoadTests.test_discord_gateway_event_burst) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_knowledge_revocation_during_retrieval_and_generation (tests.integration.test_spec012_load.LoadTests.test_knowledge_revocation_during_retrieval_and_generation) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_telegram_webhook_burst_with_duplicates (tests.integration.test_spec012_load.LoadTests.test_telegram_webhook_burst_with_duplicates) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_webchat_duplicates_and_quota_contention (tests.integration.test_spec012_load.LoadTests.test_webchat_duplicates_and_quota_contention) ... skipped 'set MONGO_TEST_URL (disposable) and LOAD_TEST=1'
+test_filters_reject_operators (tests.integration.test_spec012_mongo.DatabaseGuardTests.test_filters_reject_operators) ... ok
+test_prepare_is_idempotent_and_marks_the_database (tests.integration.test_spec012_mongo.DatabaseGuardTests.test_prepare_is_idempotent_and_marks_the_database) ... ok
+test_refuses_legacy_or_foreign_databases (tests.integration.test_spec012_mongo.DatabaseGuardTests.test_refuses_legacy_or_foreign_databases) ... ok
+test_schema_validators_reject_malformed_documents (tests.integration.test_spec012_mongo.DatabaseGuardTests.test_schema_validators_reject_malformed_documents) ... ok
+test_concurrent_invitation_acceptance_and_owner_removal_via_api (tests.integration.test_spec012_mongo.MongoApiTests.test_concurrent_invitation_acceptance_and_owner_removal_via_api) ... ok
+test_cross_tenant_requests_are_refused_and_change_nothing (tests.integration.test_spec012_mongo.MongoApiTests.test_cross_tenant_requests_are_refused_and_change_nothing) ... ok
+test_enterprise_deletion_on_mongo (tests.integration.test_spec012_mongo.MongoApiTests.test_enterprise_deletion_on_mongo) ... ok
+test_persistence_round_trip_and_inheritance (tests.integration.test_spec012_mongo.MongoApiTests.test_persistence_round_trip_and_inheritance) ... ok
+test_concurrent_guild_binding_claims (tests.integration.test_spec012_mongo.MongoConcurrencyTests.test_concurrent_guild_binding_claims) ... ok
+test_concurrent_telegram_bot_identity (tests.integration.test_spec012_mongo.MongoConcurrencyTests.test_concurrent_telegram_bot_identity) ... ok
+test_last_owner_races (tests.integration.test_spec012_mongo.MongoConcurrencyTests.test_last_owner_races) ... ok
+test_single_use_tokens_and_lifecycle_cas (tests.integration.test_spec012_mongo.MongoConcurrencyTests.test_single_use_tokens_and_lifecycle_cas) ... ok
+test_superadmin_races (tests.integration.test_spec012_mongo.MongoConcurrencyTests.test_superadmin_races) ... ok
+test_revocation_race_is_linearizable_on_mongo (tests.integration.test_spec012_mongo.MongoMembershipProtocolTests.test_revocation_race_is_linearizable_on_mongo) ... ok
+test_unique_document_per_enterprise_user (tests.integration.test_spec012_mongo.MongoMembershipProtocolTests.test_unique_document_per_enterprise_user) ... ok
+test_concurrent_login_failures_respect_the_limit_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ATests.test_concurrent_login_failures_respect_the_limit_on_mongo) ... ok
+test_login_logout_and_session_revocation_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ATests.test_login_logout_and_session_revocation_on_mongo) ... ok
+test_quota_and_credential_scope_through_the_pipeline_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ATests.test_quota_and_credential_scope_through_the_pipeline_on_mongo) ... ok
+test_worker_recovers_a_crashed_job_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ATests.test_worker_recovers_a_crashed_job_on_mongo) ... ok
+test_discord_application_uniqueness_and_secrets_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4DTests.test_discord_application_uniqueness_and_secrets_on_mongo) ... ok
+test_gateway_lease_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4DTests.test_gateway_lease_on_mongo) ... ok
+test_oauth_install_and_shared_server_claims_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4DTests.test_oauth_install_and_shared_server_claims_on_mongo) ... ok
+test_telegram_delivery_record_and_concurrent_senders_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4DTests.test_telegram_delivery_record_and_concurrent_senders_on_mongo) ... ok
+test_bot_deletion_with_zendesk_cleanup_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ETests.test_bot_deletion_with_zendesk_cleanup_on_mongo) ... ok
+test_validators_reject_ownerless_or_double_owned_records (tests.integration.test_spec012_mongo.MongoPhase4ETests.test_validators_reject_ownerless_or_double_owned_records) ... ok
+test_zendesk_oauth_state_and_discord_share_link_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ETests.test_zendesk_oauth_state_and_discord_share_link_on_mongo) ... ok
+test_zendesk_webhook_flow_and_duplicates_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4ETests.test_zendesk_webhook_flow_and_duplicates_on_mongo) ... ok
+test_concurrent_deletion_requests_and_fence_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4KTests.test_concurrent_deletion_requests_and_fence_on_mongo) ... ok
+test_concurrent_workers_generate_and_bill_once_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4KTests.test_concurrent_workers_generate_and_bill_once_on_mongo) ... ok
+test_knowledge_ingestion_retrieval_and_isolation_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4KTests.test_knowledge_ingestion_retrieval_and_isolation_on_mongo) ... ok
+test_uncertain_outcomes_and_crash_recovery_on_mongo (tests.integration.test_spec012_mongo.MongoPhase4KTests.test_uncertain_outcomes_and_crash_recovery_on_mongo) ... ok
+test_rotation_crash_resume_concurrency_and_rollback (tests.integration.test_spec012_mongo.MongoPhase6BKeyRotationTests.test_rotation_crash_resume_concurrency_and_rollback) ... ok
+test_scan_and_field_compare_and_set_on_mongo (tests.integration.test_spec012_mongo.MongoPhase6BKeyRotationTests.test_scan_and_field_compare_and_set_on_mongo) ... ok
+test_the_operator_command_against_mongo (tests.integration.test_spec012_mongo.MongoPhase6BKeyRotationTests.test_the_operator_command_against_mongo) ... ok
+test_billing_failure_injection_on_mongo (tests.integration.test_spec012_mongo.MongoTelegramAndBillingTests.test_billing_failure_injection_on_mongo) ... ok
+test_telegram_webhook_flow_on_mongo (tests.integration.test_spec012_mongo.MongoTelegramAndBillingTests.test_telegram_webhook_flow_on_mongo) ... ok
+test_chat_history_logo_and_deletion_on_mongo (tests.integration.test_spec012_mongo.MongoWebchatTests.test_chat_history_logo_and_deletion_on_mongo) ... ok
+test_quota_and_idempotency_under_concurrency_on_mongo (tests.integration.test_spec012_mongo.MongoWebchatTests.test_quota_and_idempotency_under_concurrency_on_mongo) ... ok
+
+----------------------------------------------------------------------
+Ran 53 tests in 150.162s
+
+OK (skipped=7)

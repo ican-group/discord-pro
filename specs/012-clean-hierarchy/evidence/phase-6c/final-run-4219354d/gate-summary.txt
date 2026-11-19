@@ -1,0 +1,203 @@
+LOGS=/tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795071421
+TREE=4219354d14693023ccf8baa9d2dc2c53f8f1427e
+FRONTEND_TREE=1a54c99f4c568cd9ea164e2d7ecc2bf0874e389b
+LOCKS: requirements.txt=4065d46c3abebcbc yarn.lock=2f88ea42122a289e e2e/package-lock.json=5bced45fe8c6df08
+BASE=python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+TEST_IMAGE=bitbotpro-api-test:spec012-beta1-4219354d1469
+RC_IMAGE=bitbotpro-api:spec012-beta1-4219354d1469
+== test image build exit 0
+#23 823.2 Ran 1052 tests in 820.029s
+#23 823.2 OK (skipped=86)
+== RC image build exit 0
+test image id=sha256:70ddcde19ca644235826298f8bb9dd1f54a2eddb78dc5d8c05ca89656d61d02a
+rc image id=sha256:181265070b34d076111edd4338d7f91c823ddad6bb63e9fbc6bd47b203abb0f4 size=301102783
+== unit (verbose, in the test image)
+Ran 1052 tests in 802.904s
+OK (skipped=86)
+   webchat: run=48 skipped=0 failed=0
+   telegram: run=40 skipped=0 failed=0
+   discord: run=91 skipped=0 failed=0
+   zendesk: run=86 skipped=0 failed=0
+   knowledge: run=79 skipped=0 failed=0
+   deletion: run=33 skipped=0 failed=0
+   phase6a: run=19 skipped=0 failed=0
+   registration_b_acct: run=10 skipped=0 failed=0
+   auth_members: run=35 skipped=0 failed=0
+   usage_accounting: run=29 skipped=0 failed=0
+   key_rotation: run=18 skipped=0 failed=0
+   production_wiring: run=26 skipped=0 failed=0
+   matrix: run=2 skipped=0 failed=0
+   kept_security_009_011: run=243 skipped=0 failed=0
+   spec012_security: run=61 skipped=0 failed=0
+   skipped by module: {'test_compose_files': 27, 'test_frontend_parity': 1, 'test_wireguard_scripts': 57}
+== matrix
+matrix routes 134 requests 938
+== knowledge harness (scripted; plumbing only)
+   deterministic corpus exit 0
+   deterministic holdout exit 0
+   verifier holdout exit 0
+   end_to_end holdout exit 0
+== contract drift
+155 routes, 59 samples
+routes.json: no drift
+== mongo run 1
+Ran 53 tests in 147.111s
+OK (skipped=7)
+== mongo run 2
+Ran 53 tests in 148.480s
+OK (skipped=7)
+== mongo run 3
+Ran 53 tests in 150.162s
+OK (skipped=7)
+== load
+Ran 7 tests in 296.539s
+OK
+== rehearsal: MongoDB open-file limit
+   exit 0
+   == 1. today's configuration (no ulimits in compose = Docker default)
+   limits(soft/hard)=1024/524288 max_connections=409 fds_idle=28
+   -- Spec 012 database prepared and seeded:
+   collections=40 indexes=119 documents=52
+   fds_after_seed=187
+   -- connection storm (450 clients ≈ 1350 connections):
+   clients_ok=133 clients_failed=317
+   mongod_refusal_log_lines=0
+   
+   == 2. proposed change: nofile 64000/64000 (container recreated, same data directory)
+   limits(soft/hard)=64000/64000 max_connections=13107 fds_idle=66
+   documents=52
+   -- connection storm:
+   clients_ok=341 clients_failed=109
+   
+   == 3. rollback: recreate without the override
+   limits(soft/hard)=1024/524288 max_connections=409
+   documents=52
+== rehearsal: backup and restore
+   exit 0
+   == [1/6] representative Spec 012 database (real API, test-only keys)
+   == [2/6] backup: mongodump --gzip --archive (read-only on the source)
+   archive: bbp_rh_src-20261119T074110Z.archive.gz bytes=13351 mode=600 sha256=ea9575e0cc2d184ef0acef3b272a5ee4744217dec974834ff44e1a731a56e70b
+   == [3/6] integrity: checksum, gzip stream, archive readable by mongorestore (dry run)
+   gzip: ok
+   mongorestore --dryRun: ok
+   negative control: a corrupted archive is rejected by the integrity checks
+   == [4/6] restore into a SEPARATE disposable mongod under a different database name
+   restored into bbp-6b-br-dst/bbp_rh_restored
+   == [5/6] validation: documents, relationships, credentials, indexes, validators, lifecycle, audit
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+         "ok": true
+     "failures": [],
+     "ok": true
+   == [6/6] done: disposable containers and network are removed on exit
+== RC image checks
+user=10001:10001 healthcheck=["CMD","python","/app/healthcheck.py"] labels={"io.bitbotpro.source-tree":"4219354d14693023ccf8baa9d2dc2c53f8f1427e","io.bitbotpro.spec":"012","org.opencontainers.image.description":"BitBotPro Spec 012 API and worker","org.opencontainers.image.revision":"4219354d14693023ccf8baa9d2dc2c53f8f1427e","org.opencontainers.image.title":"bitbotpro-api"}
+   env: no secret-like variables (GPG_KEY = public signing-key fingerprint of the python base image)
+   history: no secret-like build steps
+__pycache__
+api
+client_ip.py
+core
+docker-entrypoint.sh
+email_delivery.py
+healthcheck.py
+log_redaction.py
+outbound_guard.py
+password_policy.py
+persistence
+rate_limit.py
+runtime
+runtime_config.py
+security_utils.py
+server.py
+webhook_auth.py
+worker.py
+zendesk_sidebar_app
+   retained legacy sources, manage.py and tests are NOT in the image
+   python packages in image: 35
+   api container: healthy user=10001:10001 readonly=true
+   worker container: healthy
+   GET /api/health=200 /api/ready=200 foreign Host=400 /api/enterprises (no session)=401 /docs=404
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795071421/rc_api.log:0
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6c-1795071421/rc_worker.log:0
+   legacy database: container exited exit=3; 2 refusal line(s); workspaces untouched=workspaces
+   bad configuration: exit 78 (configuration error: JWT_SECRET is required (at least 32 characters).)
+== RC image vulnerability scan (offline tarball, Trivy)
+   trivy exit 0
+   by severity: {'LOW': 69, 'HIGH': 47, 'MEDIUM': 114, 'UNKNOWN': 10}
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH bsdutils 1:2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libacl1 2.3.2-2+b1 - CVE-2026-54369 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libblkid1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH liblastlog2-2 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libmount1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libncursesw6 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libsmartcols1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119373 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119374 debian
+    HIGH libsqlite3-0 3.46.1-7+deb13u2 - CVE-2026-119379 debian
+    HIGH libsystemd0 257.13-1~deb13u1 - CVE-2026-16742 debian
+    HIGH libtinfo6 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH libudev1 257.13-1~deb13u1 - CVE-2026-16742 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH libuuid1 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH login 1:4.16.0-2+really2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH mount 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+    HIGH ncurses-base 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH ncurses-bin 6.5+20250216-2 - CVE-2025-69720 debian
+    HIGH perl-base 5.40.1-6+deb13u1 - CVE-2026-9538 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-76642 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78408 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78409 debian
+    HIGH util-linux 2.41.5-0+deb13u1 - CVE-2026-78410 debian
+   zlib1g findings: []
+== frontend jest
+Test Suites: 11 passed, 11 total
+Tests:       105 passed, 105 total
+== frontend build (production API origin, CI=true)
+Compiled successfully.
+   warnings: 0
+== e2e frontend build (same origin)
+Compiled successfully.
+== e2e HTTP journeys (real frontend/backend boundary)
+Ran 12 tests in 17.193s
+OK
+== e2e browser (Playwright, Chromium)
+  24 passed (1.7m)
+   server worker errors: 0
+== cleaned: 0
+== production
+bitbotpro-api bitbotpro-api:spec011-f245d7ed3bdb Up 32 hours (healthy)
+bitbotpro-postgres pgvector/pgvector:0.8.7-pg18-trixie Up 2 days (healthy)
+bitbotpro-mongo mongo:8.0.38-noble Up 2 days (healthy)
+
+[exited with code 0]

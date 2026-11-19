@@ -1,0 +1,33 @@
+
+Running 23 tests using 1 worker
+
+  ✓  1 [chromium-desktop] › 01-auth.spec.js:5:3 › C1 authentication in a real browser › form validation, wrong password, keyboard submission (3.4s)
+  ✓  2 [chromium-desktop] › 01-auth.spec.js:18:3 › C1 authentication in a real browser › session cookie survives refresh; direct navigation; logout; return to the requested page (5.6s)
+  ✓  3 [chromium-desktop] › 01-auth.spec.js:42:3 › C1 authentication in a real browser › session expiry returns to sign-in with a notice (2.5s)
+  ✓  4 [chromium-desktop] › 01-auth.spec.js:49:3 › C1 authentication in a real browser › a request without the CSRF header is refused and the UI says so (3.8s)
+  ✓  5 [chromium-desktop] › 01-auth.spec.js:70:3 › C1 authentication in a real browser › password reset through the e-mailed link (6.7s)
+  ✓  6 [chromium-desktop] › 01-auth.spec.js:95:3 › C1 authentication in a real browser › loading and error states are announced (3.2s)
+  ✓  7 [chromium-desktop] › 02-superadmin-discord.spec.js:5:3 › Platform Superadmin › configures the Enterprise Discord application (secrets write-only) (3.5s)
+  ✓  8 [chromium-desktop] › 02-superadmin-discord.spec.js:24:3 › Platform Superadmin › finds users with the bounded search (3.1s)
+  ✓  9 [chromium-desktop] › 02-superadmin-discord.spec.js:37:3 › Organisation Admin and the Enterprise Discord application (D-Q14) › creates, installs, binds channels and disconnects their own instance — no application controls (7.9s)
+  ✓  10 [chromium-desktop] › 02-superadmin-discord.spec.js:78:3 › Organisation Admin and the Enterprise Discord application (D-Q14) › direct API calls to the application controls are refused (non-disclosing 404) (2.8s)
+  ✓  11 [chromium-desktop] › 03-roles.spec.js:11:3 › Part E role journeys (UI + backend enforcement) › Enterprise Viewer: read-only everywhere (3.4s)
+  ✓  12 [chromium-desktop] › 03-roles.spec.js:22:3 › Part E role journeys (UI + backend enforcement) › Enterprise Editor: can override configuration, cannot manage members (3.3s)
+  ✓  13 [chromium-desktop] › 03-roles.spec.js:32:3 › Part E role journeys (UI + backend enforcement) › Enterprise Admin: creates bots and invites by e-mail (3.7s)
+  ✓  14 [chromium-desktop] › 03-roles.spec.js:45:3 › Part E role journeys (UI + backend enforcement) › Enterprise Owner: lifecycle and permanent deletion controls (3.8s)
+  ✓  15 [chromium-desktop] › 03-roles.spec.js:57:3 › Part E role journeys (UI + backend enforcement) › Organisation Admin: only their Organisation (3.0s)
+  ✓  16 [chromium-desktop] › 03-roles.spec.js:64:3 › Part E role journeys (UI + backend enforcement) › Restricted Organisation member: sees Sales only, nothing else (3.3s)
+  ✓  17 [chromium-desktop] › 03-roles.spec.js:73:3 › Part E role journeys (UI + backend enforcement) › Another Enterprise's owner: no access, no disclosure, no authority from headers (2.9s)
+  ✓  18 [chromium-desktop] › 04-a11y-mobile.spec.js:17:1 › automated accessibility audit (axe, WCAG 2.1 A/AA): no serious or critical violations (19.6s)
+  ✓  19 [chromium-desktop] › 04-a11y-mobile.spec.js:31:1 › keyboard: skip link, tabs with arrow keys, focus visible on controls (3.4s)
+  ✓  20 [chromium-desktop] › 05-webchat-zendesk.spec.js:4:1 › F5 webchat preview through the API-hosted widget is labelled preview and still counted (4.7s)
+  ✓  21 [chromium-desktop] › 05-webchat-zendesk.spec.js:27:1 › Zendesk Bot Integration: create, usage notice, safe deletion states (4.2s)
+  ✓  22 [chromium-mobile] › 04-a11y-mobile.spec.js:45:1 › @mobile layout: no horizontal scrolling and navigation works on a phone (10.0s)
+  ✓  23 [chromium-mobile] › 04-a11y-mobile.spec.js:59:1 › @mobile sign-in and OAuth result page on a phone (3.0s)
+
+  Slow test file: [chromium-desktop] › 01-auth.spec.js (25.3s)
+  Slow test file: [chromium-desktop] › 03-roles.spec.js (23.5s)
+  Slow test file: [chromium-desktop] › 04-a11y-mobile.spec.js (23.0s)
+  Slow test file: [chromium-desktop] › 02-superadmin-discord.spec.js (17.2s)
+  Consider splitting slow test files to speed up parallel execution
+  23 passed (1.9m)

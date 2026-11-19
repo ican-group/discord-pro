@@ -19,6 +19,10 @@ _PATTERNS: List[Tuple[re.Pattern, str]] = [
     # Secret path segments: webhook secrets and invitation tokens.
     (re.compile(r"(/(?:telegram|zendesk)/webhook/[^/\s?\"']+/)[^/\s?\"']+"), r"\1" + REDACTED),
     (re.compile(r"(/invite/)[^/\s?\"']+"), r"\1" + REDACTED),
+    # Spec 012 (Phase 6B security review): webhook path secrets of the new API and the Discord
+    # share-link token, which uvicorn's access log would otherwise print in full.
+    (re.compile(r"(/hooks/(?:telegram|zendesk)/(?!sidebar/|oauth/)[^/\s?\"']+/)[^/\s?\"']+"), r"\1" + REDACTED),
+    (re.compile(r"(/public/discord/install/)[^/\s?\"']+"), r"\1" + REDACTED),
     # Telegram bot tokens (also inside https://api.telegram.org/bot<token>/...).
     (re.compile(r"(?<![0-9])(\d{5,12}):[A-Za-z0-9_-]{30,}"), r"\1:" + REDACTED),
     # Credential-bearing query/form parameters.

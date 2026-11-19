@@ -1,0 +1,64 @@
+yarn run v1.22.22
+$ craco build
+Creating an optimized production build...
+Browserslist: browsers data (caniuse-lite) is 6 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+Browserslist: browsers data (caniuse-lite) is 6 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+Compiled with warnings.
+
+[eslint] 
+src/pages/ApiKeyAnalytics.js
+  Line 963:6:  React Hook useCallback has a missing dependency: 'selectedKey'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/BotOverview.js
+  Line 40:6:  React Hook useEffect has a missing dependency: 'selectBot'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/ConnectedAccounts.js
+  Line 1026:41:  React Hook useEffect has a missing dependency: 'fetchAccounts'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/Conversations.js
+  Line 67:6:  React Hook useCallback has an unnecessary dependency: 'instanceId'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/DiscordSettings.js
+  Line 466:6:  React Hook useCallback has an unnecessary dependency: 'instanceId'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+  Line 475:6:  React Hook useCallback has an unnecessary dependency: 'instanceId'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+  Line 514:6:  React Hook useCallback has an unnecessary dependency: 'instanceId'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/IntegrationsPage.js
+  Line 1526:37:  React Hook useEffect has a missing dependency: 'fetchData'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/KnowledgeBase.js
+  Line 307:6:  React Hook useCallback has an unnecessary dependency: 'instanceId'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+
+src/pages/Users.js
+  Line 95:6:  React Hook useEffect has a missing dependency: 'loadUsers'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+Search for the keywords to learn more about each warning.
+To ignore, add // eslint-disable-next-line to the line before.
+
+File sizes after gzip:
+
+  528.52 kB  build/static/js/main.fcf6f6db.js
+  10.66 kB   build/static/css/main.e42a83f3.css
+
+The bundle size is significantly larger than recommended.
+Consider reducing it with code splitting: https://goo.gl/9VhYWB
+You can also analyze the project dependencies: https://goo.gl/LeUzfb
+
+The project was built assuming it is hosted at /.
+You can control this with the homepage field in your package.json.
+
+The build folder is ready to be deployed.
+You may serve it with a static server:
+
+  yarn global add serve
+  serve -s build
+
+Find out more about deployment here:
+
+  https://cra.link/deployment
+
+Done in 59.90s.

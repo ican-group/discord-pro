@@ -1,0 +1,19 @@
+yarn run v1.22.22
+$ craco test --watchAll=false
+PASS src/utils/__tests__/apiBase.test.js
+PASS src/utils/__tests__/securityGuards.test.js
+PASS src/utils/__tests__/passwordPolicy.test.js
+PASS src/app12/__tests__/client.test.js
+PASS src/app12/__tests__/w2.test.js
+PASS src/app12/__tests__/util.test.js
+PASS src/app12/__tests__/legacyRoutes.test.js
+PASS src/app12/__tests__/components.test.js (8.418 s)
+PASS src/app12/__tests__/phase6a.test.js (10.302 s)
+PASS src/app12/__tests__/flows.test.js (19.474 s)
+
+Test Suites: 10 passed, 10 total
+Tests:       102 passed, 102 total
+Snapshots:   0 total
+Time:        21.086 s
+Ran all test suites.
+Done in 24.82s.

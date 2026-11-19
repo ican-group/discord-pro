@@ -10,6 +10,8 @@
 
 # production
 /build
+/build-e2e
+/build-beta
 
 # misc
 .DS_Store

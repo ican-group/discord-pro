@@ -1,0 +1,10 @@
+{
+  "name": "bitbotpro-e2e",
+  "private": true,
+  "description": "Phase 6A real-browser tests against the local Spec 012 environment (never production).",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.1",
+    "@playwright/test": "1.49.1"
+  }
+}

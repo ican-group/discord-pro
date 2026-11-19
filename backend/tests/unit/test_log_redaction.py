@@ -27,6 +27,14 @@ class RedactTests(unittest.TestCase):
         ("postgresql://bitbotpro_app:pw0123456789@bitbotpro-postgres:5432/x", "pw0123456789"),
         ("key sk-ant-api03-SYNTHETICsyntheticKEY0123", "SYNTHETICsyntheticKEY0123"),
         ("resend key re_SYNTHETIC0123456789abc", "SYNTHETIC0123456789abc"),
+        # Spec 012 (Phase 6B security review): the new API's secret-bearing paths
+        ('10.50.0.1:1 - "POST /api/hooks/telegram/3f2a-inst/Tg_PathSecret_0123456789abcdef HTTP/1.1" 200',
+         "Tg_PathSecret_0123456789abcdef"),
+        ('"POST /api/hooks/zendesk/9c1d-integ/ZdPathSecret0123456789abcdef HTTP/1.1" 202',
+         "ZdPathSecret0123456789abcdef"),
+        ('"GET /api/public/discord/install/ShareLinkToken_0123456789abcdef HTTP/1.1" 303',
+         "ShareLinkToken_0123456789abcdef"),
+        ('"GET /api/hooks/discord/oauth/callback?state=St4teValue0123&code=c0de123 HTTP/1.1" 303', "St4teValue0123"),
     ]
 
     def test_secrets_redacted(self):
@@ -41,7 +49,9 @@ class RedactTests(unittest.TestCase):
                      '"GET /api/knowledge/sources HTTP/1.1" 503',
                      "Startup mode: APP_MODE=api APP_ENV=production discord=disabled mongo_kb=disabled",
                      "Email sent (kind=verification) to user@example.org",
-                     '"GET /api/bots?limit=10&page=2 HTTP/1.1" 200'):
+                     '"GET /api/bots?limit=10&page=2 HTTP/1.1" 200',
+                     '"POST /api/hooks/zendesk/sidebar/generate HTTP/1.1" 200',
+                     '"GET /api/public/instances/pub123/chat HTTP/1.1" 200'):
             with self.subTest(line=line):
                 self.assertEqual(lr.redact(line), line)
 

@@ -1,4 +1,4 @@
-"""manage.py: one-time superadmin bootstrap and explicit legacy migrations
+"""manage.py: one-time superadmin bootstrap (legacy migrations removed in Spec 012 Phase 6B)
 (spec 004, R1, R2, C6). Uses an in-memory fake DB; no MongoDB required."""
 import asyncio
 import io
@@ -127,65 +127,6 @@ class PasswordFileTests(unittest.TestCase):
             parser.parse_args(["bootstrap-superadmin", "--email", EMAIL, "--password", STRONG])
 
 
-class LegacyMigrationTests(unittest.TestCase):
-    def _db_with_legacy_data(self):
-        db = FakeDB()
-        db.bot_instances.docs.append({"id": "inst-1"})
-        db.bot_config.docs.append({"name": "x"})
-        db.conversations.docs.append({"session_id": "s"})
-        db.knowledge_sources.docs.append({"title": "t"})
-        return db
-
-    def _run(self, db, **kw):
-        out = io.StringIO()
-        params = dict(only=None, apply=False, confirm=False, allow_hardcoded_accounts=False)
-        params.update(kw)
-        code = run(manage.legacy_migrations(db, out=out, now_fn=lambda: "t", **params))
-        return code, out.getvalue()
-
-    def test_dry_run_by_default_changes_nothing(self):
-        db = self._db_with_legacy_data()
-        code, out = self._run(db)
-        self.assertEqual(code, manage.EXIT_DRY_RUN)
-        self.assertEqual(db.mutating_writes(), [])
-        self.assertIn("DRY RUN", out)
-
-    def test_apply_requires_confirm(self):
-        db = self._db_with_legacy_data()
-        code, _ = self._run(db, apply=True)
-        self.assertEqual(code, manage.EXIT_DRY_RUN)
-        self.assertEqual(db.mutating_writes(), [])
-
-    def test_workspaces_requires_explicit_flag(self):
-        db = self._db_with_legacy_data()
-        code, out = self._run(db, apply=True, confirm=True)
-        self.assertEqual(code, manage.EXIT_REFUSED)
-        self.assertEqual(db.mutating_writes(), [])
-        self.assertIn("hard-coded", out)
-
-    def test_instance_backfill_skips_knowledge_sources_in_api_mode(self):
-        db = self._db_with_legacy_data()
-        with mock.patch.dict(os.environ, {"APP_MODE": "api"}):
-            code, _ = self._run(db, only=["instance-backfill"], apply=True, confirm=True)
-        self.assertEqual(code, manage.EXIT_OK)
-        self.assertEqual(db.bot_config.docs[0]["instance_id"], "inst-1")
-        self.assertEqual(db.conversations.docs[0]["instance_id"], "inst-1")
-        self.assertNotIn("instance_id", db.knowledge_sources.docs[0])
-        self.assertNotIn(("update_many", "knowledge_sources"), db.writes)
-        self.assertEqual(db.audit_log.docs[0]["action"], "legacy_migration:instance-backfill")
-
-    def test_instance_backfill_includes_knowledge_sources_in_all_mode(self):
-        db = self._db_with_legacy_data()
-        with mock.patch.dict(os.environ, {"APP_MODE": "all"}):
-            self._run(db, only=["instance-backfill"], apply=True, confirm=True)
-        self.assertEqual(db.knowledge_sources.docs[0]["instance_id"], "inst-1")
-
-    def test_discord_metadata_noop_without_global_app(self):
-        db = FakeDB()
-        db.connected_accounts.docs.append({"id": "a1", "provider": "discord"})
-        code, _ = self._run(db, only=["discord-metadata"], apply=True, confirm=True)
-        self.assertEqual(code, manage.EXIT_OK)
-        self.assertNotIn("metadata", db.connected_accounts.docs[0])
 
 
 if __name__ == "__main__":

@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-11-18).** The Workspace architecture described here is obsolete.
+> The authoritative architecture is Spec 012 (Enterprise → Organisation → Bot → Bot Instance):
+> see `CLAUDE.md` and `specs/012-clean-hierarchy/`. Kept for history only.
+
 # BitBot Pro — Customer Workspace Architecture Proposal
 
 ## 1. Current State Audit

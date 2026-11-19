@@ -1,0 +1,86 @@
+{
+  "mode": "verifier",
+  "set": "holdout",
+  "corpus_digest": "3b366d11f2dae6b2",
+  "provider": "scripted",
+  "model": "claude-sonnet-4-6",
+  "measurement": "SCRIPTED (plumbing only, not accuracy)",
+  "policy": {
+    "knowledge.allowed_sources": "<evaluation source>",
+    "knowledge.minimum_mode": "strict_knowledge_only",
+    "knowledge.semantic_verification": true
+  },
+  "config": {
+    "ai.provider": "anthropic",
+    "ai.model": "claude-sonnet-4-6",
+    "knowledge.mode": "strict_knowledge_only",
+    "knowledge.insufficient_fallback": "Please contact our support team."
+  },
+  "metrics": {
+    "gold_total": 12,
+    "gold_refused": 0,
+    "wrong_total": 25,
+    "wrong_accepted": 25,
+    "malformed": 0,
+    "provider_errors": 0,
+    "by_category": {
+      "omits_condition": {
+        "total": 5,
+        "accepted": 5
+      },
+      "reverses_requirement": {
+        "total": 3,
+        "accepted": 3
+      },
+      "unsupported_conclusion": {
+        "total": 3,
+        "accepted": 3
+      },
+      "changes_money": {
+        "total": 1,
+        "accepted": 1
+      },
+      "changes_number": {
+        "total": 6,
+        "accepted": 6
+      },
+      "changes_permission": {
+        "total": 1,
+        "accepted": 1
+      },
+      "role_swap": {
+        "total": 3,
+        "accepted": 3
+      },
+      "changes_exception": {
+        "total": 1,
+        "accepted": 1
+      },
+      "changes_date": {
+        "total": 1,
+        "accepted": 1
+      },
+      "follows_injection": {
+        "total": 1,
+        "accepted": 1
+      }
+    },
+    "false_acceptance_rate": 1.0,
+    "false_refusal_rate": 0.0
+  },
+  "provider_calls": {
+    "calls": 37,
+    "errors": {},
+    "latency_ms": {
+      "p50": 0.1,
+      "p95": 0.1,
+      "max": 0.1,
+      "mean": 0.1
+    },
+    "tokens": {
+      "input": 1850,
+      "output": 740
+    },
+    "estimated_cost": null
+  }
+}

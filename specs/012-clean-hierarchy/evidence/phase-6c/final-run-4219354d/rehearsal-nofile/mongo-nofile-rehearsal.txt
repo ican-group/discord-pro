@@ -1,0 +1,18 @@
+== 1. today's configuration (no ulimits in compose = Docker default)
+limits(soft/hard)=1024/524288 max_connections=409 fds_idle=28
+-- Spec 012 database prepared and seeded:
+collections=40 indexes=119 documents=52
+fds_after_seed=187
+-- connection storm (450 clients ≈ 1350 connections):
+clients_ok=133 clients_failed=317
+mongod_refusal_log_lines=0
+
+== 2. proposed change: nofile 64000/64000 (container recreated, same data directory)
+limits(soft/hard)=64000/64000 max_connections=13107 fds_idle=66
+documents=52
+-- connection storm:
+clients_ok=341 clients_failed=109
+
+== 3. rollback: recreate without the override
+limits(soft/hard)=1024/524288 max_connections=409
+documents=52

@@ -1,0 +1,255 @@
+0
+TREE=1dc72a1b752e7e1ed4d0f272860d9f925003f48f
+FRONTEND_TREE=62c6e8fed6b745f588ff10632fb1624d9a652995
+TEST_IMAGE=bitbotpro-api-test:spec012-rc1-1dc72a1b752e
+RC_IMAGE=bitbotpro-api:spec012-rc1-1dc72a1b752e
+== test image build exit 0
+#23 671.0 Ran 1041 tests in 668.054s
+#23 671.0 OK (skipped=86)
+== RC image build exit 0
+test image id=sha256:8a2efbf0598b0324798cc3d543b3dbe6aa11145c863fc92e3af5c61e7189dbd4
+rc image id=sha256:5d08ae14b756fa0f00724ae70c0e95f2854f1473b6e944129a863e75a0786647 size=318236703
+== unit (verbose, in the test image)
+Ran 1041 tests in 657.322s
+OK (skipped=86)
+   webchat: run=48 skipped=0 failed=0
+   telegram: run=40 skipped=0 failed=0
+   discord: run=91 skipped=0 failed=0
+   zendesk: run=86 skipped=0 failed=0
+   knowledge: run=79 skipped=0 failed=0
+   deletion: run=33 skipped=0 failed=0
+   phase6a: run=19 skipped=0 failed=0
+   key_rotation: run=18 skipped=0 failed=0
+   production_wiring: run=25 skipped=0 failed=0
+   matrix: run=2 skipped=0 failed=0
+   kept_security_009_011: run=243 skipped=0 failed=0
+   spec012_security: run=61 skipped=0 failed=0
+   skipped by module: {'test_compose_files': 27, 'test_frontend_parity': 1, 'test_wireguard_scripts': 57}
+== matrix
+matrix routes 134 requests 938
+== knowledge harness (scripted; plumbing only)
+   deterministic corpus exit 0
+   deterministic holdout exit 0
+   verifier holdout exit 0
+   end_to_end holdout exit 0
+== contract drift
+154 routes, 56 samples
+routes.json: no drift
+== mongo run 1
+Ran 53 tests in 148.369s
+OK (skipped=7)
+== mongo run 2
+Ran 53 tests in 141.357s
+OK (skipped=7)
+== mongo run 3
+Ran 53 tests in 147.671s
+OK (skipped=7)
+== load
+Ran 7 tests in 292.947s
+OK
+== rehearsal: MongoDB open-file limit
+   exit 1
+   == 1. today's configuration (no ulimits in compose = Docker default)
+   limits(soft/hard)=1024/524288 max_connections=409 fds_idle=28
+   -- Spec 012 database prepared and seeded:
+   collections=40 indexes=119 documents=52
+   fds_after_seed=187
+   -- connection storm (450 clients ≈ 1350 connections):
+   clients_ok=136 clients_failed=314
+   mongod_refusal_log_lines=0
+== rehearsal: backup and restore
+   exit 1
+   == [1/6] representative Spec 012 database (real API, test-only keys)
+   == [2/6] backup: mongodump --gzip --archive (read-only on the source)
+   archive: bbp_rh_src-20261119T041947Z.archive.gz bytes=13456 mode=600 sha256=5a01217ae96004cf4e6f77c6b46af12860e609d02a07f0510299ec49b474a414
+   == [3/6] integrity: checksum, gzip stream, archive readable by mongorestore (dry run)
+   gzip: ok
+   mongorestore --dryRun: ok
+   negative control: a corrupted archive is rejected by the integrity checks
+   == [4/6] restore into a SEPARATE disposable mongod under a different database name
+   restored into bbp-6b-br-dst/bbp_rh_restored
+   == [5/6] validation: documents, relationships, credentials, indexes, validators, lifecycle, audit
+== RC image checks
+user=10001:10001 healthcheck=["CMD","python","/app/healthcheck.py"] labels={"io.bitbotpro.source-tree":"1dc72a1b752e7e1ed4d0f272860d9f925003f48f","io.bitbotpro.spec":"012","org.opencontainers.image.description":"BitBotPro Spec 012 API and worker","org.opencontainers.image.revision":"1dc72a1b752e7e1ed4d0f272860d9f925003f48f","org.opencontainers.image.title":"bitbotpro-api"}
+GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D
+   SECRET-LIKE ENV FOUND
+COPY server.py worker.py healthcheck.py docker-entrypoint.sh client_ip.py email_delivery.py log_redaction.py outbound_guard.py password_policy.py rate_limit.py runtime_config.py security_utils.py webhook_auth.py ./ # buildkit
+   SECRET-LIKE HISTORY
+__pycache__
+api
+client_ip.py
+core
+docker-entrypoint.sh
+email_delivery.py
+healthcheck.py
+log_redaction.py
+outbound_guard.py
+password_policy.py
+persistence
+rate_limit.py
+runtime
+runtime_config.py
+security_utils.py
+server.py
+webhook_auth.py
+worker.py
+zendesk_sidebar_app
+   retained legacy sources, manage.py and tests are NOT in the image
+   python packages in image: 34
+   api container: unhealthy user=10001:10001 readonly=true
+   worker container: unhealthy
+   GET /api/health=000 /api/ready=000 foreign Host=000 /api/enterprises (no session)=000 /docs=000
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6b/rc_api.log:0
+   secret occurrences in logs: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6b/rc_worker.log:0
+   legacy database: container exited exit=3; 2 refusal line(s); workspaces untouched=workspaces
+   bad configuration: exit 78 (configuration error: JWT_SECRET is required (at least 32 characters).)
+== RC image vulnerability scan (offline tarball, Trivy)
+   trivy exit 0
+   by severity: {'LOW': 117, 'HIGH': 123, 'MEDIUM': 184, 'UNKNOWN': 9, 'CRITICAL': 5}
+    CRITICAL PyJWT 2.11.0 2.14.0 CVE-2026-102268 python-pkg
+    CRITICAL anyio 4.12.1 4.14.2 CVE-2026-63374 python-pkg
+    CRITICAL certifi 2026.2.25 2026.10.18 GHSA-6q48-6c7w-9gw2 python-pkg
+    CRITICAL libsqlite3-0 3.40.1-2+deb12u2 - CVE-2025-7458 debian
+    CRITICAL zlib1g 1:1.2.13.dfsg-1 - CVE-2023-45853 debian
+    HIGH PyJWT 2.11.0 2.12.0 CVE-2026-32597 python-pkg
+    HIGH PyJWT 2.11.0 2.13.0 CVE-2026-48526 python-pkg
+    HIGH PyJWT 2.11.0 2.14.0 CVE-2026-102267 python-pkg
+    HIGH PyJWT 2.11.0 2.14.0 CVE-2026-102271 python-pkg
+    HIGH PyJWT 2.11.0 2.14.0 GHSA-pxh4-856f-4h89 python-pkg
+    HIGH bsdutils 1:2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH bsdutils 1:2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH bsdutils 1:2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH cryptography 46.0.5 48.0.1 GHSA-537c-gmf6-5ccf python-pkg
+    HIGH cryptography 46.0.5 49.0.0 CVE-2026-69249 python-pkg
+    HIGH cryptography 46.0.5 50.0.0 CVE-2026-69247 python-pkg
+    HIGH dnspython 2.8.0 2.9.0 CVE-2026-114605 python-pkg
+    HIGH dnspython 2.8.0 2.9.2 CVE-2026-128089 python-pkg
+    HIGH gzip 1.12-1 - CVE-2026-41992 debian
+    HIGH jaraco.context 5.3.0 6.1.0 CVE-2026-23949 python-pkg
+    HIGH libacl1 2.3.1-3 - CVE-2026-54369 debian
+    HIGH libblkid1 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH libblkid1 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH libblkid1 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-107364 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112315 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112316 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112317 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112318 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112319 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112320 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112321 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112322 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-112323 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-118380 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-119079 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-71199 debian
+    HIGH libgssapi-krb5-2 1.20.1-2+deb12u5 - CVE-2026-71200 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-107364 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112315 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112316 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112317 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112318 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112319 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112320 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112321 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112322 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-112323 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-118380 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-119079 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-71199 debian
+    HIGH libk5crypto3 1.20.1-2+deb12u5 - CVE-2026-71200 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-107364 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112315 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112316 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112317 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112318 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112319 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112320 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112321 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112322 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-112323 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-118380 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-119079 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-71199 debian
+    HIGH libkrb5-3 1.20.1-2+deb12u5 - CVE-2026-71200 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-107364 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112315 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112316 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112317 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112318 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112319 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112320 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112321 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112322 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-112323 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-118380 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-119079 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-71199 debian
+    HIGH libkrb5support0 1.20.1-2+deb12u5 - CVE-2026-71200 debian
+    HIGH libmount1 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH libmount1 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH libmount1 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH libncursesw6 6.4-4 - CVE-2025-69720 debian
+    HIGH libpam-modules 1.5.2-6+deb12u2 - CVE-2025-6020 debian
+    HIGH libpam-modules-bin 1.5.2-6+deb12u2 - CVE-2025-6020 debian
+    HIGH libpam-runtime 1.5.2-6+deb12u2 - CVE-2025-6020 debian
+    HIGH libpam0g 1.5.2-6+deb12u2 - CVE-2025-6020 debian
+    HIGH libsmartcols1 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH libsmartcols1 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH libsmartcols1 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH libsqlite3-0 3.40.1-2+deb12u2 - CVE-2026-11822 debian
+    HIGH libsqlite3-0 3.40.1-2+deb12u2 - CVE-2026-11824 debian
+    HIGH libsqlite3-0 3.40.1-2+deb12u2 - CVE-2026-119373 debian
+    HIGH libsqlite3-0 3.40.1-2+deb12u2 - CVE-2026-119374 debian
+    HIGH libsqlite3-0 3.40.1-2+deb12u2 - CVE-2026-119379 debian
+    HIGH libsystemd0 252.39-1~deb12u2 - CVE-2026-16742 debian
+    HIGH libtinfo6 6.4-4 - CVE-2025-69720 debian
+    HIGH libudev1 252.39-1~deb12u2 - CVE-2026-16742 debian
+    HIGH libuuid1 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH libuuid1 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH libuuid1 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH mount 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH mount 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH mount 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH ncurses-base 6.4-4 - CVE-2025-69720 debian
+    HIGH ncurses-bin 6.4-4 - CVE-2025-69720 debian
+    HIGH perl-base 5.36.0-7+deb12u4 - CVE-2026-9538 debian
+    HIGH pymongo 4.10.1 4.18.2 CVE-2026-96748 python-pkg
+    HIGH pymongo 4.10.1 4.18.2 CVE-2026-96749 python-pkg
+    HIGH pymongo 4.10.1 4.18.3 CVE-2026-106435 python-pkg
+    HIGH starlette 0.37.2 0.40.0 CVE-2024-47874 python-pkg
+    HIGH starlette 0.37.2 1.1.0 CVE-2026-48818 python-pkg
+    HIGH starlette 0.37.2 1.3.1 CVE-2026-54283 python-pkg
+    HIGH urllib3 2.6.3 2.7.0 CVE-2026-44431 python-pkg
+    HIGH urllib3 2.6.3 2.7.0 CVE-2026-44432 python-pkg
+    HIGH urllib3 2.6.3 2.8.0 CVE-2026-97687 python-pkg
+    HIGH urllib3 2.6.3 2.8.0 CVE-2026-97689 python-pkg
+    HIGH util-linux 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH util-linux 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH util-linux 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH util-linux-extra 2.38.1-5+deb12u3 - CVE-2026-53613 debian
+    HIGH util-linux-extra 2.38.1-5+deb12u3 - CVE-2026-53615 debian
+    HIGH util-linux-extra 2.38.1-5+deb12u3 - CVE-2026-78410 debian
+    HIGH wheel 0.45.1 0.46.2 CVE-2026-24049 python-pkg
+    HIGH zlib1g 1:1.2.13.dfsg-1 - CVE-2026-85091 debian
+== frontend jest
+Test Suites: 10 passed, 10 total
+Tests:       102 passed, 102 total
+== frontend build (production API origin, CI=true)
+Compiled successfully.
+   warnings: 0
+== e2e frontend build (same origin)
+Compiled successfully.
+== e2e HTTP journeys (real frontend/backend boundary)
+Ran 11 tests in 16.906s
+OK
+== e2e browser (Playwright, Chromium)
+  23 passed (1.6m)
+   server worker errors: 0
+== cleaned: 0
+== production
+bitbotpro-api bitbotpro-api:spec011-f245d7ed3bdb Up 29 hours (healthy)
+bitbotpro-postgres pgvector/pgvector:0.8.7-pg18-trixie Up 2 days (healthy)
+bitbotpro-mongo mongo:8.0.38-noble Up 2 days (healthy)
+
+[exited with code 0]

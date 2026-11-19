@@ -1,0 +1,1 @@
+configuration error: JWT_SECRET is required (at least 32 characters).

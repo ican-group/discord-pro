@@ -1,0 +1,127 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load remote build context
+#1 DONE 0.4s
+
+#1 [internal] load remote build context
+#1 CACHED
+
+#2 copy /context /
+#2 CACHED
+
+#3 resolve image config for docker-image://docker.io/docker/dockerfile:1
+#3 DONE 1.2s
+
+#4 docker-image://docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#4 resolve docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#4 resolve docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e 0.3s done
+#4 CACHED
+
+#5 [internal] load metadata for docker.io/library/python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+#5 DONE 1.0s
+
+#6 [builder 1/5] FROM docker.io/library/python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+#6 resolve docker.io/library/python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
+#6 resolve docker.io/library/python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 0.3s done
+#6 CACHED
+
+#7 [builder 2/5] RUN apt-get update  && apt-get install -y --no-install-recommends build-essential  && rm -rf /var/lib/apt/lists/*
+#7 CACHED
+
+#8 [builder 3/5] RUN python -m venv /opt/venv
+#8 CACHED
+
+#9 [builder 4/5] COPY requirements.txt /tmp/requirements.txt
+#9 CACHED
+
+#10 [builder 5/5] RUN pip install -r /tmp/requirements.txt  && pip check  && pip uninstall -y setuptools wheel
+#10 CACHED
+
+#11 [runtime  2/12] RUN pip uninstall -y --root-user-action=ignore setuptools wheel || true  && apt-get update  && apt-get install -y --no-install-recommends --only-upgrade zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1  && rm -rf /var/lib/apt/lists/*
+#11 3.956 Found existing installation: setuptools 79.0.1
+#11 4.093 Uninstalling setuptools-79.0.1:
+#11 4.361   Successfully uninstalled setuptools-79.0.1
+#11 4.403 Found existing installation: wheel 0.46.3
+#11 4.411 Uninstalling wheel-0.46.3:
+#11 4.441   Successfully uninstalled wheel-0.46.3
+#11 4.851 Hit:1 http://deb.debian.org/debian trixie InRelease
+#11 4.851 Get:2 http://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+#11 4.889 Get:3 http://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+#11 4.949 Get:4 http://deb.debian.org/debian trixie/main amd64 Packages [9678 kB]
+#11 5.941 Get:5 http://deb.debian.org/debian trixie-updates/main amd64 Packages [1108 B]
+#11 5.941 Get:6 http://deb.debian.org/debian-security trixie-security/main amd64 Packages [325 kB]
+#11 7.549 Fetched 10.1 MB in 3s (3502 kB/s)
+#11 7.549 Reading package lists...
+#11 9.159 Reading package lists...
+#11 10.48 Building dependency tree...
+#11 10.74 Reading state information...
+#11 11.26 The following packages will be upgraded:
+#11 11.26   zlib1g
+#11 11.44 1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+#11 11.44 Need to get 88.7 kB of archives.
+#11 11.44 After this operation, 1024 B disk space will be freed.
+#11 11.44 Get:1 http://deb.debian.org/debian-security trixie-security/main amd64 zlib1g amd64 1:1.3.dfsg+really1.3.1-1+deb13u1 [88.7 kB]
+#11 12.09 debconf: unable to initialize frontend: Dialog
+#11 12.09 debconf: (TERM is not set, so the dialog frontend is not usable.)
+#11 12.09 debconf: falling back to frontend: Readline
+#11 12.09 debconf: unable to initialize frontend: Readline
+#11 12.09 debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC entries checked: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.40.1 /usr/local/share/perl/5.40.1 /usr/lib/x86_64-linux-gnu/perl5/5.40 /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl-base /usr/lib/x86_64-linux-gnu/perl/5.40 /usr/share/perl/5.40 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 8, <STDIN> line 1.)
+#11 12.09 debconf: falling back to frontend: Teletype
+#11 12.11 debconf: unable to initialize frontend: Teletype
+#11 12.11 debconf: (This frontend requires a controlling tty.)
+#11 12.11 debconf: falling back to frontend: Noninteractive
+#11 13.69 Fetched 88.7 kB in 0s (513 kB/s)
+#11 13.95 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 5658 files and directories currently installed.)
+#11 13.97 Preparing to unpack .../zlib1g_1%3a1.3.dfsg+really1.3.1-1+deb13u1_amd64.deb ...
+#11 14.09 Unpacking zlib1g:amd64 (1:1.3.dfsg+really1.3.1-1+deb13u1) over (1:1.3.dfsg+really1.3.1-1+b1) ...
+#11 14.55 Setting up zlib1g:amd64 (1:1.3.dfsg+really1.3.1-1+deb13u1) ...
+#11 14.71 Processing triggers for libc-bin (2.41-12+deb13u4) ...
+#11 DONE 15.8s
+
+#12 [runtime  3/12] RUN groupadd --system --gid 10001 app  && useradd --system --uid 10001 --gid app --no-create-home             --home-dir /nonexistent --shell /usr/sbin/nologin app
+#12 1.524 useradd warning: app's uid 10001 is greater than SYS_UID_MAX 999
+#12 DONE 2.4s
+
+#13 [runtime  4/12] COPY --from=builder /opt/venv /opt/venv
+#13 DONE 3.4s
+
+#14 [runtime  5/12] WORKDIR /app
+#14 DONE 1.2s
+
+#15 [runtime  6/12] COPY server.py worker.py healthcheck.py docker-entrypoint.sh      client_ip.py email_delivery.py log_redaction.py outbound_guard.py password_policy.py      rate_limit.py runtime_config.py security_utils.py webhook_auth.py ./
+#15 DONE 2.7s
+
+#16 [runtime  7/12] COPY core ./core
+#16 DONE 1.1s
+
+#17 [runtime  8/12] COPY api ./api
+#17 DONE 1.1s
+
+#18 [runtime  9/12] COPY persistence ./persistence
+#18 DONE 1.0s
+
+#19 [runtime 10/12] COPY runtime ./runtime
+#19 DONE 1.1s
+
+#20 [runtime 11/12] COPY zendesk_sidebar_app/assets ./zendesk_sidebar_app/assets
+#20 DONE 1.0s
+
+#21 [runtime 12/12] RUN chmod 0755 /app/docker-entrypoint.sh  && chmod -R a+rX,go-w /app  && python -m compileall -q /app
+#21 DONE 6.0s
+
+#22 exporting to image
+#22 exporting layers
+#22 exporting layers 17.7s done
+#22 exporting manifest sha256:49206897425b938037a60fa060f1420e7c05aa62a3eb84129ce8ed9e9b8b55ed
+#22 exporting manifest sha256:49206897425b938037a60fa060f1420e7c05aa62a3eb84129ce8ed9e9b8b55ed 0.2s done
+#22 exporting config sha256:75bea648e254531988804d7e84bc3d544d5a255ac8d61df30516701e61ce21ee
+#22 exporting config sha256:75bea648e254531988804d7e84bc3d544d5a255ac8d61df30516701e61ce21ee 0.2s done
+#22 exporting attestation manifest sha256:fae044bb55481994de404ff6139f4500cfb16a3f8950cf0f9e6bf5050ffd2122
+#22 exporting attestation manifest sha256:fae044bb55481994de404ff6139f4500cfb16a3f8950cf0f9e6bf5050ffd2122 0.2s done
+#22 exporting manifest list sha256:181265070b34d076111edd4338d7f91c823ddad6bb63e9fbc6bd47b203abb0f4
+#22 exporting manifest list sha256:181265070b34d076111edd4338d7f91c823ddad6bb63e9fbc6bd47b203abb0f4 0.2s done
+#22 naming to docker.io/library/bitbotpro-api:spec012-beta1-4219354d1469
+#22 naming to docker.io/library/bitbotpro-api:spec012-beta1-4219354d1469 0.0s done
+#22 unpacking to docker.io/library/bitbotpro-api:spec012-beta1-4219354d1469
+#22 unpacking to docker.io/library/bitbotpro-api:spec012-beta1-4219354d1469 10.4s done
+#22 DONE 29.2s

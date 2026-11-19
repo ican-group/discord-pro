@@ -1,0 +1,48 @@
+{
+  "mode": "end_to_end",
+  "set": "holdout",
+  "corpus_digest": "3b366d11f2dae6b2",
+  "provider": "scripted",
+  "model": "claude-sonnet-4-6",
+  "measurement": "SCRIPTED (plumbing only, not accuracy)",
+  "policy": {
+    "knowledge.allowed_sources": "<evaluation source>",
+    "knowledge.minimum_mode": "strict_knowledge_only",
+    "knowledge.semantic_verification": false
+  },
+  "config": {
+    "ai.provider": "anthropic",
+    "ai.model": "claude-sonnet-4-6",
+    "knowledge.mode": "strict_knowledge_only",
+    "knowledge.insufficient_fallback": "Please contact our support team."
+  },
+  "metrics": {
+    "answerable": 12,
+    "refused": 12,
+    "answered": 0,
+    "citation_correct": 0,
+    "key_fact_present": 0,
+    "false_refusal_rate": 1.0,
+    "must_refuse": {
+      "total": 2,
+      "refused": 2,
+      "answered_examples": []
+    },
+    "false_acceptance_rate_must_refuse": 0.0
+  },
+  "provider_calls": {
+    "calls": 13,
+    "errors": {},
+    "latency_ms": {
+      "p50": 0.0,
+      "p95": 3.1,
+      "max": 3.1,
+      "mean": 0.3
+    },
+    "tokens": {
+      "input": 520,
+      "output": 65
+    },
+    "estimated_cost": null
+  }
+}

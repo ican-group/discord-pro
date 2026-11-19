@@ -1,0 +1,21 @@
+# PROPOSED (Spec 012 Phase 6B) — NOT APPLIED. Phase 7 cutover item, needs explicit approval.
+#
+# Raises the open-file limit of bitbotpro-mongo from the Docker default (soft 1024 /
+# hard 524288, measured read-only on BBP1 2026-11-19) to MongoDB's recommended 64000.
+# Applied as an override of deploy/docker-compose.db.yml, so the base file is unchanged:
+#
+#   docker compose -f deploy/docker-compose.db.yml -f deploy/proposed/docker-compose.db.nofile.yml \
+#       --env-file deploy/.env up -d --no-deps mongo        # recreates the container; the volume is kept
+#
+# Restart behaviour: `up -d` recreates bitbotpro-mongo (a stop + start of mongod, typically
+# 5-30 s; clients reconnect). The named volumes bitbotpro_mongo_data/config are untouched.
+# Rollback: run the same command without this override (back to 1024).
+# Validation: docker exec bitbotpro-mongo sh -c 'grep "Max open files" /proc/1/limits'
+# Rehearsed on a disposable container: deploy/rehearsal/mongo-nofile-rehearsal.sh.
+
+services:
+  mongo:
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000

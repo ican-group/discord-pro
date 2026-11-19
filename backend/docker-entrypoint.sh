@@ -2,13 +2,13 @@
 # BitBotPro backend container entrypoint (spec 004, C9).
 #
 # For an explicit allowlist of variables (MONGO_URL, JWT_SECRET, ENCRYPTION_KEY,
-# CODE_HMAC_KEY and the optional RESEND_API_KEY), if <NAME>_FILE is set, read that file
+# ENCRYPTION_KEYS (Phase 6B key ring), CODE_HMAC_KEY and the optional RESEND_API_KEY), if <NAME>_FILE is set, read that file
 # into <NAME> for this process only, then exec the command. Values never appear
 # in image config, `docker inspect` (which only shows the *_FILE paths), or logs.
 # Never add `set -x` here.
 set -eu
 
-for name in MONGO_URL JWT_SECRET ENCRYPTION_KEY CODE_HMAC_KEY RESEND_API_KEY; do
+for name in MONGO_URL JWT_SECRET ENCRYPTION_KEY ENCRYPTION_KEYS CODE_HMAC_KEY RESEND_API_KEY; do
   file_var="${name}_FILE"
   eval "file_path=\${$file_var:-}"
   if [ -n "$file_path" ]; then

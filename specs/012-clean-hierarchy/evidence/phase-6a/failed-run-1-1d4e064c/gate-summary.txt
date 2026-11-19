@@ -1,0 +1,108 @@
+TREE=1d4e064cb3d0c8d661b2b84c970a1bd28287a6cd
+== build exit 1
+#23 859.0 Ran 1241 tests in 855.148s
+#23 859.0 FAILED (failures=1, skipped=86)
+== unit (verbose)
+   webchat: run=0 skipped=0 failed=0
+   telegram: run=0 skipped=0 failed=0
+   discord: run=0 skipped=0 failed=0
+   zendesk: run=0 skipped=0 failed=0
+   knowledge: run=0 skipped=0 failed=0
+   deletion: run=0 skipped=0 failed=0
+   phase6a: run=0 skipped=0 failed=0
+   matrix: run=0 skipped=0 failed=0
+== security 009-011
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+== matrix
+Unable to find image 'bitbotpro-api-test:spec012-phase6a' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+== knowledge harness (scripted; plumbing only)
+   deterministic corpus exit 125
+   deterministic holdout exit 125
+   verifier holdout exit 125
+   end_to_end holdout exit 125
+== contract drift
+Unable to find image 'bitbotpro-api-test:spec012-phase6a' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+diff: /tmp/claude-1000/-home-ntfreem-projects-discord-pro/e94d5dc7-3bc8-4650-97f5-618cf54508f3/scratchpad/g6a/contract/routes.json: No such file or directory
+== mongo run 1
+== mongo run 2
+== mongo run 3
+== load
+== frontend jest
+Test Suites: 13 passed, 13 total
+Tests:       132 passed, 132 total
+== frontend build (production API origin)
+Compiled with warnings.
+   app12 warnings: 0
+== e2e frontend build (same origin)
+Compiled with warnings.
+== e2e HTTP journeys (real frontend/backend boundary)
+Unable to find image 'bitbotpro-api-test:spec012-phase6a' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+== e2e browser (Playwright, Chromium)
+Unable to find image 'bitbotpro-api-test:spec012-phase6a' locally
+docker: Error response from daemon: pull access denied for bitbotpro-api-test, repository does not exist or may require 'docker login'
+
+Run 'docker run --help' for more information
+  ✘  1 [chromium-desktop] › 01-auth.spec.js:5:3 › C1 authentication in a real browser › form validation, wrong password, keyboard submission (597ms)
+  ✘  2 [chromium-desktop] › 01-auth.spec.js:18:3 › C1 authentication in a real browser › session cookie survives refresh; direct navigation; logout; return to the requested page (602ms)
+  ✘  3 [chromium-desktop] › 01-auth.spec.js:42:3 › C1 authentication in a real browser › session expiry returns to sign-in with a notice (609ms)
+  ✘  4 [chromium-desktop] › 01-auth.spec.js:49:3 › C1 authentication in a real browser › a request without the CSRF header is refused and the UI says so (683ms)
+  ✘  5 [chromium-desktop] › 01-auth.spec.js:70:3 › C1 authentication in a real browser › password reset through the e-mailed link (660ms)
+  ✘  6 [chromium-desktop] › 01-auth.spec.js:95:3 › C1 authentication in a real browser › loading and error states are announced (672ms)
+  ✘  7 [chromium-desktop] › 02-superadmin-discord.spec.js:5:3 › Platform Superadmin › configures the Enterprise Discord application (secrets write-only) (648ms)
+  ✘  8 [chromium-desktop] › 02-superadmin-discord.spec.js:24:3 › Platform Superadmin › finds users with the bounded search (599ms)
+  ✘  9 [chromium-desktop] › 02-superadmin-discord.spec.js:37:3 › Organisation Admin and the Enterprise Discord application (D-Q14) › creates, installs, binds channels and disconnects their own instance — no application controls (617ms)
+  ✘  10 [chromium-desktop] › 02-superadmin-discord.spec.js:78:3 › Organisation Admin and the Enterprise Discord application (D-Q14) › direct API calls to the application controls are refused (non-disclosing 404) (580ms)
+  ✘  11 [chromium-desktop] › 03-roles.spec.js:11:3 › Part E role journeys (UI + backend enforcement) › Enterprise Viewer: read-only everywhere (446ms)
+  ✘  12 [chromium-desktop] › 03-roles.spec.js:22:3 › Part E role journeys (UI + backend enforcement) › Enterprise Editor: can override configuration, cannot manage members (558ms)
+  ✘  13 [chromium-desktop] › 03-roles.spec.js:32:3 › Part E role journeys (UI + backend enforcement) › Enterprise Admin: creates bots and invites by e-mail (626ms)
+  ✘  14 [chromium-desktop] › 03-roles.spec.js:45:3 › Part E role journeys (UI + backend enforcement) › Enterprise Owner: lifecycle and permanent deletion controls (619ms)
+  ✘  15 [chromium-desktop] › 03-roles.spec.js:57:3 › Part E role journeys (UI + backend enforcement) › Organisation Admin: only their Organisation (618ms)
+  ✘  16 [chromium-desktop] › 03-roles.spec.js:64:3 › Part E role journeys (UI + backend enforcement) › Restricted Organisation member: sees Sales only, nothing else (594ms)
+  ✘  17 [chromium-desktop] › 03-roles.spec.js:73:3 › Part E role journeys (UI + backend enforcement) › Another Enterprise's owner: no access, no disclosure, no authority from headers (531ms)
+  ✘  18 [chromium-desktop] › 04-a11y-mobile.spec.js:17:1 › automated accessibility audit (axe, WCAG 2.1 A/AA): no serious or critical violations (665ms)
+  ✘  19 [chromium-desktop] › 04-a11y-mobile.spec.js:31:1 › keyboard: skip link, tabs with arrow keys, focus visible on controls (495ms)
+  ✘  20 [chromium-desktop] › 05-webchat-zendesk.spec.js:4:1 › F5 webchat preview through the API-hosted widget is labelled preview and still counted (624ms)
+  ✘  21 [chromium-desktop] › 05-webchat-zendesk.spec.js:27:1 › Zendesk Bot Integration: create, usage notice, safe deletion states (635ms)
+  ✘  22 [chromium-mobile] › 04-a11y-mobile.spec.js:45:1 › @mobile layout: no horizontal scrolling and navigation works on a phone (790ms)
+  ✘  23 [chromium-mobile] › 04-a11y-mobile.spec.js:59:1 › @mobile sign-in and OAuth result page on a phone (762ms)
+    test-results/01-auth-C1-authentication--09873-assword-keyboard-submission-chromium-desktop/test-failed-1.png
+    test-results/01-auth-C1-authentication--d067f-eturn-to-the-requested-page-chromium-desktop/test-failed-1.png
+    test-results/01-auth-C1-authentication--c9216-ns-to-sign-in-with-a-notice-chromium-desktop/test-failed-1.png
+    test-results/01-auth-C1-authentication--3014a--refused-and-the-UI-says-so-chromium-desktop/test-failed-1.png
+    test-results/01-auth-C1-authentication--5f4be-t-through-the-e-mailed-link-chromium-desktop/test-failed-1.png
+    test-results/01-auth-C1-authentication--c047f--error-states-are-announced-chromium-desktop/test-failed-1.png
+    test-results/02-superadmin-discord-Plat-487b1-ication-secrets-write-only--chromium-desktop/test-failed-1.png
+    test-results/02-superadmin-discord-Plat-0c5db-ers-with-the-bounded-search-chromium-desktop/test-failed-1.png
+    test-results/02-superadmin-discord-Orga-0b810-e-—-no-application-controls-chromium-desktop/test-failed-1.png
+    test-results/02-superadmin-discord-Orga-dabac-refused-non-disclosing-404--chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-40990-Viewer-read-only-everywhere-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-59602-ation-cannot-manage-members-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-56c69--bots-and-invites-by-e-mail-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-fd65d-permanent-deletion-controls-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-63645-min-only-their-Organisation-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-0cbe6-ees-Sales-only-nothing-else-chromium-desktop/test-failed-1.png
+    test-results/03-roles-Part-E-role-journ-ee146-e-no-authority-from-headers-chromium-desktop/test-failed-1.png
+    test-results/04-a11y-mobile-automated-a-9ab59-ious-or-critical-violations-chromium-desktop/test-failed-1.png
+    test-results/04-a11y-mobile-keyboard-sk-ca5f1-s-focus-visible-on-controls-chromium-desktop/test-failed-1.png
+    test-results/05-webchat-zendesk-F5-webc-4195b-d-preview-and-still-counted-chromium-desktop/test-failed-1.png
+    test-results/05-webchat-zendesk-Zendesk-924e4-notice-safe-deletion-states-chromium-desktop/test-failed-1.png
+    test-results/04-a11y-mobile--mobile-lay-0a152-navigation-works-on-a-phone-chromium-mobile/test-failed-1.png
+    test-results/04-a11y-mobile--mobile-sig-d16b0-Auth-result-page-on-a-phone-chromium-mobile/test-failed-1.png
+  23 failed
+   server worker errors: 0
+== cleaned: 0
+== production
+bitbotpro-api bitbotpro-api:spec011-f245d7ed3bdb Up 24 hours (healthy)
+
+[exited with code 0]

@@ -1,0 +1,95 @@
+# deploy/docker-compose.spec012.yml — BitBotPro Spec 012 production (Phase 7 cutover, approved 2026-11-19)
+#
+# A SEPARATE compose project from the legacy API (deploy/docker-compose.api.yml, project "bitbotpro-api",
+# container bitbotpro-api), so the legacy container, image and database stay intact for rollback.
+#
+#   docker compose -p bitbotpro-v12 -f deploy/docker-compose.spec012.yml --env-file deploy/spec012.env up -d
+#
+# Internal pre-switch validation: BITBOTPRO_V12_API_BIND=127.0.0.1:8100 (loopback only, no public traffic).
+# Cutover: stop the legacy api, then BITBOTPRO_V12_API_BIND=10.50.0.20:8000 (the address Caddy already uses).
+# Never `down -v` (there are no named volumes here anyway). MongoDB: user bitbotpro_v12_app, database
+# bitbotpro_v12 only (deploy/proposed/beta/mongo-create-beta-user.js); the legacy database is never used.
+
+name: bitbotpro-v12
+
+networks:
+  db:
+    name: bitbotpro_db              # existing internal network (MongoDB); not modified
+    external: true
+  egress:
+    name: bitbotpro_v12_egress      # outbound: AI providers, Discord, Telegram, Zendesk, Resend
+    driver: bridge
+
+secrets:
+  v12_mongo_url:
+    file: ${BITBOTPRO_V12_SECRETS_DIR:?set BITBOTPRO_V12_SECRETS_DIR}/v12_mongo_url
+  v12_jwt_secret:
+    file: ${BITBOTPRO_V12_SECRETS_DIR:?}/v12_jwt_secret
+  v12_encryption_keys:
+    file: ${BITBOTPRO_V12_SECRETS_DIR:?}/v12_encryption_keys
+  resend_api_key:
+    file: ${BITBOTPRO_SECRETS_DIR:?set BITBOTPRO_SECRETS_DIR}/resend_api_key    # the approved production sender key
+
+x-hardening: &hardening
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  restart: unless-stopped
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-env: &env
+  APP_ENV: production
+  DB_NAME: bitbotpro_v12
+  PUBLIC_API_URL: https://api.bitbotpro.io
+  PUBLIC_APP_URL: https://bitbotpro.io
+  CORS_ORIGINS: https://bitbotpro.io
+  ALLOWED_HOSTS: api.bitbotpro.io,127.0.0.1,localhost
+  TRUSTED_PROXIES: 10.50.0.1                 # Caddy over WireGuard (the Spec 012 variable name, finding P-1)
+  FROM_EMAIL: noreply@bitbotpro.io
+  WEBCHAT_DAILY_LIMIT_PER_INSTANCE: "500"
+  MONGO_URL_FILE: /run/secrets/v12_mongo_url
+  JWT_SECRET_FILE: /run/secrets/v12_jwt_secret
+  ENCRYPTION_KEYS_FILE: /run/secrets/v12_encryption_keys
+  ENCRYPTION_ACTIVE_KEY_ID: k1
+  RESEND_API_KEY_FILE: /run/secrets/resend_api_key
+
+services:
+  api:
+    <<: *hardening
+    image: bitbotpro-api:${BITBOTPRO_V12_TAG:?set BITBOTPRO_V12_TAG}
+    container_name: bitbotpro-v12-api
+    networks: [db, egress]
+    ports:
+      - "${BITBOTPRO_V12_API_BIND:?set BITBOTPRO_V12_API_BIND}:8000"
+    environment:
+      <<: *env
+      APP_MODE: api
+    secrets: [v12_mongo_url, v12_jwt_secret, v12_encryption_keys, resend_api_key]
+    stop_grace_period: 30s
+    mem_limit: 1536m
+    cpus: 2.0
+
+  worker:
+    <<: *hardening
+    image: bitbotpro-api:${BITBOTPRO_V12_TAG:?}
+    container_name: bitbotpro-v12-worker
+    command: ["python", "worker.py"]
+    networks: [db, egress]
+    environment:
+      <<: *env
+      APP_MODE: worker
+      WORKER_ID: bitbotpro-v12-worker-1
+    secrets: [v12_mongo_url, v12_jwt_secret, v12_encryption_keys, resend_api_key]
+    stop_grace_period: 30s
+    mem_limit: 1g
+    cpus: 1.0

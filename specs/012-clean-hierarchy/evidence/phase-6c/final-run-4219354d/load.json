@@ -1,0 +1,353 @@
+{
+  "oauth_callbacks_20_same_state": {
+    "requests": 20,
+    "errors": 0,
+    "p50_ms": 157.2,
+    "p95_ms": 356.6,
+    "max_ms": 356.6,
+    "connected": 1,
+    "rejected": 19
+  },
+  "tenant_operations_60_bot_plus_instance": {
+    "requests": 60,
+    "errors": 0,
+    "p50_ms": 8770.1,
+    "p95_ms": 8939.9,
+    "max_ms": 8958.9,
+    "bots_a": 31,
+    "bots_b": 31,
+    "cross_tenant": 0
+  },
+  "org_deletion_orphans_before_grace_repurge": 0,
+  "rotation_10_patches_with_40_chats": {
+    "requests": 50,
+    "errors": 0,
+    "p50_ms": 15823.3,
+    "p95_ms": 18559.6,
+    "max_ms": 18612.2,
+    "rotation_statuses": [
+      200,
+      409
+    ]
+  },
+  "org_deletion_racing_40_chats": {
+    "requests": 41,
+    "errors": 0,
+    "p50_ms": 18181.5,
+    "p95_ms": 20117.2,
+    "max_ms": 20128.8,
+    "leftover_org_records": 0
+  },
+  "discord_150_events_100_unique": {
+    "requests": 150,
+    "errors": 0,
+    "p50_ms": 49988.6,
+    "p95_ms": 72481.0,
+    "max_ms": 72710.6,
+    "replies_posted": 100
+  },
+  "debug_knowledge": [
+    [
+      200,
+      "{\"session_id\":\"0557f1e8-0799-48b6-ab9d-1d7153853c40\",\"message_id\":\"5db76557-d97d"
+    ],
+    [
+      200,
+      "{\"session_id\":\"06e31446-a784-4c2a-8e71-fd000e186582\",\"message_id\":\"f40e2d91-59aa"
+    ],
+    [
+      200,
+      "{\"session_id\":\"0a5d618b-23b0-4a49-9605-dd36521ac507\",\"message_id\":\"00d6a3f8-c9d5"
+    ],
+    [
+      200,
+      "{\"session_id\":\"0eb89ab1-6afa-490c-89e8-8622299c98dd\",\"message_id\":\"ce20bcfa-44bf"
+    ],
+    [
+      200,
+      "{\"session_id\":\"13e14036-52f7-46a2-a9c1-4983af22e124\",\"message_id\":\"d5892feb-32d2"
+    ],
+    [
+      200,
+      "{\"session_id\":\"14f9e749-c456-4dd0-9a7e-2b31aaaa2b50\",\"message_id\":\"f171ac15-fb94"
+    ],
+    [
+      200,
+      "{\"session_id\":\"150dedc9-d816-42b4-acd5-283a4c42f7c7\",\"message_id\":\"141521b4-313f"
+    ],
+    [
+      200,
+      "{\"session_id\":\"17847f2c-b9b3-4665-a6aa-49cb4e410228\",\"message_id\":\"7c9a6638-1a71"
+    ],
+    [
+      200,
+      "{\"session_id\":\"1f57c108-3b81-41af-af5f-6a4d857ed176\",\"message_id\":\"308f57c4-5519"
+    ],
+    [
+      200,
+      "{\"session_id\":\"262999a7-c829-4e1c-bbd5-390ccd2ad75d\",\"message_id\":\"40a79cac-30d3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"296d5e63-aef8-48f7-8efd-43dd54fae5ad\",\"message_id\":\"b522e9b6-cfae"
+    ],
+    [
+      200,
+      "{\"session_id\":\"2ab6accd-ae09-4984-8ee1-3cd4d9eba069\",\"message_id\":\"c6f2d4fa-067a"
+    ],
+    [
+      200,
+      "{\"session_id\":\"2f8a2e35-12bd-410b-a555-6ee277a504ff\",\"message_id\":\"d0b8cc10-4a61"
+    ],
+    [
+      200,
+      "{\"session_id\":\"3415dfcc-5569-4067-8ca6-16146078e79b\",\"message_id\":\"a86a3761-7530"
+    ],
+    [
+      200,
+      "{\"session_id\":\"3ce0f445-11dc-406b-89b6-132306713c3f\",\"message_id\":\"45cae83d-a8db"
+    ],
+    [
+      200,
+      "{\"session_id\":\"4cfad132-4097-458e-9a2b-67925ca37383\",\"message_id\":\"b74a8045-031f"
+    ],
+    [
+      200,
+      "{\"session_id\":\"4ef0249d-5993-403f-b703-afb6cde0d6b4\",\"message_id\":\"7c442211-5b89"
+    ],
+    [
+      200,
+      "{\"session_id\":\"52dedfe6-6a23-42c6-8823-96843351384c\",\"message_id\":\"5086e370-9507"
+    ],
+    [
+      200,
+      "{\"session_id\":\"5370f6c6-c7d0-4ee0-9727-35ea30a2f76c\",\"message_id\":\"838a73c0-d509"
+    ],
+    [
+      200,
+      "{\"session_id\":\"594bbfbb-310e-4384-b0ab-d208a728fdb7\",\"message_id\":\"dbe24395-a85c"
+    ],
+    [
+      200,
+      "{\"session_id\":\"5cf9609e-487d-4c82-94c4-e4ffcf13e064\",\"message_id\":\"47c861b0-cdcc"
+    ],
+    [
+      200,
+      "{\"session_id\":\"5e353209-7861-4a48-ad13-ce26185ccb0e\",\"message_id\":\"72d054ad-1d31"
+    ],
+    [
+      200,
+      "{\"session_id\":\"613d05ca-ea16-451d-9f50-817b9ae4d8d8\",\"message_id\":\"12c8da30-004f"
+    ],
+    [
+      200,
+      "{\"session_id\":\"61be6c25-80c3-48d9-ab73-8023570b03f6\",\"message_id\":\"1f1122ff-3a37"
+    ],
+    [
+      200,
+      "{\"session_id\":\"69061960-9714-40a1-ad56-d0654ef8cdb9\",\"message_id\":\"efbb48d0-d40e"
+    ],
+    [
+      200,
+      "{\"session_id\":\"7775b37c-d918-4ecf-8cee-0127b213303e\",\"message_id\":\"5375891a-44a3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"7b485312-198f-4ac5-b634-21f2d005a588\",\"message_id\":\"9b99e325-a2c3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"7f3a945d-7738-4383-a6ee-a438821639da\",\"message_id\":\"de5f11e0-e69a"
+    ],
+    [
+      200,
+      "{\"session_id\":\"81549301-b328-403c-9ff7-7868d93c27cc\",\"message_id\":\"50b35f79-46dc"
+    ],
+    [
+      200,
+      "{\"session_id\":\"8221997e-6225-4493-9a37-053b7404191b\",\"message_id\":\"da5cb68d-12a6"
+    ],
+    [
+      200,
+      "{\"session_id\":\"856f8428-5798-40c7-bade-7d3b674a521c\",\"message_id\":\"db3c9003-acbb"
+    ],
+    [
+      200,
+      "{\"session_id\":\"8dc5a6bf-a170-4d04-b546-76ed227151cb\",\"message_id\":\"66dfd9b9-95ba"
+    ],
+    [
+      200,
+      "{\"session_id\":\"90bf342f-deff-478f-ae0c-b6d7441c376f\",\"message_id\":\"18336717-50aa"
+    ],
+    [
+      200,
+      "{\"session_id\":\"917233cd-c0a5-4913-b89e-7d5a0d6ee199\",\"message_id\":\"3d7c59e3-92c3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"9184b424-1a50-46cc-ae43-0adf41db70d7\",\"message_id\":\"767c3e21-55aa"
+    ],
+    [
+      200,
+      "{\"session_id\":\"9e9798e8-abc7-4ca8-9de2-f2f2884937f8\",\"message_id\":\"461f8c60-15a7"
+    ],
+    [
+      200,
+      "{\"session_id\":\"a20f771c-28d3-4e20-8a82-dd674f81120a\",\"message_id\":\"83a1d491-94f1"
+    ],
+    [
+      200,
+      "{\"session_id\":\"a32e91de-8f37-4e22-87b4-bf03ea145213\",\"message_id\":\"633f0848-a25e"
+    ],
+    [
+      200,
+      "{\"session_id\":\"a80a446c-4c42-4e8e-8853-ce1839a9bdc1\",\"message_id\":\"1ab7e0a7-52a3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"a8aae0c1-6d3a-41e6-ae76-7e081072d110\",\"message_id\":\"b4d5d5c1-f7bc"
+    ],
+    [
+      200,
+      "{\"session_id\":\"ab85ce26-0aa1-4c2e-95bc-0024917c167a\",\"message_id\":\"0440cbc8-1d18"
+    ],
+    [
+      200,
+      "{\"session_id\":\"ae0e1b72-6a45-44f5-a215-b9b930fc0d04\",\"message_id\":\"2d4686d6-91b6"
+    ],
+    [
+      200,
+      "{\"session_id\":\"b8e99c40-cb3c-4e13-a289-0cff82f7b410\",\"message_id\":\"9995985e-fe18"
+    ],
+    [
+      200,
+      "{\"session_id\":\"bc85db8c-89c9-4233-b765-42803fd105a7\",\"message_id\":\"c9c024ae-7dd4"
+    ],
+    [
+      200,
+      "{\"session_id\":\"c53a5363-f081-490d-9b8e-701be5628146\",\"message_id\":\"35ac845f-090a"
+    ],
+    [
+      200,
+      "{\"session_id\":\"c7319623-299b-4f36-a8a3-6aa58e826afa\",\"message_id\":\"1744ebbc-1f92"
+    ],
+    [
+      200,
+      "{\"session_id\":\"cc281fdc-58dc-4658-95d8-a2226de838af\",\"message_id\":\"11ca9ca5-8d44"
+    ],
+    [
+      200,
+      "{\"session_id\":\"cd9dbc89-b946-4157-933e-cc92c37c5557\",\"message_id\":\"04647e0e-072f"
+    ],
+    [
+      200,
+      "{\"session_id\":\"d3da30d9-365a-4511-b992-123c674a80f2\",\"message_id\":\"4bb5d3ad-ea83"
+    ],
+    [
+      200,
+      "{\"session_id\":\"d4ddad2c-91e2-4977-bd12-bfcce2e6c2c3\",\"message_id\":\"41c9dea9-415a"
+    ],
+    [
+      200,
+      "{\"session_id\":\"ddaef2a1-76e1-4db8-806a-88e121b0ede7\",\"message_id\":\"3663ad71-0681"
+    ],
+    [
+      200,
+      "{\"session_id\":\"df51dad9-1852-47c8-8073-cfc1c2d4c1e5\",\"message_id\":\"53b13308-2a3b"
+    ],
+    [
+      200,
+      "{\"session_id\":\"e378f1d4-d5e5-4b94-94ed-fc8c94181fc6\",\"message_id\":\"68b4658f-cdd3"
+    ],
+    [
+      200,
+      "{\"session_id\":\"eb7af17b-7397-4950-8a38-2f1ca72c7991\",\"message_id\":\"30be926b-c60d"
+    ],
+    [
+      200,
+      "{\"session_id\":\"eff87f21-4f48-40c2-9d84-e3d1ab377f76\",\"message_id\":\"230ac702-f77d"
+    ],
+    [
+      200,
+      "{\"session_id\":\"f075d311-c673-40dc-b9c8-6df507cbf4d0\",\"message_id\":\"576fde5d-eb11"
+    ],
+    [
+      200,
+      "{\"session_id\":\"f0f0706a-421d-4769-9d92-d3d966019beb\",\"message_id\":\"bf1c7a69-eb7f"
+    ],
+    [
+      200,
+      "{\"session_id\":\"f3ce2908-2c3c-4481-8589-efbc2d7d8dd9\",\"message_id\":\"6f1c92ee-b426"
+    ],
+    [
+      200,
+      "{\"session_id\":\"f9f24e5c-3979-4ea4-bb72-001e9bb63e7b\",\"message_id\":\"61d0f7c0-0411"
+    ],
+    [
+      200,
+      "{\"session_id\":\"fab04885-c488-4d1c-84c6-90e742b24616\",\"message_id\":\"75ea9f50-e033"
+    ]
+  ],
+  "knowledge_60_queries_with_revocation": {
+    "requests": 60,
+    "errors": 0,
+    "p50_ms": 9019.7,
+    "p95_ms": 9363.9,
+    "max_ms": 9380.8,
+    "answered": 0,
+    "refused": 60,
+    "answered_after_revocation": 0
+  },
+  "debug_telegram": {
+    "statuses": [
+      200
+    ],
+    "texts": [
+      "Load answer.",
+      "This assistant has reached its usage limit for now. Please t"
+    ],
+    "events": [
+      "llm_call",
+      "quota_exceeded"
+    ]
+  },
+  "telegram_200_deliveries_100_unique": {
+    "requests": 200,
+    "errors": 0,
+    "p50_ms": 35987.1,
+    "p95_ms": 94063.4,
+    "max_ms": 94395.4,
+    "replies_sent": 100,
+    "http_429": 0
+  },
+  "debug_duplicates": [
+    [
+      200,
+      "{\"session_id\":\"7e9dfa53-9e9c-4fc7-bb28-faec3a5c2117\",\"message_id\":\"10fa9a1a-2ae9"
+    ],
+    [
+      409,
+      "{\"detail\":\"This message is already being processed.\"}"
+    ]
+  ],
+  "debug_start": "{'session_id': '7e9dfa53-9e9c-4fc7-bb28-faec3a5c2117', 'message_id': '02a7529c-89fb-5714-a220-820caf7a9b08', 'reply': 'Load answer.', 'citations': [], 'replayed': False, 'session_token': '9lz0yjCrsVJv",
+  "duplicate_ai_requests_x50": {
+    "requests": 50,
+    "errors": 0,
+    "p50_ms": 2970.0,
+    "p95_ms": 3070.0,
+    "max_ms": 3375.9,
+    "generations": 1
+  },
+  "quota_contention_100_for_20": {
+    "requests": 100,
+    "errors": 0,
+    "p50_ms": 38669.8,
+    "p95_ms": 39137.9,
+    "max_ms": 39187.4,
+    "generations": 20,
+    "ledger_settled": 22,
+    "http_200": 20,
+    "http_429": 80
+  }
+}

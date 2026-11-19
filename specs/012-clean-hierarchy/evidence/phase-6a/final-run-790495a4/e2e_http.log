@@ -1,0 +1,28 @@
+test_01_login_cookie_flags_csrf_and_logout (tests.e2e.test_e2e_http.Journeys.test_01_login_cookie_flags_csrf_and_logout) ... ok
+test_02_password_reset_and_change (tests.e2e.test_e2e_http.Journeys.test_02_password_reset_and_change) ... ok
+test_03_superadmin_only_platform (tests.e2e.test_e2e_http.Journeys.test_03_superadmin_only_platform) ... ok
+test_04_create_hierarchy_end_to_end (tests.e2e.test_e2e_http.Journeys.test_04_create_hierarchy_end_to_end) ... ok
+test_05_memberships_invitations_and_last_owner (tests.e2e.test_e2e_http.Journeys.test_05_memberships_invitations_and_last_owner) ... ok
+test_06_credentials_knowledge_and_inheritance (tests.e2e.test_e2e_http.Journeys.test_06_credentials_knowledge_and_inheritance) ... ok
+test_07_lifecycle_blocks_activity_and_resume_restores (tests.e2e.test_e2e_http.Journeys.test_07_lifecycle_blocks_activity_and_resume_restores) ... ok
+test_08_bot_deletion_workflow (tests.e2e.test_e2e_http.Journeys.test_08_bot_deletion_workflow) ... /opt/venv/lib/python3.11/site-packages/httpx/_models.py:200: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=6, laddr=('172.20.0.4', 41170), raddr=('172.20.0.3', 8080)>
+  return [(raw_key, value) for raw_key, _, value in self._list]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_09_role_and_tenant_matrix_over_http (tests.e2e.test_e2e_http.Journeys.test_09_role_and_tenant_matrix_over_http) ... ok
+test_10_no_secret_leaks_in_any_response_seen (tests.e2e.test_e2e_http.Journeys.test_10_no_secret_leaks_in_any_response_seen) ... ok
+test_11_discord_application_is_superadmin_only (tests.e2e.test_e2e_http.Journeys.test_11_discord_application_is_superadmin_only) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 15.902s
+
+OK
+sys:1: ResourceWarning: unclosed <socket.socket fd=5, family=2, type=1, proto=6, laddr=('172.20.0.4', 57028), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=6, family=2, type=1, proto=6, laddr=('172.20.0.4', 57044), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=7, family=2, type=1, proto=6, laddr=('172.20.0.4', 57048), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=9, family=2, type=1, proto=6, laddr=('172.20.0.4', 57072), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=10, family=2, type=1, proto=6, laddr=('172.20.0.4', 57074), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=11, family=2, type=1, proto=6, laddr=('172.20.0.4', 57084), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=6, laddr=('172.20.0.4', 38250), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=8, family=2, type=1, proto=6, laddr=('172.20.0.4', 38262), raddr=('172.20.0.3', 8080)>
+sys:1: ResourceWarning: unclosed <socket.socket fd=4, family=2, type=1, proto=6, laddr=('172.20.0.4', 38270), raddr=('172.20.0.3', 8080)>
