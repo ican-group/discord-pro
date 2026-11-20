@@ -39,6 +39,25 @@ async def samples():
                        {"type": "zendesk", "name": "Support desk", "settings": {"reply_mode": "agent_assist"}})).json()
     src = (await w.call("POST", f"/enterprises/{w.eA.id}/knowledge/sources", "owner",
                         {"name": "Policies"})).json()
+    # a website source (restoration R1), imported from a fake page (no network)
+    from runtime.website import Fetcher, WebsiteImporter
+    from tests.unit.test_website import PROD, FakeWeb
+    web = FakeWeb()
+    web.page("https://docs.example.com/help", "<h1>Help. Opening hours are 9 to 5.</h1>")
+    wsrc = (await w.call("POST", f"/organisations/{w.oA.id}/knowledge/sources", "owner",
+                         {"name": "Help site", "website": {"url": "https://docs.example.com/help"}})).json()
+    await WebsiteImporter(w.store, clock=S.clock, delay_seconds=0,
+                          fetcher=Fetcher(PROD, resolver=web.resolve, client_factory=web.client_factory)).run_pending()
+    # an API integration (restoration R3) with endpoints from an OpenAPI document and one test call
+    from runtime import api_calls as ac
+    from tests.unit.test_api_integrations_r3 import OPENAPI
+    ac.NETWORK.update(resolver=web.resolve, client_factory=web.client_factory, env=PROD)
+    web.page("https://docs.example.com/health", '{"ok": true}', ctype="application/json")
+    api_int = (await w.call("POST", f"/bots/{w.bA.id}/api-integrations", "owner",
+                            {"name": "Shop API", "base_url": "https://docs.example.com", "auth_type": "bearer",
+                             "secret": "sample-token"})).json()
+    await w.call("POST", f"/api-integrations/{api_int.get('id')}/discover", "owner", {"document": OPENAPI})
+    await w.call("POST", f"/api-integrations/{api_int.get('id')}/test-connection", "owner")
     await w.call("POST", f"/enterprises/{w.eA.id}/invitations", "owner",
                  {"email": "new.person@example.test", "role": "viewer"})
     gets = {
@@ -64,6 +83,13 @@ async def samples():
         "integration_config": (f"/integrations/{zi.get('id')}/config", "owner"),
         "knowledge_sources": (f"/enterprises/{w.eA.id}/knowledge/sources", "owner"),
         "knowledge_documents": (f"/knowledge/sources/{src.get('id')}/documents", "owner"),
+        "knowledge_sources_website": (f"/organisations/{w.oA.id}/knowledge/sources", "owner"),
+        "api_integrations": (f"/bots/{w.bA.id}/api-integrations", "owner"),
+        "api_integration": (f"/api-integrations/{api_int.get('id')}", "owner"),
+        "api_endpoints": (f"/api-integrations/{api_int.get('id')}/endpoints", "owner"),
+        "api_activity": (f"/api-integrations/{api_int.get('id')}/activity", "owner"),
+        "api_stats": (f"/api-integrations/{api_int.get('id')}/stats", "owner"),
+        "knowledge_documents_website": (f"/knowledge/sources/{wsrc.get('id')}/documents", "owner"),
         "discord_status": (f"/instances/{w.iA_dc.id}/channel/status", "owner"),
         "discord_enterprise": (f"/enterprises/{w.eA.id}/discord", "owner"),
         "discord_app_platform": (f"/platform/enterprises/{w.eA.id}/discord-application", "root"),
@@ -76,7 +102,7 @@ async def samples():
     }
     out = {"_ids": {"enterprise": w.eA.id, "organisation": w.oA.id, "bot": w.bA.id, "instance_web": w.iA_web.id,
                     "instance_discord": w.iA_dc.id, "instance_telegram": w.iA_tg.id, "integration": zi.get("id"),
-                    "source": src.get("id")}}
+                    "source": src.get("id"), "api_integration": api_int.get("id")}}
     for name, (path, who) in gets.items():
         r = await w.call("GET", path, who)
         out[name] = {"path": path, "status": r.status_code, "body": r.json()}

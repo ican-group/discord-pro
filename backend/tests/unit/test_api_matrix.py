@@ -186,6 +186,25 @@ async def _knowledge(w, who):
     w.kdoc = doc["id"]
 
 
+async def _website(w, who):
+    r = await w.call("POST", f"/enterprises/{w.eA.id}/knowledge/sources", "root",
+                     {"name": "Help site", "website": {"url": "https://docs.example.com/help"}})
+    w.ksrc = r.json()["id"]
+    await w.store.update("knowledge_sources", w.ksrc, {"website_run": {"state": "done"}})
+
+
+async def _api_int(w, who):
+    # R3: an API integration with one manual endpoint; the "internet" is a fake behind the real guard
+    from runtime import api_calls as ac
+    from tests.unit.test_website import PROD, FakeWeb
+    web = FakeWeb()
+    ac.NETWORK.update(resolver=web.resolve, client_factory=web.client_factory, env=PROD)
+    r = await w.call("POST", f"/bots/{w.bA.id}/api-integrations", "root",
+                     {"name": "Shop", "base_url": "https://docs.example.com"})
+    w.api_int = r.json()["id"]
+    w.api_ep = (await w.call("POST", f"/api-integrations/{w.api_int}/endpoints", "root", {"path": "/health"})).json()["id"]
+
+
 async def _platform_cred(w, who):
     await w.call("PUT", "/platform/credentials/zendesk_oauth_client", "root", {"secret": "zendesk-client-secret-tests",
                                                                                 "metadata": {"client_id": "bitbotpro"}})
@@ -193,6 +212,7 @@ async def _platform_cred(w, who):
 
 def cases():
     L = "{type_:objtype}"
+    AI = "/api-integrations/{integration_id}"
     out = [
         Case("GET", "/enterprises", "/enterprises", "any"),
         Case("POST", "/enterprises", "/enterprises", "superadmin", {"name": "New", "slug": "new-ent"}),
@@ -398,6 +418,36 @@ def cases():
              prepare=_knowledge),
         Case("DELETE", "/knowledge/documents/{document_id}", "/knowledge/documents/{KD}", "admin",
              prepare=_knowledge),
+        # Restoration R1/R2: website sources
+        Case("POST", "/knowledge/sources/{source_id}/refresh", "/knowledge/sources/{KS}/refresh", "admin",
+             prepare=_website),
+        Case("GET", "/knowledge/documents/{document_id}/content", "/knowledge/documents/{KD}/content", "viewer",
+             prepare=_knowledge),
+        # Restoration R3: API integrations (Bot-owned)
+        Case("GET", "/bots/{bot_id}/api-integrations", "/bots/{B}/api-integrations", "viewer"),
+        Case("POST", "/bots/{bot_id}/api-integrations", "/bots/{B}/api-integrations", "admin",
+             {"name": "Shop", "base_url": "https://docs.example.com"}),
+        Case("GET", AI, "/api-integrations/{AI}", "viewer", prepare=_api_int),
+        Case("PATCH", AI, "/api-integrations/{AI}", "admin", {"name": "Renamed"}, prepare=_api_int),
+        Case("DELETE", AI, "/api-integrations/{AI}", "admin", prepare=_api_int),
+        Case("POST", AI + "/test-connection", "/api-integrations/{AI}/test-connection", "admin", prepare=_api_int),
+        Case("POST", AI + "/discover", "/api-integrations/{AI}/discover", "admin",
+             {"document": {"paths": {"/x": {"get": {"summary": "X"}}}}}, prepare=_api_int),
+        Case("GET", AI + "/endpoints", "/api-integrations/{AI}/endpoints", "viewer", prepare=_api_int),
+        Case("POST", AI + "/endpoints", "/api-integrations/{AI}/endpoints", "admin", {"path": "/stock"},
+             prepare=_api_int),
+        Case("POST", AI + "/endpoints/bulk", "/api-integrations/{AI}/endpoints/bulk", "admin", {"enabled": False},
+             prepare=_api_int),
+        Case("GET", AI + "/endpoints/{endpoint_id}", "/api-integrations/{AI}/endpoints/{AE}", "viewer",
+             prepare=_api_int),
+        Case("PATCH", AI + "/endpoints/{endpoint_id}", "/api-integrations/{AI}/endpoints/{AE}", "admin",
+             {"enabled": False}, prepare=_api_int),
+        Case("DELETE", AI + "/endpoints/{endpoint_id}", "/api-integrations/{AI}/endpoints/{AE}", "admin",
+             prepare=_api_int),
+        Case("POST", AI + "/endpoints/{endpoint_id}/test", "/api-integrations/{AI}/endpoints/{AE}/test", "admin",
+             {"parameters": {}}, prepare=_api_int),
+        Case("GET", AI + "/activity", "/api-integrations/{AI}/activity", "viewer", prepare=_api_int),
+        Case("GET", AI + "/stats", "/api-integrations/{AI}/stats", "viewer", prepare=_api_int),
     ]
     return out
 
@@ -439,7 +489,7 @@ def _fill(template, w):
            "INV": getattr(w, "inv_id", "x"), "T": w.iA_tg.id, "D": w.iA_dc.id, "CONV": getattr(w, "conv_id", "x"), "SHARE": getattr(w, "share_id", "x"),
            "DLV": getattr(w, "delivery_id", "x"), "ZI": getattr(w, "integ_id", "x"),
            "SUG": getattr(w, "sugg_id", "x"), "ZC": getattr(w, "zcred", "x"), "EV": getattr(w, "event_id", "x"),
-           "KS": getattr(w, "ksrc", "x"), "KD": getattr(w, "kdoc", "x"), "MSG": getattr(w, "msg_id", "x"), **{k: u.id for k, u in w.users.items()}}
+           "KS": getattr(w, "ksrc", "x"), "KD": getattr(w, "kdoc", "x"), "AI": getattr(w, "api_int", "x"), "AE": getattr(w, "api_ep", "x"), "MSG": getattr(w, "msg_id", "x"), **{k: u.id for k, u in w.users.items()}}
     if isinstance(template, str):
         for k, v in ids.items():
             template = template.replace("{" + k + "}", v)

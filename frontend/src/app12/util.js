@@ -130,7 +130,7 @@ export function oauthResult(status) {
 export const ROLES = ["owner", "admin", "editor", "viewer"];
 export const PROVIDERS = [
   ["anthropic", "Anthropic API key"], ["openai", "OpenAI API key"], ["telegram_bot", "Telegram bot token"],
-  ["zendesk_api_token", "Zendesk API token"],
+  ["zendesk_api_token", "Zendesk API token"], ["api_integration", "API key / token (API integrations)"],
 ];
 
 export function fmtDate(iso) {

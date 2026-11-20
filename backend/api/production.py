@@ -317,12 +317,19 @@ async def run_worker(config: ProductionConfig, *, stop=None, client=None, heartb
                 except asyncio.TimeoutError:
                     pass
 
+        # website knowledge imports (R1/R2): their own loop, so a long crawl never delays the rest
+        import os as _os
+        from runtime.website import Fetcher, WebsiteImporter
+        websites = WebsiteImporter(S.store, clock=S.clock, fetcher=Fetcher(dict(_os.environ)))
+
         log.info("bitbotpro worker started (id=%s, db=%s)", config.worker_id, config.db_name)
         hb = asyncio.create_task(heartbeat())
+        web_task = asyncio.create_task(websites.run_forever(stop))
         try:
             await worker.run_forever(stop, interval_seconds=config.worker_interval)
         finally:
             hb.cancel()
+            web_task.cancel()
             await gateway.shutdown()
     finally:
         client.close()

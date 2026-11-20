@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 
-from typing import Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from core import resolver
 from core.config_registry import KnowledgeMode, PLATFORM_POLICY
@@ -198,6 +198,14 @@ class Pipeline:
                 return Outcome(kind="fallback", deliver=True, text=fallback, instance_id=iid,
                                admin_issue="provider_not_available")
 
+            # ── R3: live API data (never in strict mode; untrusted data, not knowledge) ──
+            api_context = ""
+            if plan.mode is not KnowledgeMode.STRICT_KNOWLEDGE_ONLY and not message.passive and \
+                    eff.values.get("tools.api_calls_enabled") is True and \
+                    eff.policy.get("tools.external_api_calls_allowed") is not False:
+                api_context = await self._api_data(chain, eff, creds, provider, provider_name, api_key, message,
+                                                   tracker, billing_key, now, labels)
+
             # ── availability re-check right before the provider call ──
             if not await self._still_available(chain, iid, integ_id):
                 return Outcome(kind="silent", deliver=False, instance_id=iid, admin_issue="unavailable",
@@ -213,7 +221,8 @@ class Pipeline:
                                admin_issue="quota_exceeded")
             request = GenerationRequest(
                 provider=provider_name, model=eff.values["ai.model"], api_key=api_key,
-                persona=eff.values["behaviour.persona"], instructions=eff.values["behaviour.instructions"],
+                persona=eff.values["behaviour.persona"],
+                instructions=(eff.values["behaviour.instructions"] + ("\n\n" + api_context if api_context else "")).strip(),
                 tone_instructions=eff.values["behaviour.tone_instructions"], language=eff.values["behaviour.language"],
                 user_text=message.text, knowledge_mode=plan.mode.value,
                 evidence=gate.evidence if gate.decision is Decision.GROUNDED else (),
@@ -337,6 +346,75 @@ class Pipeline:
         except HierarchyError:
             return False
         return still and fresh.availability().available
+
+    async def _api_data(self, chain, eff, creds, provider, provider_name, api_key, message, tracker, billing_key,
+                        now, labels) -> str:
+        """R3: one routing call picks up to MAX_CALLS_PER_MESSAGE enabled GET endpoints of
+        the Bot's API integrations; they run through the outbound guard and their results
+        become a delimited, untrusted data block. Any failure ⇒ answer without API data.
+        The routing call is reserved and settled like any AI message (usage, quotas)."""
+        from runtime import api_calls as ac
+        try:
+            integs, eps = await ac.enabled_for_bot(self.store, chain.enterprise_id, chain.bot.id)
+        except Exception:
+            return ""
+        if not eps:
+            return ""
+        try:
+            reservation = await tracker.reserve_ai_message(chain, now=now,
+                                                           key=(billing_key + ":api") if billing_key else None,
+                                                           labels={**(labels or {}), "purpose": "api_routing"})
+        except AlreadyReserved:
+            return ""
+        if reservation is None:
+            return ""                                        # quota reached: answer without API data
+        request = GenerationRequest(
+            provider=provider_name, model=eff.values["ai.model"], api_key=api_key, persona="",
+            instructions=ac.ROUTING_INSTRUCTIONS, tone_instructions="", language="en",
+            user_text=ac.routing_payload(message.text, list(eps.values())), knowledge_mode="api_routing",
+            evidence=(), structured_claims_required=False, history=(), max_output_tokens=400)
+        try:
+            out = await provider.generate(request)
+        except ProviderUncertain:
+            await tracker.mark_uncertain(reservation.key, now=now)
+            return ""
+        except ProviderError:
+            await tracker.release(reservation, now=now)
+            return ""
+        except Exception:
+            await tracker.mark_uncertain(reservation.key, now=now)
+            return ""
+        try:
+            await tracker.settle(reservation, chain, now=now,
+                                 details={"purpose": "api_routing", "input_tokens": int(out.input_tokens or 0),
+                                          "output_tokens": int(out.output_tokens or 0)})
+        except Exception:
+            pass
+        calls = ac.parse_routing(out.text or "", eps)
+        if not calls:
+            return ""
+
+        async def run(ep, params):
+            integ = integs[ep["integration_id"]]
+            secret = None
+            if integ.get("credential_id"):
+                try:
+                    cred = check_use(creds.get(integ["credential_id"]), referencing_chain=chain,
+                                     slot=ac.CREDENTIAL_SLOT, policy=eff.policy)
+                    secret = self.box.decrypt(cred.secret_enc)
+                except CredentialError:
+                    r = {"success": False, "status": 0, "error": "The API credential is not available."}
+                    await ac.log_activity(self.store, integration=integ, endpoint=ep, source="conversation",
+                                          result=r, now=now)
+                    return integ, ep, r
+            r = await ac.execute(integ, ep, params, secret, timeout=ac.CONVERSATION_TIMEOUT)
+            await ac.log_activity(self.store, integration=integ, endpoint=ep, source="conversation", result=r, now=now)
+            return integ, ep, r
+
+        results = await asyncio.gather(*(run(ep, params) for ep, params in calls))
+        await tracker.record(chain, "api_calls", now=now,
+                             details={"calls": len(results), "succeeded": sum(1 for _, _, r in results if r["success"])})
+        return ac.data_block(results)
 
     async def _semantic_check(self, chain, eff, provider, provider_name, api_key, result, gate, verdict, tracker,
                               billing_key, now, labels=None):

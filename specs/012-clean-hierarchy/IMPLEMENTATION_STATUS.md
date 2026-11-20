@@ -25,6 +25,7 @@ is deployed, mounted or committed.
 | 6C | Private beta preparation: B-ACCT account creation by invitation, decisions B-API/changelog/new database, zlib fix, gateway Identify-spacing fix, real-service validation and beta activation plans | **Accepted** (2026-11-19, beta1 tree `4219354d1469`) |
 | 6D | Private beta activation preflight (manifests, isolation, DNS/Caddy, beta database, e-mail, model allowlist) | **Preflight PASS (conditional), awaiting activation approval** (2026-11-19): `beta-preflight-6d.md`, `beta-activation-checklist.md`, `deploy/proposed/beta/`. Nothing started on BBP1; no code change |
 | 7 | Production cutover (direct replacement at bitbotpro.io / api.bitbotpro.io; new database `bitbotpro_v12`, decision 6C-D) | **API CUT OVER 2026-11-19 11:01 UTC** — release `aa55976b` (tag `bitbotpro-spec012-r1`), image `spec012-beta1-4219354d1469` serving api.bitbotpro.io; Spec 012 frontend live on Emergent; legacy container `bitbotpro-api` stopped (kept); config fix: `ALLOWED_HOSTS` += `10.50.0.20` (Caddy health checks). **Real-service validation (V1–V5) pending; no testers invited.** Runbook: `phase7-cutover-runbook.md` |
+| R | Restoration of missing features (approved 2026-11-19, prototype-first): R1 website URL import, R2 bounded same-site crawl, R3 API integrations | **R1, R2 and R3 implemented locally** (not committed, not deployed). See "Restoration R1–R3" below |
 
 ## Phase 2 — core foundation
 
@@ -910,6 +911,39 @@ CPU load, fixed and mutation-checked); it is kept, labelled, and not counted.
 **Validation status:** everything above is implemented and tested with mocked external services (unit, real HTTP,
 browser). **No real Discord, Telegram, Zendesk or AI provider has been validated** — `real-service-validation.md`
 V1–V5 are mandatory before the first tester.
+
+## Restoration R1–R3 (approved 2026-11-19; prototype-first development)
+
+Approved by the user on 2026-11-19: restore website URL import (R1), multi-page crawling (R2) and API integrations
+incl. runtime execution (R3) inside the Spec 012 architecture; supersedes the 6C-B deferral of B-API. Development
+is prototype-first (`DECISIONS.md` "Restoration R1–R3"); essential protections stay (auth/roles, tenant isolation,
+encrypted credentials, the outbound guard against internal networks, webhook safety, rate/resource limits, audit).
+
+**R1/R2 (implemented locally, 2026-11-19).** `runtime/website.py`: website sources (`kind="website"`, single page or
+crawl up to 200 pages) fetched by the worker (own loop in `run_worker`) only through `outbound_guard.guarded_request`;
+redirects followed manually (≤ 5 hops, each hop re-validated, http upgraded to https); robots.txt rules and
+Crawl-delay (≤ 5 s), sitemap discovery, `nofollow`/`noindex`, same-site only; pages ingested by the normal
+`Ingestor` (one document per page, idempotent on unchanged content); refresh keeps pages that failed this time and
+removes pages that disappeared; clear error categories. API: `POST /{owner}/knowledge/sources` with `website`,
+`PATCH` website settings, `POST /knowledge/sources/{id}/refresh`, `GET /knowledge/documents/{id}/content`; uploads into
+website sources are refused. Frontend: Knowledge panel "Add website", status/progress, last successful fetch, errors,
+Refresh, page list with View content. Tests: `tests/unit/test_website.py` (24), matrix rows, Jest
+`knowledgeWebsite.test.js`; full backend unit suite 1071 OK (R1), Jest 109/109, CI build clean. No Cloudflare bypass.
+
+**R3 (implemented locally, 2026-11-19).** `runtime/api_calls.py` (ported Spec 011 OpenAPI/reference parsers, guarded
+GET execution, connection probes, routing prompt) and `api/external_apis.py` (16 routes): Bot-owned API integrations
+(`api_integrations`, `api_endpoints`, `api_activity`; deleted with their Bot/Organisation/Enterprise), auth none /
+bearer / API-key header / API-key query with the secret stored as an encrypted Organisation credential (provider
+`api_integration`) or a referenced credential (`check_use`); credentials only ever sent to the integration's own
+origin; test connection, discover from the documentation URL or an uploaded OpenAPI JSON (admin enable/disable choices
+survive refresh), manual GET endpoints, enable/disable and bulk, endpoint tests, activity and stats. Conversations: a
+pipeline step (all channels incl. Zendesk) when `tools.api_calls_enabled` (Bot, admin) and the Enterprise policy
+`tools.external_api_calls_allowed`, never in STRICT_KNOWLEDGE_ONLY or for passive messages: one routing AI call
+(reserved and billed, label `purpose=api_routing`), ≤ 3 enabled GET endpoints in parallel (10 s, 500 KB), results as a
+delimited untrusted data block, activity logged. Only GET endpoints are executable (as in Spec 011). Frontend: Bot →
+"API integrations" tab; Credentials offer the `api_integration` provider. Tests: `tests/unit/test_api_integrations_r3.py`
+(11), 16 matrix rows, Jest `apiIntegrations.test.js` (5). The Spec 011 root modules `api_integrations*.py` remain
+(unshipped) only for their SSRF regression tests and can be removed.
 
 ## Unresolved production release requirements (recorded 2026-11-18)
 

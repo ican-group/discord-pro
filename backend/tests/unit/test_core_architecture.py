@@ -221,6 +221,10 @@ class IsolationFromProductionTests(unittest.TestCase):
         extra = {"providers.py": {"httpx"}, "telegram.py": {"httpx"}, "discord.py": {"httpx"},
                  # Zendesk reuses the kept Spec 010 outbound guard (never a weaker copy)
                  "zendesk.py": {"httpx", "outbound_guard"},
+                 # website knowledge sources (R1/R2) fetch only through the kept outbound guard
+                 "website.py": {"outbound_guard"},
+                 # API integrations (R3): every request through the kept outbound guard
+                 "api_calls.py": {"outbound_guard"},
                  # isolated child process only (resource-limited, network disabled)
                  "pdf_extract_worker.py": {"pypdf"},
                  # real Discord gateway protocol adapter (Phase 4F)

@@ -112,6 +112,20 @@ class DiscordBase(unittest.IsolatedAsyncioTestCase):
 class ApplicationOwnershipTests(DiscordBase):
     BASE = "/platform/enterprises/{}/discord-application"
 
+    async def test_an_unconfigured_application_shows_the_developer_portal_values(self):
+        """Phase 7 setup UX: before the application exists the superadmin needs the exact redirect URI,
+        scopes, permissions and intents to enter in the Developer Portal (none is secret)."""
+        r = await self.w.call("POST", "/enterprises", "root", {"name": "Fresh Ent", "slug": "fresh-ent-portal"})
+        self.assertIn(r.status_code, (200, 201), r.text)
+        v = (await self.w.call("GET", self.BASE.format(r.json()["id"]), "root")).json()
+        from runtime import discord as dc
+        self.assertEqual(v["configured"], False)
+        self.assertEqual(v["redirect_uri"], self.w.S.settings.public_api_origin + "/api/hooks/discord/oauth/callback")
+        self.assertEqual((v["oauth_scopes"], v["permissions"], v["intents"]),
+                         (dc.OAUTH_SCOPES, dc.DEFAULT_PERMISSIONS, dc.DEFAULT_INTENTS))
+        self.assertFalse([k for k in v if k.endswith(("_enc", "_fp", "fingerprint")) or "token" in k or "secret" in k])
+        self.assertEqual((await self.w.call("GET", self.BASE.format(r.json()["id"]), "owner")).status_code, 404)
+
     async def test_tenants_can_never_administer_the_enterprise_application(self):
         base = self.BASE.format(self.w.eA.id)
         calls = [("GET", base, None), ("PUT", base, {"application_id": APP_A, "bot_token": DISCORD_TOKEN_A2}),

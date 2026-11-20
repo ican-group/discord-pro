@@ -12,6 +12,7 @@
 /build
 /build-e2e
 /build-beta
+/build-check
 
 # misc
 .DS_Store

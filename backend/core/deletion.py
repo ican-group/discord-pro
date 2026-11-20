@@ -86,7 +86,8 @@ RUNTIME_COLLECTIONS = ("conversations", "chat_sessions", "chat_requests", "sugge
 # D-Q14: the Enterprise's own Discord application (with its encrypted token) is
 # needed by leave-guild cleanup, so it goes only when the Enterprise job finalises.
 ENTERPRISE_FINAL_COLLECTIONS = ("discord_applications", "discord_installations", "discord_gateway_status")
-BOT_OWNED_COLLECTIONS = ("bot_integrations", "api_endpoints", "bot_logos", "zendesk_app_keys")
+BOT_OWNED_COLLECTIONS = ("bot_integrations", "api_endpoints", "bot_logos", "zendesk_app_keys",
+                         "api_integrations", "api_activity")             # R3: API integrations
 
 STEPS = ("release_bindings", "invitations", "memberships", "runtime_data", "bot_owned", "credentials",
          "descendants", "target")

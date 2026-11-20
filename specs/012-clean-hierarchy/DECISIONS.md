@@ -496,6 +496,24 @@ itself changes (PDF): it is **APPROVED as amended**.
 | 6C-D | **New Spec 012 database — APPROVED as the cutover design** (resolves 6B-E; amends spec §15 for the beta) | A new isolated database (`bitbotpro_v12`) on the existing mongod; the legacy `bitbotpro` database and the production image stay untouched for rollback; the superadmin is bootstrapped with `python -m api.bootstrap` (password typed interactively, never copied). Approves the design only, not execution (`beta-activation-plan.md`) |
 | 6C-E | Image hardening | Base image pinned by digest (`python:3.11.18-slim-trixie@sha256:07d48240…`); the only published Debian fix among the remaining high findings (zlib1g `deb13u1`) installed by exact version; residual findings reviewed in `security-review-6b.md` §3 |
 
+## Restoration R1–R3 — restore missing features, prototype-first (approved 2026-11-19)
+
+The user approved restoring the Spec 011 capabilities that the rebuild had removed or deferred: website URL import,
+multi-page crawl and refresh (R1/R2) and API integrations with OpenAPI discovery, connection/endpoint tests and
+execution during conversations (R3). This **supersedes the 6C-B deferral of B-API**.
+
+- Development is **prototype-first**: working functionality first; fix a specific security problem rather than
+  disable a feature; focused tests during development, the full gate before production deployment.
+- Kept protections: authentication and roles, tenant isolation, encrypted credentials, the outbound guard against
+  private/internal networks (also on every redirect hop), safe webhook handling, basic rate and resource limits,
+  audit of sensitive operations, Gridscan and unrelated infrastructure untouched.
+- Website content is ingested through the Spec 012 knowledge pipeline (never the retired legacy knowledge base); no
+  Cloudflare/anti-bot bypass.
+- API calls in conversations: allowed in GENERAL and KNOWLEDGE_PREFERRED when configured and authorised (Enterprise
+  policy, Bot configuration, enabled integrations/endpoints); **disabled in STRICT_KNOWLEDGE_ONLY**. API responses are
+  untrusted data and never approved knowledge.
+- Deployment and pushes still need explicit approval each time.
+
 ## L-1 — Enterprise creation at launch (approved 2026-11-18, resolves X10)
 
 - **Approved outcome:** for the initial BitBotPro release, **only Platform

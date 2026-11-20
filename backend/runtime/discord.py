@@ -180,7 +180,10 @@ def fingerprint(secret: str) -> str:
 def app_view(doc: Optional[dict], *, redirect_uri: str = "") -> Dict[str, Any]:
     """Superadmin view: never secrets, only fingerprints."""
     if not doc:
-        return {"configured": False}
+        # Phase 7 (setup UX): the Developer Portal values are needed BEFORE the application exists
+        # (redirect URI, scopes, the permissions and intents a new configuration will use). None is secret.
+        return {"configured": False, "redirect_uri": redirect_uri, "oauth_scopes": OAUTH_SCOPES,
+                "permissions": DEFAULT_PERMISSIONS, "intents": DEFAULT_INTENTS}
     keys = ("enterprise_id", "application_id", "bot_user_id", "bot_username", "permissions", "intents", "status",
             "gateway_desired", "restart_requested_at", "configured_at", "token_rotated_at", "secret_rotated_at")
     view = {k: doc.get(k) for k in keys}

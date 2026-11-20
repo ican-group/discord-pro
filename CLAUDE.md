@@ -185,8 +185,9 @@ EDIT THE ENTERPRISE DISCORD APPLICATION.**
 The legacy application was removed in Phase 6B (`specs/012-clean-hierarchy/legacy-inventory.md`;
 it stays in git at commit `1c20d2a` and in the production image `bitbotpro-api:spec011-f245d7ed3bdb`).
 Root modules other than the three wiring files must not import `core`, `persistence`, `api` or
-`runtime`. `api_integrations.py`/`api_integrations_routes.py` (Spec 011) are retained, **not
-mounted and not shipped**, until they are ported (release blocker B-API). The runtime image ships
+`runtime`. API integrations were ported in restoration R3 (`runtime/api_calls.py`, `api/external_apis.py`);
+the Spec 011 `api_integrations.py`/`api_integrations_routes.py` remain **not mounted and not shipped**, kept only
+for their SSRF regression tests. Website knowledge sources (R1/R2) live in `runtime/website.py`. The runtime image ships
 an explicit file list (`Dockerfile`). Tests enforce all of this (`test_core_architecture.py`).
 
 ## 3. Commands

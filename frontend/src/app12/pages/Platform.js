@@ -153,6 +153,32 @@ function readAsDataUrl(file) {
   });
 }
 
+/** Values to enter in the Discord Developer Portal (none is secret), each with a Copy button. */
+export function DeveloperPortalValues({ a }) {
+  const rows = [
+    ["OAuth2 redirect URI", a.redirect_uri, "OAuth2 → Redirects (must match exactly)"],
+    ["OAuth2 scopes", a.oauth_scopes, "requested by BitBotPro's install link"],
+    ["Bot permissions (integer)", a.permissions != null ? String(a.permissions) : "", "View Channels, Send Messages, Embed Links, Read Message History, Change Nickname"],
+    ["Gateway intents (integer)", a.intents != null ? String(a.intents) : "", "enable Message Content and Server Members under Bot → Privileged Gateway Intents"],
+  ].filter(([, v]) => v);
+  if (!rows.length) return null;
+  return (
+    <dl className="mb-4 grid gap-2 text-sm" aria-label="Discord Developer Portal values">
+      {rows.map(([label, value, hint]) => (
+        <div key={label}>
+          <dt className="text-slate-300">{label}</dt>
+          <dd className="flex items-center gap-2">
+            <code className="text-xs break-all" data-testid={`portal-${label}`}>{value}</code>
+            <Button type="button" size="sm" variant="outline" aria-label={`Copy ${label}`}
+              onClick={() => navigator.clipboard && navigator.clipboard.writeText(value)}>Copy</Button>
+          </dd>
+          <dd className="text-xs text-slate-400">{hint}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function DiscordAppPage() {
   const { id } = useParams();
   const api = useApi();
@@ -201,7 +227,8 @@ export function DiscordAppPage() {
       <Tabs tabs={[
         ["setup", a.configured ? "Settings" : "Set up", () => (
           <Section title={a.configured ? "Application settings" : "Set up the Discord application"}
-            description="Create the application in the Discord developer portal, add the redirect URI above, then enter its id and secrets here.">
+            description="Create the application in the Discord Developer Portal with the values below, then enter its id and secrets here.">
+            <DeveloperPortalValues a={a} />
             <form className="max-w-md" autoComplete="off" onSubmit={save}>
               <TextField label="Application id" value={f.application_id} onChange={(v) => setF({ ...f, application_id: v })} placeholder={a.application_id || ""} required={!a.configured} inputMode="numeric" />
               {!a.configured ? (

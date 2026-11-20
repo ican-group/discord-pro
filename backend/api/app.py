@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
 
-from api import (auth, config, credentials, deletion, discord, hierarchy, integrations, knowledge, lifecycle,
-                 members, runtime_routes, telegram, usage, users, webchat)
+from api import (auth, config, credentials, deletion, discord, external_apis, hierarchy, integrations, knowledge,
+                 lifecycle, members, runtime_routes, telegram, usage, users, webchat)
 from api.common import Services, make_principal_dependency
 
 
@@ -18,7 +18,7 @@ def build_router(services: Services) -> APIRouter:
     router = APIRouter()
     principal = make_principal_dependency(services)
     for module in (auth, hierarchy, config, lifecycle, members, credentials, deletion, runtime_routes, webchat, telegram,
-                   discord, integrations, knowledge, usage, users):
+                   discord, integrations, external_apis, knowledge, usage, users):
         module.register(router, services, principal)
     return router
 

@@ -127,6 +127,29 @@ export function makeApi(client) {
     documentValidity: (document_id, body) => call("PUT /knowledge/documents/{document_id}/validity", { document_id }, { body }),
     reprocessDocument: (document_id) => call("POST /knowledge/documents/{document_id}/reprocess", { document_id }),
     deleteDocument: (document_id) => call("DELETE /knowledge/documents/{document_id}", { document_id }),
+    // API integrations (restoration R3)
+    apiIntegrations: (bot_id) => call("GET /bots/{bot_id}/api-integrations", { bot_id }),
+    createApiIntegration: (bot_id, body) => call("POST /bots/{bot_id}/api-integrations", { bot_id }, { body }),
+    apiIntegration: (integration_id) => call("GET /api-integrations/{integration_id}", { integration_id }),
+    patchApiIntegration: (integration_id, body) => call("PATCH /api-integrations/{integration_id}", { integration_id }, { body }),
+    deleteApiIntegration: (integration_id) => call("DELETE /api-integrations/{integration_id}", { integration_id }),
+    testApiConnection: (integration_id) => call("POST /api-integrations/{integration_id}/test-connection", { integration_id }),
+    discoverApi: (integration_id, document) =>
+      call("POST /api-integrations/{integration_id}/discover", { integration_id }, { body: document === undefined ? {} : { document } }),
+    apiEndpoints: (integration_id) => call("GET /api-integrations/{integration_id}/endpoints", { integration_id }),
+    addApiEndpoint: (integration_id, body) => call("POST /api-integrations/{integration_id}/endpoints", { integration_id }, { body }),
+    bulkApiEndpoints: (integration_id, body) => call("POST /api-integrations/{integration_id}/endpoints/bulk", { integration_id }, { body }),
+    patchApiEndpoint: (integration_id, endpoint_id, body) =>
+      call("PATCH /api-integrations/{integration_id}/endpoints/{endpoint_id}", { integration_id, endpoint_id }, { body }),
+    deleteApiEndpoint: (integration_id, endpoint_id) =>
+      call("DELETE /api-integrations/{integration_id}/endpoints/{endpoint_id}", { integration_id, endpoint_id }),
+    testApiEndpoint: (integration_id, endpoint_id, parameters) =>
+      call("POST /api-integrations/{integration_id}/endpoints/{endpoint_id}/test", { integration_id, endpoint_id }, { body: { parameters } }),
+    apiActivity: (integration_id) => call("GET /api-integrations/{integration_id}/activity", { integration_id }),
+    apiStats: (integration_id) => call("GET /api-integrations/{integration_id}/stats", { integration_id }),
+    // website sources (restoration R1/R2)
+    refreshSource: (source_id) => call("POST /knowledge/sources/{source_id}/refresh", { source_id }),
+    documentContent: (document_id) => call("GET /knowledge/documents/{document_id}/content", { document_id }),
 
     // ── channels: generic (C7–C9) ──
     channelStatus: (instance_id) => call("GET /instances/{instance_id}/channel/status", { instance_id }),

@@ -433,7 +433,7 @@ EXTRA_INDEXES: Dict[str, List[List[tuple]]] = {
     "oauth_states": [[("enterprise_id", 1), ("instance_id", 1)]],
     "discord_share_links": [[("enterprise_id", 1), ("instance_id", 1)]],
     "bot_integrations": [[("enterprise_id", 1), ("bot_id", 1)], [("organisation_id", 1)]],
-    "knowledge_sources": [[("enterprise_id", 1), ("organisation_id", 1)]],
+    "knowledge_sources": [[("enterprise_id", 1), ("organisation_id", 1)], [("kind", 1), ("website_run.state", 1)]],
     "knowledge_documents": [[("enterprise_id", 1), ("source_id", 1)], [("job.state", 1)]],
     "knowledge_chunks": [[("enterprise_id", 1), ("terms", 1)], [("enterprise_id", 1), ("document_id", 1)],
                          [("enterprise_id", 1), ("source_id", 1)]],
@@ -442,6 +442,10 @@ EXTRA_INDEXES: Dict[str, List[List[tuple]]] = {
     "zendesk_app_keys": [[("enterprise_id", 1), ("integration_id", 1)]],
     "suggestions": [[("enterprise_id", 1), ("integration_id", 1), ("created_at", -1)]],
     "bot_instances": [[("enterprise_id", 1), ("channel.application_id", 1), ("channel.dm_enabled", 1)]],
+    # R1/R2 website sources (worker queue) and R3 API integrations
+    "api_integrations": [[("enterprise_id", 1), ("bot_id", 1)]],
+    "api_endpoints": [[("enterprise_id", 1), ("integration_id", 1)], [("enterprise_id", 1), ("bot_id", 1)]],
+    "api_activity": [[("enterprise_id", 1), ("integration_id", 1), ("at", -1)]],
 }
 
 LEGACY_COLLECTIONS = frozenset({"workspaces", "workspace_members", "bot_config", "connections", "discord_config",

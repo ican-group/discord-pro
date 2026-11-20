@@ -1,13 +1,14 @@
 {
  "_ids": {
-  "bot": "a35e3430-0378-4218-b691-f96dd409ba20",
-  "enterprise": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-  "instance_discord": "03289afc-ef56-427c-ae2d-85ddd06987c7",
-  "instance_telegram": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
-  "instance_web": "e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
-  "integration": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
-  "organisation": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
-  "source": "a4b8769e-7169-45f8-80e8-e4333e5ba368"
+  "api_integration": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+  "bot": "400ecc4a-1b19-4f2d-a402-78e555690f87",
+  "enterprise": "2b356c38-8b30-4e94-8551-550d2067fc28",
+  "instance_discord": "cdbc556c-c9af-4e8d-8349-92b342b47125",
+  "instance_telegram": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
+  "instance_web": "2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
+  "integration": "0d789886-844e-4902-9f5d-ad9f57f768c0",
+  "organisation": "e2cce1dc-1494-4aed-a138-485c60582a7c",
+  "source": "09dd48df-7b4e-4528-8115-b8edb6527db4"
  },
  "_oauth_statuses": [
   "account_mismatch",
@@ -29,108 +30,367 @@
   "share_link_used",
   "wrong_server"
  ],
+ "api_activity": {
+  "body": {
+   "activity": [
+    {
+     "at": "2026-11-19T15:41:47.368634+00:00",
+     "duration_ms": 0,
+     "endpoint": "GET /health",
+     "endpoint_id": null,
+     "error": null,
+     "id": "9750a565-c6e8-48cf-ad1c-dc341b6e7ae3",
+     "response_size": 0,
+     "source": "connection_test",
+     "status": 200,
+     "success": true
+    }
+   ]
+  },
+  "path": "/api-integrations/97de73f7-b4b5-4a53-aa69-18f7e34f47d4/activity",
+  "status": 200
+ },
+ "api_endpoints": {
+  "body": {
+   "endpoints": [
+    {
+     "category": "uncategorized",
+     "created_at": "2026-11-19T15:41:47.361011+00:00",
+     "description": "",
+     "enabled": true,
+     "executable": true,
+     "id": "e15c571e-d856-479a-8b64-f0983546c96a",
+     "integration_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "last_synced": "2026-11-19T15:41:47.361011+00:00",
+     "method": "GET",
+     "operation_id": "",
+     "parameters": [],
+     "path": "/health",
+     "response_schema": {
+      "description": "ok",
+      "schema": {}
+     },
+     "summary": "Health"
+    },
+    {
+     "category": "uncategorized",
+     "created_at": "2026-11-19T15:41:47.361011+00:00",
+     "description": "",
+     "enabled": false,
+     "executable": false,
+     "id": "aa4e5eef-147a-47de-a007-0bbef92057db",
+     "integration_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "last_synced": "2026-11-19T15:41:47.361011+00:00",
+     "method": "POST",
+     "operation_id": "",
+     "parameters": [],
+     "path": "/orders",
+     "response_schema": {
+      "description": "created",
+      "schema": {}
+     },
+     "summary": "Create order"
+    },
+    {
+     "category": "orders",
+     "created_at": "2026-11-19T15:41:47.361011+00:00",
+     "description": "",
+     "enabled": true,
+     "executable": true,
+     "id": "7728dc72-83a5-498a-b109-2ff827856e63",
+     "integration_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "last_synced": "2026-11-19T15:41:47.361011+00:00",
+     "method": "GET",
+     "operation_id": "",
+     "parameters": [
+      {
+       "default": null,
+       "description": "",
+       "in": "path",
+       "name": "order_id",
+       "required": true,
+       "type": "string"
+      }
+     ],
+     "path": "/orders/{order_id}",
+     "response_schema": {
+      "description": "ok",
+      "schema": {
+       "description": "",
+       "properties": {
+        "status": {
+         "description": "",
+         "required": false,
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "summary": "Order status"
+    }
+   ]
+  },
+  "path": "/api-integrations/97de73f7-b4b5-4a53-aa69-18f7e34f47d4/endpoints",
+  "status": 200
+ },
+ "api_integration": {
+  "body": {
+   "auth_header_name": "",
+   "auth_query_param": "",
+   "auth_type": "bearer",
+   "base_url": "https://docs.example.com",
+   "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
+   "created_at": "2026-11-19T15:41:47.352736+00:00",
+   "credential_id": "ad83e427-98a2-44f3-bf4a-eb943363244b",
+   "description": "",
+   "doc_source_type": "openapi",
+   "doc_source_url": "",
+   "enabled": true,
+   "enabled_endpoint_count": 2,
+   "endpoint_count": 3,
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+   "last_connection_test": {
+    "at": "2026-11-19T15:41:47.368634+00:00",
+    "message": "Connected (GET /health answered HTTP 200).",
+    "status": 200,
+    "success": true
+   },
+   "last_doc_sync": "2026-11-19T15:41:47.361011+00:00",
+   "name": "Shop API",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
+   "updated_at": "2026-11-19T15:41:47.361470+00:00"
+  },
+  "path": "/api-integrations/97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+  "status": 200
+ },
+ "api_integrations": {
+  "body": {
+   "integrations": [
+    {
+     "auth_header_name": "",
+     "auth_query_param": "",
+     "auth_type": "bearer",
+     "base_url": "https://docs.example.com",
+     "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
+     "created_at": "2026-11-19T15:41:47.352736+00:00",
+     "credential_id": "ad83e427-98a2-44f3-bf4a-eb943363244b",
+     "description": "",
+     "doc_source_type": "openapi",
+     "doc_source_url": "",
+     "enabled": true,
+     "enabled_endpoint_count": 2,
+     "endpoint_count": 3,
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "last_connection_test": {
+      "at": "2026-11-19T15:41:47.368634+00:00",
+      "message": "Connected (GET /health answered HTTP 200).",
+      "status": 200,
+      "success": true
+     },
+     "last_doc_sync": "2026-11-19T15:41:47.361011+00:00",
+     "name": "Shop API",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
+     "updated_at": "2026-11-19T15:41:47.361470+00:00"
+    }
+   ]
+  },
+  "path": "/bots/400ecc4a-1b19-4f2d-a402-78e555690f87/api-integrations",
+  "status": 200
+ },
+ "api_stats": {
+  "body": {
+   "average_duration_ms": 0,
+   "by_source": {
+    "connection_test": 1
+   },
+   "calls": 1,
+   "enabled_endpoint_count": 2,
+   "endpoint_count": 3,
+   "failed": 0,
+   "last_call_at": "2026-11-19T15:41:47.368634+00:00",
+   "succeeded": 1
+  },
+  "path": "/api-integrations/97de73f7-b4b5-4a53-aa69-18f7e34f47d4/stats",
+  "status": 200
+ },
  "audit_enterprise": {
   "body": {
    "events": [
     {
      "action": "invitation.create",
-     "actor_id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.864282+00:00",
+     "at": "2026-11-19T15:41:47.375972+00:00",
      "details": {
       "delivery": "email",
-      "invitation_id": "5cb970c2-417d-45e3-8105-521bf91915dd",
+      "invitation_id": "9c58c837-e721-4d97-929b-f2b4074dba75",
       "role": "viewer"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "f58c6112-a8f0-46de-b565-c26606d4c1b8",
-     "target_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "03655ed3-9e40-4676-9aaf-23bc519ec159",
+     "target_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "target_level": "enterprise"
     },
     {
-     "action": "knowledge.source_create",
-     "actor_id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+     "action": "api_integration.test_connection",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.857120+00:00",
+     "at": "2026-11-19T15:41:47.368779+00:00",
      "details": {
+      "success": true
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "826b2f6c-41c3-4945-86ac-1504c2d3d0de",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "api_integration.discover",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.361540+00:00",
+     "details": {
+      "new": 3,
+      "source": "upload",
+      "updated": 0
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "db5e1f93-adfa-4f6b-a63b-0a88bb9e2543",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "api_integration.create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.353889+00:00",
+     "details": {
+      "auth_type": "bearer",
+      "base_url": "https://docs.example.com"
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "9771ffce-5dbb-4bb6-a3ad-ad4296801206",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "credential.create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.353723+00:00",
+     "details": {
+      "provider": "api_integration",
+      "scoped": false
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "adcfef30-e194-47a3-9b01-b612e65d7d9e",
+     "target_id": "ad83e427-98a2-44f3-bf4a-eb943363244b",
+     "target_level": "credential"
+    },
+    {
+     "action": "knowledge.source_create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.330207+00:00",
+     "details": {
+      "kind": "website",
+      "mode": "single",
+      "owner": "organisations",
+      "url": "https://docs.example.com/help"
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "21387006-bcd6-4940-9413-24cbbcf33939",
+     "target_id": "8ff35774-329d-407c-9ed1-467f5f1d2ca7",
+     "target_level": "knowledge"
+    },
+    {
+     "action": "knowledge.source_create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.224422+00:00",
+     "details": {
+      "kind": "document",
       "owner": "enterprises"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "626b721c-012c-41ce-859c-b4f62ae5a068",
-     "target_id": "a4b8769e-7169-45f8-80e8-e4333e5ba368",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "912c75f7-133c-41f5-8b1a-673ab5debff0",
+     "target_id": "09dd48df-7b4e-4528-8115-b8edb6527db4",
      "target_level": "knowledge"
     },
     {
      "action": "integration.create",
-     "actor_id": "b59eeaab-2275-4ea3-8077-5dca792876ce",
+     "actor_id": "ae36a1a1-101d-4bbe-a49c-aa588e7c82e2",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.850604+00:00",
+     "at": "2026-11-19T15:41:47.217243+00:00",
      "details": {
       "type": "zendesk"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "396e5089-f1c3-4a1e-b0ae-5a3490661673",
-     "target_id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "a6aa4241-f690-4e4a-a1a5-4d7024ddf6e0",
+     "target_id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
      "target_level": "integration"
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/audit",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/audit",
   "status": 200
  },
  "bot": {
   "body": {
    "available": true,
-   "created_at": "2026-11-19T06:15:54.642942+00:00",
+   "created_at": "2026-11-19T15:41:46.979783+00:00",
    "description": "",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "a35e3430-0378-4218-b691-f96dd409ba20",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.642942+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.979783+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
    "logo": null,
    "name": "Bot A",
-   "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "overrides": {},
    "role": "owner",
    "type": "bots",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.642942+00:00",
+   "updated_at": "2026-11-19T15:41:46.979783+00:00",
    "version": 1
   },
-  "path": "/bots/a35e3430-0378-4218-b691-f96dd409ba20",
+  "path": "/bots/400ecc4a-1b19-4f2d-a402-78e555690f87",
   "status": 200
  },
  "bots": {
   "body": {
    "bots": [
     {
-     "created_at": "2026-11-19T06:15:54.642942+00:00",
+     "created_at": "2026-11-19T15:41:46.979783+00:00",
      "description": "",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "a35e3430-0378-4218-b691-f96dd409ba20",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.642942+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.979783+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
      "logo": null,
      "name": "Bot A",
-     "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "overrides": {},
      "type": "bots",
-     "updated_at": "2026-11-19T06:15:54.642942+00:00",
+     "updated_at": "2026-11-19T15:41:46.979783+00:00",
      "version": 1
     }
    ]
   },
-  "path": "/organisations/1c797cb1-ca86-4ec6-831b-3e87b87ec6ff/bots",
+  "path": "/organisations/e2cce1dc-1494-4aed-a138-485c60582a7c/bots",
   "status": 200
  },
  "config_bot": {
@@ -447,7 +707,7 @@
     }
    },
    "target": {
-    "id": "a35e3430-0378-4218-b691-f96dd409ba20",
+    "id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
     "type": "bot"
    },
    "unavailable_reason": null,
@@ -476,23 +736,23 @@
     "widget.welcome_message": ""
    }
   },
-  "path": "/bots/a35e3430-0378-4218-b691-f96dd409ba20/config",
+  "path": "/bots/400ecc4a-1b19-4f2d-a402-78e555690f87/config",
   "status": 200
  },
  "conversations": {
   "body": {
    "conversations": []
   },
-  "path": "/instances/e485f8eb-69b5-4abf-bbb5-5d173dc3750d/conversations",
+  "path": "/instances/2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3/conversations",
   "status": 200
  },
  "credentials_enterprise": {
   "body": {
    "credentials": [
     {
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "fingerprint": "sha256:96be92d977",
-     "id": "1f3b66c4-51e5-4213-8b52-6c1c6c45e468",
+     "id": "2edc5d4c-24a0-4c3e-ace7-0d3df65715ca",
      "metadata": {},
      "name": "Anthropic A",
      "organisation_id": null,
@@ -504,7 +764,7 @@
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/credentials",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/credentials",
   "status": 200
  },
  "deletion_job": {
@@ -512,16 +772,16 @@
    "attempts": 2,
    "completed_at": null,
    "deleted": {
-    "bot_owned": 2,
-    "credentials": 0,
+    "bot_owned": 7,
+    "credentials": 1,
     "descendants": 4,
     "invitations": 0,
     "memberships": 2,
     "release_bindings": 4,
-    "runtime_data": 2,
+    "runtime_data": 6,
     "target": 1
    },
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
    "error": null,
    "external_actions": [
     {
@@ -536,7 +796,7 @@
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111"
      }
@@ -547,31 +807,31 @@
      "credential_id": null,
      "error_class": "no_adapter",
      "history": [],
-     "id": "discord_routing_removal:03289afc-ef56-427c-ae2d-85ddd06987c7",
+     "id": "discord_routing_removal:cdbc556c-c9af-4e8d-8349-92b342b47125",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111",
-      "instance_id": "03289afc-ef56-427c-ae2d-85ddd06987c7"
+      "instance_id": "cdbc556c-c9af-4e8d-8349-92b342b47125"
      }
     },
     {
      "action": "telegram_delete_webhook",
      "attempts": 0,
-     "credential_id": "3ca18abf-ceb0-4bd3-aa60-2ff385de7b19",
+     "credential_id": "0031e12d-ad4c-4497-8ded-14e47818bb80",
      "error_class": "no_adapter",
      "history": [],
-     "id": "telegram_delete_webhook:b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+     "id": "telegram_delete_webhook:90358e9a-9dc6-4254-8773-3ccfcdc2b014",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "instance_id": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+      "instance_id": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
       "telegram_bot_id": "123456789"
      }
     },
@@ -581,21 +841,23 @@
      "credential_id": null,
      "error_class": "no_adapter",
      "history": [],
-     "id": "zendesk_webhook_subscription_removal:0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "id": "zendesk_webhook_subscription_removal:0d789886-844e-4902-9f5d-ad9f57f768c0",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "integration_id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+      "integration_id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
       "subdomain": null,
       "webhook_id": null
      }
     }
    ],
-   "id": "organisation:1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "id": "organisation:e2cce1dc-1494-4aed-a138-485c60582a7c",
    "preview_counts": {
-    "api_endpoints": 0,
+    "api_activity": 1,
+    "api_endpoints": 3,
+    "api_integrations": 1,
     "bot_instances": 3,
     "bot_integrations": 1,
     "bot_logos": 0,
@@ -604,13 +866,13 @@
     "chat_requests": 0,
     "chat_sessions": 0,
     "conversations": 0,
-    "credentials": 1,
+    "credentials": 2,
     "discord_share_links": 1,
     "invitations": 0,
-    "knowledge_chunks": 0,
-    "knowledge_documents": 0,
-    "knowledge_files": 0,
-    "knowledge_sources": 0,
+    "knowledge_chunks": 1,
+    "knowledge_documents": 1,
+    "knowledge_files": 1,
+    "knowledge_sources": 1,
     "memberships": 2,
     "oauth_states": 1,
     "organisations": 1,
@@ -622,8 +884,8 @@
     "zendesk_app_keys": 1,
     "zendesk_events": 0
    },
-   "requested_at": "2026-11-19T06:15:55.555265+00:00",
-   "requested_by": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+   "requested_at": "2026-11-19T15:41:48.312441+00:00",
+   "requested_by": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
    "status": "awaiting_external_cleanup",
    "steps_done": [
     "release_bindings",
@@ -635,7 +897,7 @@
     "descendants",
     "target"
    ],
-   "target_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "target_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "target_level": "organisation"
   },
   "status": 200
@@ -645,7 +907,9 @@
    "backups_note": "Copies in database backups persist until the backups age out.",
    "confirm_name": "Org A",
    "counts": {
-    "api_endpoints": 0,
+    "api_activity": 1,
+    "api_endpoints": 3,
+    "api_integrations": 1,
     "bot_instances": 3,
     "bot_integrations": 1,
     "bot_logos": 0,
@@ -654,13 +918,13 @@
     "chat_requests": 0,
     "chat_sessions": 0,
     "conversations": 0,
-    "credentials": 1,
+    "credentials": 2,
     "discord_share_links": 1,
     "invitations": 0,
-    "knowledge_chunks": 0,
-    "knowledge_documents": 0,
-    "knowledge_files": 0,
-    "knowledge_sources": 0,
+    "knowledge_chunks": 1,
+    "knowledge_documents": 1,
+    "knowledge_files": 1,
+    "knowledge_sources": 1,
     "memberships": 2,
     "oauth_states": 1,
     "organisations": 1,
@@ -672,9 +936,9 @@
     "zendesk_app_keys": 1,
     "zendesk_events": 0
    },
-   "digest": "36490ad71f09137091b4d8c230aa9961a7c0c224cb6dda97a18867b66e5f57d3",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "expires_at": "2026-11-19T06:20:55.547072+00:00",
+   "digest": "8fa7b718b072533c187c9ee3e6223d74c544eb8f842a3608f39afcca253d772d",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "expires_at": "2026-11-19T15:46:48.303031+00:00",
    "external_actions": [
     {
      "action": "discord_leave_guild",
@@ -688,7 +952,7 @@
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111"
      }
@@ -699,31 +963,31 @@
      "credential_id": null,
      "error_class": null,
      "history": [],
-     "id": "discord_routing_removal:03289afc-ef56-427c-ae2d-85ddd06987c7",
+     "id": "discord_routing_removal:cdbc556c-c9af-4e8d-8349-92b342b47125",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111",
-      "instance_id": "03289afc-ef56-427c-ae2d-85ddd06987c7"
+      "instance_id": "cdbc556c-c9af-4e8d-8349-92b342b47125"
      }
     },
     {
      "action": "telegram_delete_webhook",
      "attempts": 0,
-     "credential_id": "3ca18abf-ceb0-4bd3-aa60-2ff385de7b19",
+     "credential_id": "0031e12d-ad4c-4497-8ded-14e47818bb80",
      "error_class": null,
      "history": [],
-     "id": "telegram_delete_webhook:b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+     "id": "telegram_delete_webhook:90358e9a-9dc6-4254-8773-3ccfcdc2b014",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "instance_id": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+      "instance_id": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
       "telegram_bot_id": "123456789"
      }
     },
@@ -733,21 +997,21 @@
      "credential_id": null,
      "error_class": null,
      "history": [],
-     "id": "zendesk_webhook_subscription_removal:0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "id": "zendesk_webhook_subscription_removal:0d789886-844e-4902-9f5d-ad9f57f768c0",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "integration_id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+      "integration_id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
       "subdomain": null,
       "webhook_id": null
      }
     }
    ],
    "level": "organisation",
-   "preview_token": "VvYkhFcm6RxHCw99H1UE6sEiIRKBKhTYbplNCDTo5vo",
-   "target_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff"
+   "preview_token": "N6fD9sJUbdwJKO6oUm2BaTcoguvZxk0FlS0P17uWM1U",
+   "target_id": "e2cce1dc-1494-4aed-a138-485c60582a7c"
   },
   "status": 200
  },
@@ -760,7 +1024,7 @@
     "memberships": 2,
     "release_bindings": 4
    },
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
    "error": null,
    "external_actions": [
     {
@@ -775,7 +1039,7 @@
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111"
      }
@@ -786,31 +1050,31 @@
      "credential_id": null,
      "error_class": null,
      "history": [],
-     "id": "discord_routing_removal:03289afc-ef56-427c-ae2d-85ddd06987c7",
+     "id": "discord_routing_removal:cdbc556c-c9af-4e8d-8349-92b342b47125",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "application_enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+      "application_enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
       "application_id": "910000000000000001",
       "guild_id": "111111111111111111",
-      "instance_id": "03289afc-ef56-427c-ae2d-85ddd06987c7"
+      "instance_id": "cdbc556c-c9af-4e8d-8349-92b342b47125"
      }
     },
     {
      "action": "telegram_delete_webhook",
      "attempts": 0,
-     "credential_id": "3ca18abf-ceb0-4bd3-aa60-2ff385de7b19",
+     "credential_id": "0031e12d-ad4c-4497-8ded-14e47818bb80",
      "error_class": null,
      "history": [],
-     "id": "telegram_delete_webhook:b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+     "id": "telegram_delete_webhook:90358e9a-9dc6-4254-8773-3ccfcdc2b014",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "instance_id": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+      "instance_id": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
       "telegram_bot_id": "123456789"
      }
     },
@@ -820,21 +1084,23 @@
      "credential_id": null,
      "error_class": null,
      "history": [],
-     "id": "zendesk_webhook_subscription_removal:0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "id": "zendesk_webhook_subscription_removal:0d789886-844e-4902-9f5d-ad9f57f768c0",
      "mandatory": true,
      "next_attempt_at": null,
      "resolution": null,
      "state": "pending",
      "target": {
-      "integration_id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+      "integration_id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
       "subdomain": null,
       "webhook_id": null
      }
     }
    ],
-   "id": "organisation:1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "id": "organisation:e2cce1dc-1494-4aed-a138-485c60582a7c",
    "preview_counts": {
-    "api_endpoints": 0,
+    "api_activity": 1,
+    "api_endpoints": 3,
+    "api_integrations": 1,
     "bot_instances": 3,
     "bot_integrations": 1,
     "bot_logos": 0,
@@ -843,13 +1109,13 @@
     "chat_requests": 0,
     "chat_sessions": 0,
     "conversations": 0,
-    "credentials": 1,
+    "credentials": 2,
     "discord_share_links": 1,
     "invitations": 0,
-    "knowledge_chunks": 0,
-    "knowledge_documents": 0,
-    "knowledge_files": 0,
-    "knowledge_sources": 0,
+    "knowledge_chunks": 1,
+    "knowledge_documents": 1,
+    "knowledge_files": 1,
+    "knowledge_sources": 1,
     "memberships": 2,
     "oauth_states": 1,
     "organisations": 1,
@@ -861,15 +1127,15 @@
     "zendesk_app_keys": 1,
     "zendesk_events": 0
    },
-   "requested_at": "2026-11-19T06:15:55.555265+00:00",
-   "requested_by": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+   "requested_at": "2026-11-19T15:41:48.312441+00:00",
+   "requested_by": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
    "status": "pending",
    "steps_done": [
     "release_bindings",
     "invitations",
     "memberships"
    ],
-   "target_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "target_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "target_level": "organisation"
   },
   "status": 202
@@ -878,7 +1144,7 @@
   "body": {
    "deliveries": []
   },
-  "path": "/instances/b9d043e0-2fad-4232-99e7-f11b14cae7b1/deliveries",
+  "path": "/instances/90358e9a-9dc6-4254-8773-3ccfcdc2b014/deliveries",
   "status": 200
  },
  "discord_app_platform": {
@@ -888,8 +1154,8 @@
    "bot_username": "bot",
    "client_secret_fingerprint": "sha256:7658eb075c",
    "configured": true,
-   "configured_at": "2026-11-19T06:15:54.640359+00:00",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+   "configured_at": "2026-11-19T15:41:46.977218+00:00",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
    "gateway": {
     "state": "stopped"
    },
@@ -904,7 +1170,7 @@
    "token_fingerprint": "sha256:749356ff1a",
    "token_rotated_at": null
   },
-  "path": "/platform/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/discord-application",
+  "path": "/platform/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/discord-application",
   "status": 200
  },
  "discord_channels": {
@@ -929,7 +1195,7 @@
    "guild_id": "111111111111111111",
    "whole_server_available": true
   },
-  "path": "/instances/03289afc-ef56-427c-ae2d-85ddd06987c7/channel/discord/channels",
+  "path": "/instances/cdbc556c-c9af-4e8d-8349-92b342b47125/channel/discord/channels",
   "status": 200
  },
  "discord_enterprise": {
@@ -937,32 +1203,32 @@
    "available": true,
    "configured": true
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/discord",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/discord",
   "status": 200
  },
  "discord_handoffs": {
   "body": {
    "handoffs": []
   },
-  "path": "/instances/03289afc-ef56-427c-ae2d-85ddd06987c7/channel/discord/handoffs",
+  "path": "/instances/cdbc556c-c9af-4e8d-8349-92b342b47125/channel/discord/handoffs",
   "status": 200
  },
  "discord_install_url": {
   "body": {
-   "expires_at": "2026-11-19T06:25:55.087862+00:00",
-   "url": "https://discord.com/oauth2/authorize?client_id=910000000000000001&scope=bot+identify+guilds&permissions=67193856&response_type=code&redirect_uri=https%3A%2F%2Fapi.bitbotpro.io%2Fapi%2Fhooks%2Fdiscord%2Foauth%2Fcallback&state=G-KcMckcp09cc4BZcNIwwMNbtlSk5opGVsehjaOeaiI"
+   "expires_at": "2026-11-19T15:51:47.623463+00:00",
+   "url": "https://discord.com/oauth2/authorize?client_id=910000000000000001&scope=bot+identify+guilds&permissions=67193856&response_type=code&redirect_uri=https%3A%2F%2Fapi.bitbotpro.io%2Fapi%2Fhooks%2Fdiscord%2Foauth%2Fcallback&state=5gZf5e2FUaXaHOsPBpju_u6wcGGt7I6O1ZUCUzWnxB4"
   },
   "status": 200
  },
  "discord_share_create": {
   "body": {
-   "created_at": "2026-11-19T06:15:55.081781+00:00",
+   "created_at": "2026-11-19T15:41:47.617004+00:00",
    "expected_guild_id": null,
-   "expires_at": "2026-11-26T06:15:55.081781+00:00",
-   "id": "c91906de-11c9-43bd-b8d9-7d80dc53d8fb",
+   "expires_at": "2026-11-26T15:41:47.617004+00:00",
+   "id": "645758b6-909c-460e-8b6e-57d8aa4e420d",
    "invited": false,
    "status": "active",
-   "url": "https://api.bitbotpro.io/api/public/discord/install/g_iyVrfLD7BqskAtmEhdAmz-GuoHCZQ02c6Kmtffx9g",
+   "url": "https://api.bitbotpro.io/api/public/discord/install/qVORzwEfPKGVl7RsKK4ZwqYNVRPv3jQnk8Yt4TT18gk",
    "used_at": null,
    "used_for_guild": null
   },
@@ -972,7 +1238,7 @@
   "body": {
    "share_links": []
   },
-  "path": "/instances/03289afc-ef56-427c-ae2d-85ddd06987c7/channel/discord/share-links",
+  "path": "/instances/cdbc556c-c9af-4e8d-8349-92b342b47125/channel/discord/share-links",
   "status": 200
  },
  "discord_status": {
@@ -993,27 +1259,27 @@
    "pending_channel_selection": false,
    "type": "discord"
   },
-  "path": "/instances/03289afc-ef56-427c-ae2d-85ddd06987c7/channel/status",
+  "path": "/instances/cdbc556c-c9af-4e8d-8349-92b342b47125/channel/status",
   "status": 200
  },
  "embed_snippet": {
   "body": {
-   "public_id": "pk_-rovxdFKpZr0OeNSTYHiecp1oIpGLux2",
-   "script": "<script src=\"https://api.bitbotpro.io/api/embed.js\" data-instance=\"pk_-rovxdFKpZr0OeNSTYHiecp1oIpGLux2\" data-mode=\"popup\" async></script>",
-   "widget_url": "https://api.bitbotpro.io/api/public/widget/pk_-rovxdFKpZr0OeNSTYHiecp1oIpGLux2"
+   "public_id": "pk_QOw-j6hpjkvjT9PHXcjHu51U_tfwqMWF",
+   "script": "<script src=\"https://api.bitbotpro.io/api/embed.js\" data-instance=\"pk_QOw-j6hpjkvjT9PHXcjHu51U_tfwqMWF\" data-mode=\"popup\" async></script>",
+   "widget_url": "https://api.bitbotpro.io/api/public/widget/pk_QOw-j6hpjkvjT9PHXcjHu51U_tfwqMWF"
   },
-  "path": "/instances/e485f8eb-69b5-4abf-bbb5-5d173dc3750d/embed-snippet",
+  "path": "/instances/2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3/embed-snippet",
   "status": 200
  },
  "enterprise": {
   "body": {
    "available": true,
-   "created_at": "2026-11-19T06:15:54.642125+00:00",
-   "id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+   "created_at": "2026-11-19T15:41:46.978916+00:00",
+   "id": "2b356c38-8b30-4e94-8551-550d2067fc28",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.642125+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.978916+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
@@ -1022,30 +1288,30 @@
    "plan": "free",
    "policy": {},
    "role": "owner",
-   "slug": "ent-a-9d433a",
+   "slug": "ent-a-54a885",
    "type": "enterprises",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.642125+00:00",
+   "updated_at": "2026-11-19T15:41:46.978916+00:00",
    "version": 1
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28",
   "status": 200
  },
  "enterprises": {
   "body": {
    "enterprises": [
     {
-     "id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.642125+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.978916+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
      "name": "Ent A",
      "role": "owner",
-     "slug": "ent-a-9d433a"
+     "slug": "ent-a-54a885"
     }
    ]
   },
@@ -1055,7 +1321,7 @@
  "instance_discord": {
   "body": {
    "available": true,
-   "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+   "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
    "channel": {
     "application_id": "910000000000000001",
     "channel_ids": [],
@@ -1070,145 +1336,145 @@
     "staff_role_name": "",
     "type": "discord"
    },
-   "created_at": "2026-11-19T06:15:54.658981+00:00",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "03289afc-ef56-427c-ae2d-85ddd06987c7",
+   "created_at": "2026-11-19T15:41:46.996594+00:00",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "cdbc556c-c9af-4e8d-8349-92b342b47125",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.658981+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.996594+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
    "name": "Discord A",
-   "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "overrides": {},
    "role": "owner",
    "type": "instances",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.660529+00:00",
+   "updated_at": "2026-11-19T15:41:46.998231+00:00",
    "version": 2
   },
-  "path": "/instances/03289afc-ef56-427c-ae2d-85ddd06987c7",
+  "path": "/instances/cdbc556c-c9af-4e8d-8349-92b342b47125",
   "status": 200
  },
  "instance_telegram": {
   "body": {
    "available": true,
-   "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+   "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
    "channel": {
     "chat_ids": [],
-    "credential_id": "3ca18abf-ceb0-4bd3-aa60-2ff385de7b19",
+    "credential_id": "0031e12d-ad4c-4497-8ded-14e47818bb80",
     "listen_mode": "mention_or_command",
     "type": "telegram"
    },
-   "created_at": "2026-11-19T06:15:54.658054+00:00",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+   "created_at": "2026-11-19T15:41:46.995507+00:00",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.658054+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.995507+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
    "name": "TG A",
-   "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "overrides": {},
    "role": "owner",
    "type": "instances",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.658054+00:00",
+   "updated_at": "2026-11-19T15:41:46.995507+00:00",
    "version": 1
   },
-  "path": "/instances/b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+  "path": "/instances/90358e9a-9dc6-4254-8773-3ccfcdc2b014",
   "status": 200
  },
  "instance_web": {
   "body": {
    "available": true,
-   "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+   "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
    "channel": {
     "allowed_origins": [],
-    "public_id": "pk_-rovxdFKpZr0OeNSTYHiecp1oIpGLux2",
+    "public_id": "pk_QOw-j6hpjkvjT9PHXcjHu51U_tfwqMWF",
     "type": "webchat"
    },
-   "created_at": "2026-11-19T06:15:54.657178+00:00",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
+   "created_at": "2026-11-19T15:41:46.994593+00:00",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.657178+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.994593+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
    "name": "Web A",
-   "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "overrides": {},
    "role": "owner",
    "type": "instances",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.657178+00:00",
+   "updated_at": "2026-11-19T15:41:46.994593+00:00",
    "version": 1
   },
-  "path": "/instances/e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
+  "path": "/instances/2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
   "status": 200
  },
  "instances": {
   "body": {
    "instances": [
     {
-     "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+     "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
      "channel": {
       "allowed_origins": [],
-      "public_id": "pk_-rovxdFKpZr0OeNSTYHiecp1oIpGLux2",
+      "public_id": "pk_QOw-j6hpjkvjT9PHXcjHu51U_tfwqMWF",
       "type": "webchat"
      },
-     "created_at": "2026-11-19T06:15:54.657178+00:00",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
+     "created_at": "2026-11-19T15:41:46.994593+00:00",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.657178+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.994593+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
      "name": "Web A",
-     "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "overrides": {},
      "type": "instances",
-     "updated_at": "2026-11-19T06:15:54.657178+00:00",
+     "updated_at": "2026-11-19T15:41:46.994593+00:00",
      "version": 1
     },
     {
-     "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+     "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
      "channel": {
       "chat_ids": [],
-      "credential_id": "3ca18abf-ceb0-4bd3-aa60-2ff385de7b19",
+      "credential_id": "0031e12d-ad4c-4497-8ded-14e47818bb80",
       "listen_mode": "mention_or_command",
       "type": "telegram"
      },
-     "created_at": "2026-11-19T06:15:54.658054+00:00",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "b9d043e0-2fad-4232-99e7-f11b14cae7b1",
+     "created_at": "2026-11-19T15:41:46.995507+00:00",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "90358e9a-9dc6-4254-8773-3ccfcdc2b014",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.658054+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.995507+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
      "name": "TG A",
-     "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "overrides": {},
      "type": "instances",
-     "updated_at": "2026-11-19T06:15:54.658054+00:00",
+     "updated_at": "2026-11-19T15:41:46.995507+00:00",
      "version": 1
     },
     {
-     "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+     "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
      "channel": {
       "application_id": "910000000000000001",
       "channel_ids": [],
@@ -1223,41 +1489,41 @@
       "staff_role_name": "",
       "type": "discord"
      },
-     "created_at": "2026-11-19T06:15:54.658981+00:00",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "03289afc-ef56-427c-ae2d-85ddd06987c7",
+     "created_at": "2026-11-19T15:41:46.996594+00:00",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "cdbc556c-c9af-4e8d-8349-92b342b47125",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.658981+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.996594+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
      "name": "Discord A",
-     "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "overrides": {},
      "type": "instances",
-     "updated_at": "2026-11-19T06:15:54.660529+00:00",
+     "updated_at": "2026-11-19T15:41:46.998231+00:00",
      "version": 2
     }
    ]
   },
-  "path": "/bots/a35e3430-0378-4218-b691-f96dd409ba20/instances",
+  "path": "/bots/400ecc4a-1b19-4f2d-a402-78e555690f87/instances",
   "status": 200
  },
  "integration": {
   "body": {
-   "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+   "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
    "connection": {
     "status": "not_connected"
    },
-   "created_at": "2026-11-19T06:15:54.850120+00:00",
+   "created_at": "2026-11-19T15:41:47.216775+00:00",
    "credential_id": null,
    "deletion": null,
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
    "name": "Support desk",
-   "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "overrides": {},
    "settings": {
     "reply_mode": "agent_assist",
@@ -1270,15 +1536,15 @@
    },
    "status": "enabled",
    "type": "zendesk",
-   "updated_at": "2026-11-19T06:15:54.850120+00:00",
+   "updated_at": "2026-11-19T15:41:47.216775+00:00",
    "version": 1,
    "webhook": {
     "provisioned": false,
-    "rotated_at": "2026-11-19T06:15:54.850120+00:00",
+    "rotated_at": "2026-11-19T15:41:47.216775+00:00",
     "signing_secret_configured": false
    }
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0",
   "status": 200
  },
  "integration_config": {
@@ -1372,24 +1638,24 @@
     "knowledge.require_citations": false
    }
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/config",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/config",
   "status": 200
  },
  "integrations": {
   "body": {
    "integrations": [
     {
-     "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
+     "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
      "connection": {
       "status": "not_connected"
      },
-     "created_at": "2026-11-19T06:15:54.850120+00:00",
+     "created_at": "2026-11-19T15:41:47.216775+00:00",
      "credential_id": null,
      "deletion": null,
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
      "name": "Support desk",
-     "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "overrides": {},
      "settings": {
       "reply_mode": "agent_assist",
@@ -1402,17 +1668,17 @@
      },
      "status": "enabled",
      "type": "zendesk",
-     "updated_at": "2026-11-19T06:15:54.850120+00:00",
+     "updated_at": "2026-11-19T15:41:47.216775+00:00",
      "version": 1,
      "webhook": {
       "provisioned": false,
-      "rotated_at": "2026-11-19T06:15:54.850120+00:00",
+      "rotated_at": "2026-11-19T15:41:47.216775+00:00",
       "signing_secret_configured": false
      }
     }
    ]
   },
-  "path": "/bots/a35e3430-0378-4218-b691-f96dd409ba20/integrations",
+  "path": "/bots/400ecc4a-1b19-4f2d-a402-78e555690f87/integrations",
   "status": 200
  },
  "invitation_lookup_bad": {
@@ -1423,12 +1689,12 @@
  },
  "invitation_register": {
   "body": {
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
    "scope_type": "enterprise",
    "user": {
     "email": "registering.person@example.test",
-    "id": "a093de34-9d9b-47b9-a375-fd7fbaadd5d6",
+    "id": "70e082b2-af8b-461f-8cd5-03eb349c5dd8",
     "is_platform_superadmin": false,
     "name": "New Person"
    }
@@ -1451,27 +1717,57 @@
   "body": {
    "invitations": [
     {
-     "created_at": "2026-11-19T06:15:54.864120+00:00",
+     "created_at": "2026-11-19T15:41:47.375820+00:00",
      "email": "new.person@example.test",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "expires_at": "2026-11-26T06:15:54.864120+00:00",
-     "id": "5cb970c2-417d-45e3-8105-521bf91915dd",
-     "invited_by": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "expires_at": "2026-11-26T15:41:47.375820+00:00",
+     "id": "9c58c837-e721-4d97-929b-f2b4074dba75",
+     "invited_by": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
      "role": "viewer",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_level": "enterprise",
      "status": "pending"
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/invitations",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/invitations",
   "status": 200
  },
  "knowledge_documents": {
   "body": {
    "documents": []
   },
-  "path": "/knowledge/sources/a4b8769e-7169-45f8-80e8-e4333e5ba368/documents",
+  "path": "/knowledge/sources/09dd48df-7b4e-4528-8115-b8edb6527db4/documents",
+  "status": 200
+ },
+ "knowledge_documents_website": {
+  "body": {
+   "documents": [
+    {
+     "acl": {
+      "bots": [],
+      "organisations": []
+     },
+     "chunk_count": 1,
+     "content_type": "text/html",
+     "content_version": 1,
+     "fetched_at": "2026-11-19T15:41:47.340587+00:00",
+     "id": "45a0f636-7089-474f-81ff-7047cd85bc84",
+     "job": {
+      "attempts": 1,
+      "error": null,
+      "state": "done"
+     },
+     "name": "docs.example.com_help",
+     "size": 40,
+     "source_id": "8ff35774-329d-407c-9ed1-467f5f1d2ca7",
+     "status": "ready",
+     "updated_at": "2026-11-19T15:41:47.340356+00:00",
+     "url": "https://docs.example.com/help"
+    }
+   ]
+  },
+  "path": "/knowledge/sources/8ff35774-329d-407c-9ed1-467f5f1d2ca7/documents",
   "status": 200
  },
  "knowledge_sources": {
@@ -1479,17 +1775,52 @@
    "sources": [
     {
      "acl_groups": [],
-     "created_at": "2026-11-19T06:15:54.857018+00:00",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "a4b8769e-7169-45f8-80e8-e4333e5ba368",
+     "created_at": "2026-11-19T15:41:47.224315+00:00",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "09dd48df-7b4e-4528-8115-b8edb6527db4",
+     "kind": "document",
      "name": "Policies",
      "organisation_id": null,
      "status": "active",
-     "updated_at": "2026-11-19T06:15:54.857018+00:00"
+     "updated_at": "2026-11-19T15:41:47.224315+00:00",
+     "website": null
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/knowledge/sources",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/knowledge/sources",
+  "status": 200
+ },
+ "knowledge_sources_website": {
+  "body": {
+   "sources": [
+    {
+     "acl_groups": [],
+     "created_at": "2026-11-19T15:41:47.325873+00:00",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "8ff35774-329d-407c-9ed1-467f5f1d2ca7",
+     "kind": "website",
+     "name": "Help site",
+     "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
+     "status": "active",
+     "updated_at": "2026-11-19T15:41:47.340805+00:00",
+     "website": {
+      "error": null,
+      "last_attempt_at": "2026-11-19T15:41:47.331305+00:00",
+      "last_finished_at": "2026-11-19T15:41:47.340805+00:00",
+      "last_success_at": "2026-11-19T15:41:47.340805+00:00",
+      "max_pages": 1,
+      "mode": "single",
+      "pages_done": 1,
+      "pages_failed": 0,
+      "pages_found": 1,
+      "pages_imported": 1,
+      "state": "done",
+      "url": "https://docs.example.com/help"
+     }
+    }
+   ]
+  },
+  "path": "/organisations/e2cce1dc-1494-4aed-a138-485c60582a7c/knowledge/sources",
   "status": 200
  },
  "member_candidates": {
@@ -1497,13 +1828,13 @@
    "candidates": [
     {
      "email": "member2@example.test",
-     "id": "6c67b30c-8188-4e11-9663-81dab833ad00",
+     "id": "d625a7b9-90b0-4336-a898-bdf105020fc5",
      "name": "member2"
     }
    ],
    "note": "Only people who already belong to this Enterprise are listed. Invite anyone else by e-mail."
   },
-  "path": "/organisations/1c797cb1-ca86-4ec6-831b-3e87b87ec6ff/member-candidates?q=mem",
+  "path": "/organisations/e2cce1dc-1494-4aed-a138-485c60582a7c/member-candidates?q=mem",
   "status": 200
  },
  "members_enterprise": {
@@ -1513,58 +1844,58 @@
      "email": "owner@example.test",
      "name": "owner",
      "role": "owner",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise",
-     "user_id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c"
+     "user_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8"
     },
     {
      "email": "admin@example.test",
      "name": "admin",
      "role": "admin",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise",
-     "user_id": "b59eeaab-2275-4ea3-8077-5dca792876ce"
+     "user_id": "ae36a1a1-101d-4bbe-a49c-aa588e7c82e2"
     },
     {
      "email": "editor@example.test",
      "name": "editor",
      "role": "editor",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise",
-     "user_id": "2937a031-55c5-49a0-bd86-cbf01f0b7778"
+     "user_id": "fdf6417d-ba0b-4c03-b329-bc17c7e09605"
     },
     {
      "email": "viewer@example.test",
      "name": "viewer",
      "role": "viewer",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise",
-     "user_id": "ab0df342-b0e3-4da0-accb-b72bebc57b25"
+     "user_id": "64f51d31-2ad6-45d1-b79d-89437716d8aa"
     },
     {
      "email": "member2@example.test",
      "name": "member2",
      "role": "viewer",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise",
-     "user_id": "6c67b30c-8188-4e11-9663-81dab833ad00"
+     "user_id": "d625a7b9-90b0-4336-a898-bdf105020fc5"
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/members",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/members",
   "status": 200
  },
  "organisation": {
   "body": {
    "available": true,
-   "created_at": "2026-11-19T06:15:54.642482+00:00",
+   "created_at": "2026-11-19T15:41:46.979299+00:00",
    "description": "",
-   "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-   "id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+   "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+   "id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
    "lifecycle": {
     "authority": null,
-    "changed_at": "2026-11-19T06:15:54.642482+00:00",
-    "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "changed_at": "2026-11-19T15:41:46.979299+00:00",
+    "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "reason": "",
     "state": "active"
    },
@@ -1574,24 +1905,24 @@
    "role": "owner",
    "type": "organisations",
    "unavailable_reason": null,
-   "updated_at": "2026-11-19T06:15:54.642482+00:00",
+   "updated_at": "2026-11-19T15:41:46.979299+00:00",
    "version": 1
   },
-  "path": "/organisations/1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+  "path": "/organisations/e2cce1dc-1494-4aed-a138-485c60582a7c",
   "status": 200
  },
  "organisations": {
   "body": {
    "organisations": [
     {
-     "created_at": "2026-11-19T06:15:54.642482+00:00",
+     "created_at": "2026-11-19T15:41:46.979299+00:00",
      "description": "",
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "lifecycle": {
       "authority": null,
-      "changed_at": "2026-11-19T06:15:54.642482+00:00",
-      "changed_by": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+      "changed_at": "2026-11-19T15:41:46.979299+00:00",
+      "changed_by": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
       "reason": "",
       "state": "active"
      },
@@ -1599,12 +1930,12 @@
      "overrides": {},
      "policy": {},
      "type": "organisations",
-     "updated_at": "2026-11-19T06:15:54.642482+00:00",
+     "updated_at": "2026-11-19T15:41:46.979299+00:00",
      "version": 1
     }
    ]
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/organisations",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/organisations",
   "status": 200
  },
  "platform_audit": {
@@ -1612,43 +1943,116 @@
    "events": [
     {
      "action": "invitation.create",
-     "actor_id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.864282+00:00",
+     "at": "2026-11-19T15:41:47.375972+00:00",
      "details": {
       "delivery": "email",
-      "invitation_id": "5cb970c2-417d-45e3-8105-521bf91915dd",
+      "invitation_id": "9c58c837-e721-4d97-929b-f2b4074dba75",
       "role": "viewer"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "f58c6112-a8f0-46de-b565-c26606d4c1b8",
-     "target_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "03655ed3-9e40-4676-9aaf-23bc519ec159",
+     "target_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "target_level": "enterprise"
     },
     {
-     "action": "knowledge.source_create",
-     "actor_id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+     "action": "api_integration.test_connection",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.857120+00:00",
+     "at": "2026-11-19T15:41:47.368779+00:00",
      "details": {
+      "success": true
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "826b2f6c-41c3-4945-86ac-1504c2d3d0de",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "api_integration.discover",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.361540+00:00",
+     "details": {
+      "new": 3,
+      "source": "upload",
+      "updated": 0
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "db5e1f93-adfa-4f6b-a63b-0a88bb9e2543",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "api_integration.create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.353889+00:00",
+     "details": {
+      "auth_type": "bearer",
+      "base_url": "https://docs.example.com"
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "9771ffce-5dbb-4bb6-a3ad-ad4296801206",
+     "target_id": "97de73f7-b4b5-4a53-aa69-18f7e34f47d4",
+     "target_level": "api_integration"
+    },
+    {
+     "action": "credential.create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.353723+00:00",
+     "details": {
+      "provider": "api_integration",
+      "scoped": false
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "adcfef30-e194-47a3-9b01-b612e65d7d9e",
+     "target_id": "ad83e427-98a2-44f3-bf4a-eb943363244b",
+     "target_level": "credential"
+    },
+    {
+     "action": "knowledge.source_create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.330207+00:00",
+     "details": {
+      "kind": "website",
+      "mode": "single",
+      "owner": "organisations",
+      "url": "https://docs.example.com/help"
+     },
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "21387006-bcd6-4940-9413-24cbbcf33939",
+     "target_id": "8ff35774-329d-407c-9ed1-467f5f1d2ca7",
+     "target_level": "knowledge"
+    },
+    {
+     "action": "knowledge.source_create",
+     "actor_id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
+     "actor_superadmin": false,
+     "at": "2026-11-19T15:41:47.224422+00:00",
+     "details": {
+      "kind": "document",
       "owner": "enterprises"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "626b721c-012c-41ce-859c-b4f62ae5a068",
-     "target_id": "a4b8769e-7169-45f8-80e8-e4333e5ba368",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "912c75f7-133c-41f5-8b1a-673ab5debff0",
+     "target_id": "09dd48df-7b4e-4528-8115-b8edb6527db4",
      "target_level": "knowledge"
     },
     {
      "action": "integration.create",
-     "actor_id": "b59eeaab-2275-4ea3-8077-5dca792876ce",
+     "actor_id": "ae36a1a1-101d-4bbe-a49c-aa588e7c82e2",
      "actor_superadmin": false,
-     "at": "2026-11-19T06:15:54.850604+00:00",
+     "at": "2026-11-19T15:41:47.217243+00:00",
      "details": {
       "type": "zendesk"
      },
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-     "id": "396e5089-f1c3-4a1e-b0ae-5a3490661673",
-     "target_id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+     "id": "a6aa4241-f690-4e4a-a1a5-4d7024ddf6e0",
+     "target_id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
      "target_level": "integration"
     }
    ]
@@ -1668,25 +2072,25 @@
    "next": "editor@example.test",
    "users": [
     {
-     "created_at": "2026-11-19T06:15:54.640359+00:00",
+     "created_at": "2026-11-19T15:41:46.977218+00:00",
      "email": "admin@example.test",
-     "id": "b59eeaab-2275-4ea3-8077-5dca792876ce",
+     "id": "ae36a1a1-101d-4bbe-a49c-aa588e7c82e2",
      "is_platform_superadmin": false,
      "name": "admin",
      "status": "active"
     },
     {
-     "created_at": "2026-11-19T06:15:54.640359+00:00",
+     "created_at": "2026-11-19T15:41:46.977218+00:00",
      "email": "bot_editor@example.test",
-     "id": "5d5f1b76-d717-43a9-a215-6a7886048801",
+     "id": "bca5c6b0-fc1d-4b8c-94e8-c21b6b010167",
      "is_platform_superadmin": false,
      "name": "bot_editor",
      "status": "active"
     },
     {
-     "created_at": "2026-11-19T06:15:54.640359+00:00",
+     "created_at": "2026-11-19T15:41:46.977218+00:00",
      "email": "editor@example.test",
-     "id": "2937a031-55c5-49a0-bd86-cbf01f0b7778",
+     "id": "fdf6417d-ba0b-4c03-b329-bc17c7e09605",
      "is_platform_superadmin": false,
      "name": "editor",
      "status": "active"
@@ -1874,7 +2278,7 @@
     }
    }
   },
-  "path": "/enterprises/8bc4119f-631a-48d3-95cb-7de5a3bd4e50/policy",
+  "path": "/enterprises/2b356c38-8b30-4e94-8551-550d2067fc28/policy",
   "status": 200
  },
  "runtime_config": {
@@ -1886,17 +2290,17 @@
     "provider_available": false
    },
    "ancestry": {
-    "bot_id": "a35e3430-0378-4218-b691-f96dd409ba20",
-    "bot_instance_id": "e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
-    "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
-    "organisation_id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff"
+    "bot_id": "400ecc4a-1b19-4f2d-a402-78e555690f87",
+    "bot_instance_id": "2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
+    "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
+    "organisation_id": "e2cce1dc-1494-4aed-a138-485c60582a7c"
    },
    "available": true,
    "blocked": {
     "ai": "no AI credential is configured"
    },
    "channel": "webchat",
-   "instance_id": "e485f8eb-69b5-4abf-bbb5-5d173dc3750d",
+   "instance_id": "2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3",
    "knowledge": {
     "approved_sources": 0,
     "general_fallback_allowed": false,
@@ -1913,7 +2317,7 @@
    "runtime_blockers": [],
    "unavailable_reason": null
   },
-  "path": "/instances/e485f8eb-69b5-4abf-bbb5-5d173dc3750d/runtime-config",
+  "path": "/instances/2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3/runtime-config",
   "status": 200
  },
  "session": {
@@ -1921,7 +2325,7 @@
    "email_verified": true,
    "user": {
     "email": "owner@example.test",
-    "id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+    "id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
     "is_platform_superadmin": false,
     "name": "owner"
    }
@@ -1934,7 +2338,7 @@
    "email_verified": true,
    "user": {
     "email": "root@example.test",
-    "id": "ad72466e-60b1-444f-b322-bb0c942aad5c",
+    "id": "eafe22ce-82d2-40a0-9ee6-2f23be3b876d",
     "is_platform_superadmin": true,
     "name": "root"
    }
@@ -1944,7 +2348,7 @@
  },
  "sidebar_key_create": {
   "body": {
-   "hint": "5n8o",
+   "hint": "zOnY",
    "message": "Copy this key now; it will not be shown again.",
    "sidebar_key": "bbz_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   },
@@ -1958,7 +2362,7 @@
    "registered_at": null,
    "sync_error": null
   },
-  "path": "/instances/b9d043e0-2fad-4232-99e7-f11b14cae7b1/channel/status",
+  "path": "/instances/90358e9a-9dc6-4254-8773-3ccfcdc2b014/channel/status",
   "status": 200
  },
  "usage_integration": {
@@ -1978,27 +2382,27 @@
    },
    "quotas": [
     {
-     "id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "limit": null,
      "scope": "enterprise",
      "used": 0
     },
     {
-     "id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "limit": null,
      "scope": "organisation",
      "used": 0
     }
    ],
    "target": {
-    "id": "0102f9e4-8594-458b-b0f8-32d67b7722f7",
+    "id": "0d789886-844e-4902-9f5d-ad9f57f768c0",
     "type": "integrations"
    },
    "verification": {
     "settled": 0
    }
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/usage",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/usage",
   "status": 200
  },
  "usage_org": {
@@ -2018,39 +2422,39 @@
    },
    "quotas": [
     {
-     "id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "limit": null,
      "scope": "enterprise",
      "used": 0
     },
     {
-     "id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+     "id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
      "limit": null,
      "scope": "organisation",
      "used": 0
     }
    ],
    "target": {
-    "id": "1c797cb1-ca86-4ec6-831b-3e87b87ec6ff",
+    "id": "e2cce1dc-1494-4aed-a138-485c60582a7c",
     "type": "organisations"
    },
    "verification": {
     "settled": 0
    }
   },
-  "path": "/organisations/1c797cb1-ca86-4ec6-831b-3e87b87ec6ff/usage",
+  "path": "/organisations/e2cce1dc-1494-4aed-a138-485c60582a7c/usage",
   "status": 200
  },
  "users_me": {
   "body": {
    "email": "owner@example.test",
-   "id": "70ea22ce-0fa8-4844-ba91-0ad79c692c3c",
+   "id": "275b2488-a6ba-4ddf-9f75-5871e46237a8",
    "is_platform_superadmin": false,
    "memberships": [
     {
-     "enterprise_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "enterprise_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "role": "owner",
-     "scope_id": "8bc4119f-631a-48d3-95cb-7de5a3bd4e50",
+     "scope_id": "2b356c38-8b30-4e94-8551-550d2067fc28",
      "scope_type": "enterprise"
     }
    ],
@@ -2063,28 +2467,28 @@
   "body": {
    "detail": "Not found."
   },
-  "path": "/instances/e485f8eb-69b5-4abf-bbb5-5d173dc3750d/channel/status",
+  "path": "/instances/2870bae8-57d8-49a9-ae1e-bf6d8cdf2ba3/channel/status",
   "status": 404
  },
  "zendesk_deliveries": {
   "body": {
    "deliveries": []
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/deliveries",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/deliveries",
   "status": 200
  },
  "zendesk_events": {
   "body": {
    "events": []
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/events",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/events",
   "status": 200
  },
  "zendesk_suggestions": {
   "body": {
    "suggestions": []
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/suggestions",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/suggestions",
   "status": 200
  },
  "zendesk_webhook": {
@@ -2092,9 +2496,9 @@
    "provisioned_webhook_id": null,
    "signature_required": true,
    "signing_secret_configured": false,
-   "url": "https://api.bitbotpro.io/api/hooks/zendesk/0102f9e4-8594-458b-b0f8-32d67b7722f7/<path-secret>"
+   "url": "https://api.bitbotpro.io/api/hooks/zendesk/0d789886-844e-4902-9f5d-ad9f57f768c0/<path-secret>"
   },
-  "path": "/integrations/0102f9e4-8594-458b-b0f8-32d67b7722f7/zendesk/webhook",
+  "path": "/integrations/0d789886-844e-4902-9f5d-ad9f57f768c0/zendesk/webhook",
   "status": 200
  }
 }

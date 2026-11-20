@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import ConfigPanel from "../components/ConfigPanel";
 import CredentialsPanel from "../components/Credentials";
 import KnowledgePanel from "../components/Knowledge";
+import ApiIntegrationsPanel from "../components/ApiIntegrations";
 import MembersPanel from "../components/Members";
 import UsagePanel from "../components/Usage";
 import { LifecycleMenu, PolicyPanel } from "../components/Lifecycle";
@@ -312,6 +313,9 @@ export function BotPage() {
                 </form>
               ) : null}
             </Section>
+          )],
+          ["apis", "API integrations", () => (
+            <ApiIntegrationsPanel api={api} botId={id} perms={perms} cfg={cfg} onConfigChanged={st.reload} />
           )],
           ["credentials", "Credentials", () => (
             <Section title="Credentials" description="Credentials are owned by the Enterprise or an Organisation and are used here by reference only; secrets are never inherited or shown. Select the AI credential under Behaviour (ai.credential_id).">
