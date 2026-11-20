@@ -9,6 +9,7 @@ import Conversations from "@/pages/Conversations";
 import BotSettings from "@/pages/BotSettings";
 import Analytics from "@/pages/Analytics";
 import DiscordSettings from "@/pages/DiscordSettings";
+import Zendesk from "@/pages/Zendesk";
 import DiscordAppSetup from "@/pages/DiscordAppSetup";
 import EmbedCode from "@/pages/EmbedCode";
 import ChatPage from "@/pages/ChatPage";
@@ -66,6 +67,7 @@ function AppRoutes() {
         <Route path="settings" element={<BotSettings />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="discord" element={<DiscordSettings />} />
+        <Route path="zendesk" element={<Zendesk />} />
         <Route path="discord-app-setup" element={<AdminOnlyRoute><DiscordAppSetup /></AdminOnlyRoute>} />
         <Route path="embed" element={<EmbedCode />} />
         <Route path="instances" element={<AdminOnlyRoute><Instances /></AdminOnlyRoute>} />
