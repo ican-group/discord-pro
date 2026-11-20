@@ -65,6 +65,11 @@ ANTHROPIC_MODEL_PARAMS: Dict[str, Dict[str, Any]] = {
     "claude-fable-5-2": {"output_config": {"effort": "low"}},
 }
 ALWAYS_THINKING = frozenset({"claude-opus-5-5", "claude-fable-5-2"})
+# These request fields are documented (platform.claude.com thinking/effort pages) with
+# ``anthropic-version: 2026-10-21``; the newer models are therefore called with exactly that version.
+# Its breaking changes (sampling parameters, document blocks, citations, admin fields) do not affect
+# these requests. Older models keep the proven 2023-06-01 request byte-for-byte.
+ANTHROPIC_VERSION_NEW_MODELS = "2026-10-21"
 THINKING_HEADROOM = 2048
 
 
@@ -149,7 +154,7 @@ class _HttpProvider:
         self._sleep = sleep
         self._max_attempts = max(1, min(int(max_attempts), 3))
 
-    def _headers(self, api_key: str) -> Dict[str, str]:      # pragma: no cover - overridden
+    def _headers(self, api_key: str, model: str = "") -> Dict[str, str]:      # pragma: no cover - overridden
         raise NotImplementedError
 
     def _body(self, req: GenerationRequest) -> Dict[str, Any]:   # pragma: no cover - overridden
@@ -160,7 +165,7 @@ class _HttpProvider:
 
     async def generate(self, req: GenerationRequest) -> GenerationResult:
         body = self._body(req)
-        headers = self._headers(req.api_key.reveal())
+        headers = self._headers(req.api_key.reveal(), req.model)
         last: Exception = ProviderUnavailable()
         async with httpx.AsyncClient(transport=self._transport, timeout=TIMEOUT, follow_redirects=False,
                                      verify=True) as client:
@@ -219,7 +224,7 @@ class _HttpProvider:
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=TIMEOUT, follow_redirects=False,
                                          verify=True) as client:
-                resp = await client.post(self.url, headers=self._headers(api_key), json=self._body(req))
+                resp = await client.post(self.url, headers=self._headers(api_key, model), json=self._body(req))
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             return {"ok": False, "category": "unavailable"}
         except (httpx.TimeoutException, httpx.TransportError):
@@ -265,8 +270,9 @@ class AnthropicProvider(_HttpProvider):
     url = ANTHROPIC_URL
     check_url = ANTHROPIC_CHECK_URL
 
-    def _headers(self, api_key: str) -> Dict[str, str]:
-        return {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
+    def _headers(self, api_key: str, model: str = "") -> Dict[str, str]:
+        version = ANTHROPIC_VERSION_NEW_MODELS if model in ANTHROPIC_MODEL_PARAMS else ANTHROPIC_VERSION
+        return {"x-api-key": api_key, "anthropic-version": version, "content-type": "application/json"}
 
     def _body(self, req: GenerationRequest) -> Dict[str, Any]:
         extra = THINKING_HEADROOM if req.model in ALWAYS_THINKING else 0
@@ -287,7 +293,7 @@ class OpenAIProvider(_HttpProvider):
     url = OPENAI_URL
     check_url = OPENAI_CHECK_URL
 
-    def _headers(self, api_key: str) -> Dict[str, str]:
+    def _headers(self, api_key: str, model: str = "") -> Dict[str, str]:
         return {"authorization": f"Bearer {api_key}", "content-type": "application/json"}
 
     def _body(self, req: GenerationRequest) -> Dict[str, Any]:

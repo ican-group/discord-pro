@@ -540,7 +540,14 @@ credential system):
   (`claude-sonnet-4-6`, `gpt-4o`). These models think by default and `max_tokens` caps thinking plus answer, so the
   adapter sends Haiku 5.5 `thinking: disabled`, Sonnet 5.5 `thinking: between_tools`, and Opus 5.5 / Fable 5.2 (thinking
   cannot be disabled) `output_config.effort: low` with +2048 tokens headroom; OpenAI reasoning models (GPT-5 family,
-  o3, o4-mini) get the same headroom. Real calls remain to be confirmed in the Anthropic validation.
+  o3, o4-mini) get the same headroom. Re-verified on platform.claude.com before deployment (model status table,
+  thinking and effort pages): IDs Active; Haiku 5.5 accepts `disabled` at its default effort (medium); Sonnet 5.5
+  rejects `disabled` and accepts `between_tools` at its default (high) = no thinking without tools; Opus 5.5 / Fable 5.2
+  cannot disable thinking and accept `output_config.effort: low`; `max_tokens` caps thinking + text. Because these
+  fields are documented with `anthropic-version: 2026-10-21`, the four newer models are called with that version (its
+  breaking changes do not touch our requests); older models keep `2023-06-01` unchanged. An empty provider answer
+  (refusal stop or budget spent on thinking) is never delivered: the Bot's fallback message is sent and a usage
+  event `empty_answer` recorded. Real calls remain to be confirmed in the Anthropic validation.
 - **G1 — GENERAL mode uses approved, selected knowledge as optional reference context.** Retrieval runs in GENERAL when
   the object has approved sources selected (Enterprise approval ∩ selection, unchanged); the evidence is passed as
   untrusted reference material, the answer is a normal general answer (no claim validation, no refusal, no

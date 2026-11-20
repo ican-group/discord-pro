@@ -365,6 +365,18 @@ class GeneralModeKnowledgeContextTests(unittest.TestCase):
         self.assertEqual(w.provider.requests[0].evidence, ())
 
 
+class EmptyAnswerTests(unittest.TestCase):
+    def test_an_empty_provider_answer_is_never_delivered(self):
+        """Stage 0: a refusal stop or an output budget spent on thinking can return no text;
+        the bot sends its configured fallback instead of an empty message (billed once)."""
+        w = World()
+        w.set_overrides(Level.BOT, w.b.id, {"behaviour.fallback_message": "Sorry, please try again."})
+        out = run(w.pipeline(provider=FakeProvider(GenerationResult(text="   "))).handle(w.web()))
+        self.assertEqual((out.kind, out.text, out.billed), ("refusal", "Sorry, please try again.", True))
+        events = run(w.t.store.find("usage_events", {"kind": "empty_answer"}))
+        self.assertEqual(len(events), 1)
+
+
 class LedgerIdentityTests(unittest.TestCase):
     def test_only_definitely_unbilled_keys_can_be_reserved_again(self):
         from runtime.usage import AlreadyReserved, StoreUsageTracker

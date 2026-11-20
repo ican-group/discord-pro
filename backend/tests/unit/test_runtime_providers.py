@@ -63,8 +63,11 @@ class ProviderTests(unittest.TestCase):
         import httpx
         bodies = []
 
+        versions = []
+
         def handler(req):
             bodies.append(json.loads(req.content))
+            versions.append(req.headers["anthropic-version"])
             return httpx.Response(200, json={"content": [{"type": "thinking", "thinking": "hmm"},
                                                          {"type": "text", "text": "OK"}],
                                              "usage": {"input_tokens": 1, "output_tokens": 1}})
@@ -73,6 +76,8 @@ class ProviderTests(unittest.TestCase):
                       "claude-opus-5-5", "claude-fable-5-2"):
             self.assertEqual(self.go(p.generate(request(model=model))).text, "OK")     # thinking blocks ignored
         old, haiku4, haiku, sonnet, opus, fable = bodies
+        # newer models use the documented request version; older ones keep the proven one
+        self.assertEqual(versions, ["2023-06-01", "2023-06-01"] + ["2026-10-21"] * 4)
         for b in (old, haiku4):
             self.assertEqual(b["max_tokens"], 1024)
             self.assertNotIn("thinking", b)

@@ -284,6 +284,14 @@ class Pipeline:
                      "model": str(eff.values.get("ai.model") or ""),
                      **({"integration_id": integ_id} if integ_id else {}),
                      "input_tokens": int(result.input_tokens or 0), "output_tokens": int(result.output_tokens or 0)}
+            if verdict.deliver and not (verdict.text or "").strip():
+                # Stage 0: an empty answer (a provider "refusal" stop, or an output budget spent on
+                # thinking) is never delivered as an empty message: the configured fallback is used.
+                await tracker.record(chain, "empty_answer", now=now,
+                                     details={"provider": provider_name, "model": str(eff.values.get("ai.model") or "")})
+                from core.knowledge import AnswerVerdict
+                verdict = AnswerVerdict(False, fallback or fail_closed(plan, RuntimeError("empty answer")).text,
+                                        reason=RefusalReason.INTERNAL_ERROR)
             skip = message.passive and (not verdict.deliver or
                                         (verdict.text or "").strip().upper().startswith("[SKIP]"))
             if skip:
