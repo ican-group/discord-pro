@@ -95,6 +95,21 @@ credentials.json
 # Credential documents (never commit plaintext test/admin credentials)
 *credentials*.md
 memory/test_credentials.md
+*credentials*.txt
+*password*.txt
+*secrets*.json
+*.secret
+
+# Database exports and backups (never commit data dumps; operations.md §3 keeps them in ~/.bitbotpro/backups)
+memory/backup-*.json
+**/backup-*.json
+*.archive
+*.archive.gz
+*.bson
+*.dump
+*.sql.gz
+mongodump*/
+dump/
 
 # Generated test reports
 test_reports/
