@@ -234,7 +234,12 @@ def gate_before_generation(plan: KnowledgePlan, retrieval: Optional[RetrievalRes
         return GenerationGate(Decision.REFUSE, reason=reason)
 
     if plan.mode is KnowledgeMode.GENERAL:
-        return GenerationGate(Decision.GENERAL if not usable else Decision.GROUNDED, tuple(usable))
+        # Stage 0 (owner decision G1, 2026-11-20): GENERAL may use approved, selected knowledge
+        # as *optional reference context*: the answer is a normal general answer (no claim
+        # validation, no refusal), and conflicting evidence is simply not offered.
+        if retrieval is not None and retrieval.conflicting:
+            usable = [e for e in usable if e.evidence_id not in retrieval.conflicting]
+        return GenerationGate(Decision.GENERAL, tuple(usable))
     if retrieval is None or retrieval.status is not RetrievalStatus.OK:
         return no_knowledge(RefusalReason.KNOWLEDGE_UNAVAILABLE)
     if not retrieval.evidence:

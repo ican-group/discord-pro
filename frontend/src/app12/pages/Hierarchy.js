@@ -7,6 +7,7 @@ import ConfigPanel from "../components/ConfigPanel";
 import CredentialsPanel from "../components/Credentials";
 import KnowledgePanel from "../components/Knowledge";
 import ApiIntegrationsPanel from "../components/ApiIntegrations";
+import AiSettingsPanel from "../components/AiSettings";
 import MembersPanel from "../components/Members";
 import UsagePanel from "../components/Usage";
 import { LifecycleMenu, PolicyPanel } from "../components/Lifecycle";
@@ -19,6 +20,8 @@ import { availabilityText, displayValue, lifecycleState, useAction, useLoad } fr
 const GETTER = { enterprise: "enterprise", organisation: "organisation", bot: "bot", instance: "instance" };
 
 /** Load an object and its effective view (which carries the caller's permissions). */
+const AI_KEYS = ["ai.provider", "ai.model", "ai.credential_id"];
+
 export function useNode(api, kind, id) {
   return useLoad(async () => {
     const node = await api[GETTER[kind]](id);
@@ -143,8 +146,11 @@ export function EnterprisePage() {
               </Section>
             )],
             ["defaults", "Defaults", () => (
-              <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} title="Enterprise defaults"
-                onPatch={async (c) => { await api.patchConfig("enterprise", id, c); await st.reload(); }} />
+              <>
+                <AiSettingsPanel api={api} type="enterprise" id={id} onChanged={st.reload} />
+                <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} hideKeys={AI_KEYS} title="Enterprise defaults"
+                  onPatch={async (c) => { await api.patchConfig("enterprise", id, c); await st.reload(); }} />
+              </>
             )],
             ["policy", "Policy", () => (pol.data ? (
               <PolicyPanel view={pol.data} targetId={id} canEdit={perms.edit_policy}
@@ -201,8 +207,11 @@ export function OrganisationPage() {
             </Section>
           )],
           ["defaults", "Defaults", () => (
-            <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} title="Organisation defaults"
-              onPatch={async (c) => { await api.patchConfig("organisation", id, c); await st.reload(); }} />
+            <>
+              <AiSettingsPanel api={api} type="organisation" id={id} onChanged={st.reload} />
+              <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} hideKeys={AI_KEYS} title="Organisation defaults"
+                onPatch={async (c) => { await api.patchConfig("organisation", id, c); await st.reload(); }} />
+            </>
           )],
           ["policy", "Policy", () => (pol.data ? (
             <PolicyPanel view={pol.data} targetId={id} canEdit={perms.edit_policy}
@@ -293,8 +302,11 @@ export function BotPage() {
             </Section>
           )],
           ["behaviour", "Behaviour", () => (
-            <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} title="Behaviour and AI"
-              onPatch={async (c) => { await api.patchConfig("bot", id, c); await st.reload(); }} />
+            <>
+              <AiSettingsPanel api={api} type="bot" id={id} onChanged={st.reload} />
+              <ConfigPanel view={cfg} targetId={id} canEdit={perms.edit_config} title="Behaviour and knowledge" hideKeys={AI_KEYS}
+                onPatch={async (c) => { await api.patchConfig("bot", id, c); await st.reload(); }} />
+            </>
           )],
           ["integrations", "Integrations", () => (
             <Section title="Integrations" description="Zendesk is a Bot Integration (not an instance). BitBotPro never creates Zendesk tickets.">
@@ -318,7 +330,7 @@ export function BotPage() {
             <ApiIntegrationsPanel api={api} botId={id} perms={perms} cfg={cfg} onConfigChanged={st.reload} />
           )],
           ["credentials", "Credentials", () => (
-            <Section title="Credentials" description="Credentials are owned by the Enterprise or an Organisation and are used here by reference only; secrets are never inherited or shown. Select the AI credential under Behaviour (ai.credential_id).">
+            <Section title="Credentials" description="Credentials are owned by the Enterprise or an Organisation and are used here by reference only; secrets are never inherited or shown. Choose the AI provider, model and API key under Behaviour.">
               <DataTable caption="Credentials referenced by this bot" rows={Object.entries((cfg && cfg.credentials) || {}).map(([k, v]) => ({ key: k, v }))}
                 empty="No credential is referenced by this bot's configuration yet." columns={[
                   { key: "key", label: "Credential" }, { key: "v", label: "Details", render: (r) => displayValue(r.v) }]} />

@@ -229,11 +229,23 @@ def v_origin_set(value: Any) -> Optional[FrozenSet[str]]:
 
 AI_PROVIDERS = ("anthropic", "openai", "ollama")
 MODEL_ALLOWLIST: Dict[str, Tuple[str, ...]] = {
-    "anthropic": ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-sonnet-4-6", "claude-opus-4-5", "claude-opus-4-8"),
+    # claude-sonnet-4-5 removed 2026-11-20: deprecated, retires 2026-11-30 (stored selections fall back to the default)
+    "anthropic": ("claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-5", "claude-opus-4-8",
+                  # Stage 0 (2026-11-20): current Claude models
+                  "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"),
     "openai": ("gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5-mini", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "o3", "o4-mini"),
     "ollama": (),   # any locally installed model; Ollama itself is platform-allowlisted (spec 010)
 }
 DEFAULT_MODEL = {"anthropic": "claude-sonnet-4-6", "openai": "gpt-4o", "ollama": "llama3.1"}
+PROVIDER_LABELS = {"anthropic": "Anthropic (Claude)", "openai": "OpenAI", "ollama": "Ollama (self-hosted)"}
+MODEL_LABELS = {
+    "claude-haiku-4-5": "Claude Haiku 4.5",
+    "claude-sonnet-4-6": "Claude Sonnet 4.6", "claude-opus-4-5": "Claude Opus 4.5", "claude-opus-4-8": "Claude Opus 4.8",
+    "claude-haiku-5-5": "Claude Haiku 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-opus-5-5": "Claude Opus 5.5",
+    "claude-fable-5-2": "Claude Fable 5.2",
+    "gpt-4o": "GPT-4o", "gpt-4.1": "GPT-4.1", "gpt-4.1-mini": "GPT-4.1 mini", "gpt-5": "GPT-5", "gpt-5-mini": "GPT-5 mini",
+    "gpt-5.4": "GPT-5.4", "gpt-5.4-mini": "GPT-5.4 mini", "gpt-5.5": "GPT-5.5", "o3": "o3", "o4-mini": "o4-mini",
+}
 CHANNELS = ("discord", "telegram", "webchat")
 INTEGRATIONS = ("zendesk", "api")
 
@@ -417,13 +429,16 @@ class Property:
 
 PROPERTIES: Dict[str, Property] = {p.name: p for p in (
     # AI provider
+    # Stage 0 (owner requirement 2026-11-20): Bot editors may select the provider, model and a
+    # credential they are permitted to use (credential *use* already needs Editor, X-USE);
+    # Enterprise policy (ai.allowed_providers / ai.allowed_models) bounds the choice.
     Property("ai.provider", "anthropic", frozenset({E, O, B}), v_choice(*AI_PROVIDERS),
-             constraints=(_c_in_set("ai.allowed_providers"),), min_role="admin"),
+             constraints=(_c_in_set("ai.allowed_providers"),), min_role="editor"),
     Property("ai.model", None, frozenset({E, O, B}), _set_or_none(v_model),
-             constraints=(_c_in_set("ai.allowed_models"),), min_role="admin",
+             constraints=(_c_in_set("ai.allowed_models"),), min_role="editor",
              description="None = provider default; must belong to the effective provider"),
     Property("ai.credential_id", None, frozenset({E, O, B}), v_credential_ref,
-             security=SecurityClass.CREDENTIAL_REF, min_role="admin"),
+             security=SecurityClass.CREDENTIAL_REF, min_role="editor"),
     # Behaviour
     Property("behaviour.persona", "You are a helpful, accurate assistant.", frozenset({B, I}), v_text(4000)),
     Property("behaviour.instructions", "", frozenset({B, I}), v_text(8000)),

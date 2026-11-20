@@ -153,7 +153,10 @@ class Pipeline:
             plan = plan_for(eff)
             authorised: frozenset = frozenset()
             retrieval: Optional[RetrievalResult] = None
-            if plan.mode is not KnowledgeMode.GENERAL:
+            # Stage 0 (G1): GENERAL also retrieves when approved sources are selected; the
+            # evidence is optional reference context there (see gate_before_generation).
+            general = plan.mode is KnowledgeMode.GENERAL
+            if not general or plan.approved_sources:
                 authorised = authorised_sources(plan, chain, await self.catalog.sources(chain.enterprise_id),
                                                 message.requester)
                 if self.retriever is None:
@@ -225,7 +228,8 @@ class Pipeline:
                 instructions=(eff.values["behaviour.instructions"] + ("\n\n" + api_context if api_context else "")).strip(),
                 tone_instructions=eff.values["behaviour.tone_instructions"], language=eff.values["behaviour.language"],
                 user_text=message.text, knowledge_mode=plan.mode.value,
-                evidence=gate.evidence if gate.decision is Decision.GROUNDED else (),
+                evidence=gate.evidence if gate.decision is Decision.GROUNDED or
+                (plan.mode is KnowledgeMode.GENERAL and gate.decision is Decision.GENERAL) else (),
                 structured_claims_required=plan.strict or gate.decision is Decision.GROUNDED,
                 history=tuple(message.history[-20:]))
             if message.format_hint and not request.structured_claims_required:
@@ -277,6 +281,7 @@ class Pipeline:
                     from core.knowledge import AnswerVerdict
                     verdict = AnswerVerdict(False, reason=RefusalReason.KNOWLEDGE_UNAVAILABLE)
             usage = {"delivered": verdict.deliver, "mode": plan.mode.value, "provider": provider_name,
+                     "model": str(eff.values.get("ai.model") or ""),
                      **({"integration_id": integ_id} if integ_id else {}),
                      "input_tokens": int(result.input_tokens or 0), "output_tokens": int(result.output_tokens or 0)}
             skip = message.passive and (not verdict.deliver or

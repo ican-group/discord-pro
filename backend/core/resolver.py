@@ -465,13 +465,29 @@ def apply_override_patch(chain: Chain, patch: Mapping[str, Any], **kw) -> Dict[s
     if not isinstance(patch, Mapping) or not patch:
         raise ConfigError("nothing to change")
     current = dict(chain.target.overrides or {})
-    for key, value in patch.items():
+    for key in patch:
         reg.get_property(key)
+    # Stage 0: dependent AI keys are validated in order, each against the overrides
+    # already accepted in this patch (a provider switch and its new model/credential
+    # are one change, not three that each fail against the old provider).
+    first = [k for k in ("ai.provider", "ai.model", "ai.credential_id") if k in patch]
+    for key in first + [k for k in patch if k not in first]:
+        value = patch[key]
         if value is None:
             current.pop(key, None)
         else:
             current[key] = _storable(validate_override(chain, key, value, **kw))
+        if key in first:
+            chain = _with_target_overrides(chain, current)
     return current
+
+
+def _with_target_overrides(chain: Chain, overrides: Mapping[str, Any]) -> Chain:
+    from dataclasses import replace
+    target = replace(chain.target, overrides=dict(overrides))
+    field = {Level.ENTERPRISE: "enterprise", Level.ORGANISATION: "organisation", Level.BOT: "bot",
+             Level.BOT_INSTANCE: "instance"}[target.level]
+    return replace(chain, **{field: target})
 
 
 def validate_policy_write(chain: Chain, key: str, value: Any, *,

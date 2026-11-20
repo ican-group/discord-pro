@@ -10,7 +10,7 @@ import React, { useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Breadcrumbs, PageTitle, Tabs } from "../components/Shell";
-import { ConfirmButton, DataTable, ErrorBox, KeyValues, Loading, Notice, Section, StateBadge, TextField } from "../components/common";
+import { CheckField, ConfirmButton, DataTable, ErrorBox, KeyValues, Loading, Notice, Section, SelectField, StateBadge, TextField } from "../components/common";
 import { AuditList, WorkersPanel } from "./Ops";
 import { useApi, useSession } from "../session";
 import { fmtDate, useAction, useLoad } from "../util";
@@ -128,6 +128,82 @@ function UsersTab({ api }) {
   );
 }
 
+/** Stage 0: platform-owned AI keys, granted to selected Enterprises (or all). Write-only secrets. */
+function GrantPicker({ enterprises, all, ids, onAll, onIds }) {
+  return (
+    <fieldset className="mt-2">
+      <legend className="text-xs text-slate-300">Enterprises that may use this key</legend>
+      <CheckField label="All Enterprises" checked={all} onChange={onAll} />
+      {!all ? enterprises.map((e) => (
+        <CheckField key={e.id} label={e.name} checked={ids.includes(e.id)}
+          onChange={(v) => onIds(v ? [...ids, e.id] : ids.filter((x) => x !== e.id))} />
+      )) : null}
+    </fieldset>
+  );
+}
+
+function PlatformAiCredentials({ api }) {
+  const list = useLoad(() => api.platformAiCredentials(), [api]);
+  const ents = useLoad(() => api.enterprises(), [api]);
+  const { busy, error, notice, run } = useAction();
+  const [provider, setProvider] = useState("anthropic");
+  const [name, setName] = useState("");
+  const [secret, setSecret] = useState("");
+  const [all, setAll] = useState(false);
+  const [ids, setIds] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const enterprises = (ents.data && ents.data.enterprises) || [];
+  const create = (e) => {
+    e.preventDefault();
+    run(async () => {
+      await api.createPlatformAiCredential({ provider, name: name.trim(), secret: secret.trim(), all_enterprises: all, enterprise_ids: all ? [] : ids });
+      setSecret(""); setName(""); setIds([]); setAll(false); await list.reload();
+    }, "Platform AI key saved. The key is encrypted and cannot be displayed again.");
+    setSecret("");
+  };
+  return (
+    <Section title="Platform AI keys" description="AI provider keys owned by the platform. Enterprises you grant can select them for their bots by name; they never see the key.">
+      <ErrorBox>{error}</ErrorBox>
+      <Notice tone="ok">{notice}</Notice>
+      {list.loading ? <Loading /> : <ErrorBox error={list.error} />}
+      <DataTable caption="Platform AI keys" rows={(list.data && list.data.credentials) || []} empty="No platform AI keys." columns={[
+        { key: "name", label: "Name" },
+        { key: "provider", label: "Provider" },
+        { key: "fingerprint", label: "Fingerprint", render: (c) => <code className="text-xs">{c.fingerprint}</code> },
+        { key: "status", label: "Status", render: (c) => <StateBadge state={c.status} /> },
+        { key: "grants", label: "Granted to", render: (c) => (c.all_enterprises ? "All Enterprises" : (c.enterprises.map((e) => e.name).join(", ") || "Nobody yet")) },
+        { key: "x", label: "", render: (c) => (
+          <span className="flex flex-wrap gap-1">
+            {c.status === "active" ? <Button size="sm" variant="ghost" type="button" onClick={() => run(async () => {
+              const r = await api.testPlatformAiCredential(c.id);
+              return r.ok ? "Works: the provider accepted this key." : `Not accepted (${r.category || "error"}).`; }, (m) => m)}>Test</Button> : null}
+            {c.status === "active" ? <Button size="sm" variant="outline" type="button" onClick={() => setEditing({ id: c.id, all: c.all_enterprises, ids: c.enterprises.map((e) => e.id) })}>Change access</Button> : null}
+            {c.status === "active" ? <ConfirmButton confirmLabel="Revoke" onConfirm={() => run(async () => { await api.revokePlatformAiCredential(c.id); await list.reload(); }, "Key revoked.")}>Revoke</ConfirmButton>
+              : <ConfirmButton confirmLabel="Delete" onConfirm={() => run(async () => { await api.deletePlatformAiCredential(c.id); await list.reload(); }, "Key deleted.")}>Delete</ConfirmButton>}
+          </span>) },
+      ]} />
+      {editing ? (
+        <form aria-label="Change access" className="max-w-md mt-3" onSubmit={(e) => { e.preventDefault(); run(async () => {
+          await api.patchPlatformAiCredential(editing.id, { all_enterprises: editing.all, enterprise_ids: editing.all ? [] : editing.ids });
+          setEditing(null); await list.reload(); }, "Access updated."); }}>
+          <GrantPicker enterprises={enterprises} all={editing.all} ids={editing.ids}
+            onAll={(v) => setEditing({ ...editing, all: v })} onIds={(v) => setEditing({ ...editing, ids: v })} />
+          <div className="flex gap-2"><Button size="sm" type="submit" disabled={busy}>Save access</Button>
+            <Button size="sm" variant="ghost" type="button" onClick={() => setEditing(null)}>Cancel</Button></div>
+        </form>
+      ) : null}
+      <form aria-label="Add platform AI key" className="max-w-md mt-4" autoComplete="off" onSubmit={create}>
+        <h3 className="text-sm font-semibold mb-2">Add a platform AI key</h3>
+        <SelectField label="Provider" value={provider} onChange={setProvider} options={[["anthropic", "Anthropic (Claude)"], ["openai", "OpenAI"]]} />
+        <TextField label="Name" value={name} onChange={setName} required maxLength={100} />
+        <TextField label="API key" type="password" autoComplete="new-password" value={secret} onChange={setSecret} required hint="Write-only. Stored encrypted." />
+        <GrantPicker enterprises={enterprises} all={all} ids={ids} onAll={setAll} onIds={setIds} />
+        <Button size="sm" type="submit" disabled={busy || !name.trim() || !secret.trim()}>Save platform key</Button>
+      </form>
+    </Section>
+  );
+}
+
 export function PlatformPage() {
   const api = useApi();
   return (
@@ -135,7 +211,7 @@ export function PlatformPage() {
       <PageTitle kind="Platform" sub="Platform superadmin">Platform administration</PageTitle>
       <Tabs tabs={[
         ["ent", "Enterprises", () => <EnterprisesTab api={api} />],
-        ["cred", "Platform credentials", () => <PlatformCredentialsTab api={api} />],
+        ["cred", "Platform credentials", () => <><PlatformAiCredentials api={api} /><PlatformCredentialsTab api={api} /></>],
         ["ops", "Operations", () => <WorkersPanel api={api} />],
         ["audit", "Audit", () => <AuditList api={api} />],
         ["users", "Users", () => <UsersTab api={api} />],

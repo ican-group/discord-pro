@@ -233,12 +233,20 @@ class Credential:
     secret_enc: str = field(default="", repr=False)              # never shown, never logged
     # X6: optional usage scope inside the owner's subtree: ((level, id), ...). Empty = whole owner subtree.
     usable_by: Tuple[Tuple[str, str], ...] = ()
+    # Stage 0 (2026-11-20): a platform-owned AI credential granted to this Enterprise by a
+    # superadmin. Loaded only for granted Enterprises (``enterprise_credentials``); never
+    # manageable through tenant routes; ``enterprise_id`` is the referencing Enterprise.
+    platform: bool = False
 
     @property
     def owner_level(self) -> Level:
         return Level.ORGANISATION if self.organisation_id else Level.ENTERPRISE
 
     def public_view(self) -> Dict[str, object]:
+        if self.platform:
+            return {"id": self.id, "provider": self.provider.value, "name": self.name, "owner": "platform",
+                    "enterprise_id": None, "organisation_id": None, "fingerprint": self.fingerprint,
+                    "status": self.status.value, "rotated_at": self.rotated_at, "metadata": {}, "usable_by": []}
         return {"id": self.id, "provider": self.provider.value, "name": self.name,
                 "owner": self.owner_level.value, "enterprise_id": self.enterprise_id,
                 "organisation_id": self.organisation_id, "fingerprint": self.fingerprint,
@@ -299,6 +307,8 @@ def check_use(cred: Optional[Credential], *, referencing_chain: Chain, slot: str
         org = referencing_chain.organisation
         if org is None or org.id != cred.organisation_id:
             raise denied
+    elif cred.platform:
+        pass                                             # granted to this Enterprise by a superadmin (loader)
     elif policy.get("credentials.allow_enterprise_credentials") is False and \
             referencing_chain.target.level not in (Level.ENTERPRISE,):
         raise denied
@@ -342,6 +352,8 @@ def check_manage_platform(actor: Actor) -> None:
 
 COLLECTION = "credentials"
 PLATFORM_COLLECTION = "platform_credentials"
+PLATFORM_AI_COLLECTION = "platform_ai_credentials"     # Stage 0: superadmin-owned AI keys, granted per Enterprise
+AI_PROVIDERS = (Provider.ANTHROPIC, Provider.OPENAI)
 import re as _re
 _TELEGRAM_TOKEN = _re.compile(r"([1-9][0-9]{2,19}):[A-Za-z0-9_-]{20,128}")
 
@@ -412,14 +424,36 @@ async def load_credential(store, credential_id) -> "Optional[Tuple[Credential, i
     return (credential_from_doc(doc), int(doc.get("version", 0))) if doc else None
 
 
+def platform_ai_granted(doc: Dict[str, object], enterprise_id: str) -> bool:
+    grants = doc.get("enterprise_ids") or []
+    return bool(doc.get("all_enterprises")) or (isinstance(grants, list) and enterprise_id in grants)
+
+
+def platform_ai_from_doc(doc: Dict[str, object], enterprise_id: str) -> Credential:
+    """A granted platform AI credential, seen from one Enterprise (same Credential type,
+    so ``check_use`` and the runtime need no second code path)."""
+    return Credential(id=doc["id"], enterprise_id=enterprise_id, organisation_id=None,
+                      provider=Provider(doc["provider"]), name=doc.get("name", ""),
+                      fingerprint=doc.get("fingerprint", ""), status=CredentialStatus(doc.get("status", "revoked")),
+                      created_by=doc.get("created_by", ""), created_at=doc.get("created_at", ""),
+                      rotated_at=doc.get("rotated_at"), secret_enc=doc.get("secret_enc", ""), platform=True)
+
+
 async def enterprise_credentials(store, enterprise_id: str) -> Dict[str, Credential]:
-    """All credentials of one Enterprise (the resolver filters by scope)."""
+    """All credentials one Enterprise may reference: its own and its Organisations'
+    (the resolver filters by scope), plus platform AI credentials granted to it."""
     docs = await store.find(COLLECTION, {"enterprise_id": enterprise_id})
-    return {d["id"]: credential_from_doc(d) for d in docs if d.get("enterprise_id") == enterprise_id}
+    out = {d["id"]: credential_from_doc(d) for d in docs if d.get("enterprise_id") == enterprise_id}
+    for d in await store.find(PLATFORM_AI_COLLECTION, {}):
+        if d.get("provider") in {p.value for p in AI_PROVIDERS} and platform_ai_granted(d, enterprise_id) \
+                and d["id"] not in out:
+            out[d["id"]] = platform_ai_from_doc(d, enterprise_id)
+    return out
 
 
 __all__ = ["CredentialError", "Provider", "PlatformCredentialKind", "CredentialStatus", "SLOT_PROVIDERS",
            "SecretBox", "KeyRing", "KeyRingError", "CIPHERTEXT_PREFIX", "DEFAULT_KEY_ID", "fingerprint", "Credential", "new_credential", "replace_secret", "revoke",
            "check_use", "check_reference_permission", "check_manage", "check_manage_platform", "Membership",
-           "COLLECTION", "PLATFORM_COLLECTION", "telegram_bot_id", "credential_to_doc", "credential_from_doc",
+           "COLLECTION", "PLATFORM_COLLECTION", "PLATFORM_AI_COLLECTION", "AI_PROVIDERS", "platform_ai_granted",
+           "platform_ai_from_doc", "telegram_bot_id", "credential_to_doc", "credential_from_doc",
            "load_credential", "enterprise_credentials", "normalise_usable_by", "USABLE_BY_MAX"]

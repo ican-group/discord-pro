@@ -101,6 +101,8 @@ export function defaultHandlers() {
     "GET /integrations/{integration_id}/usage": () => ({ status: 200, body: body("usage_integration") }),
     "GET /platform/users": () => ({ status: 200, body: body("platform_users") }),
     "GET /{scope_type}/{scope_id}/member-candidates": () => ({ status: 200, body: body("member_candidates") }),
+    "GET /{type_}/{object_id}/ai": () => ({ status: 200, body: body("ai_settings_bot") }),
+    "GET /platform/ai-credentials": () => ({ status: 200, body: body("platform_ai_credentials") }),
   };
 }
 

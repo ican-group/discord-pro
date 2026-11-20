@@ -514,6 +514,39 @@ execution during conversations (R3). This **supersedes the 6C-B deferral of B-AP
   untrusted data and never approved knowledge.
 - Deployment and pushes still need explicit approval each time.
 
+## Stage 0 — customer AI keys are a core feature (owner requirement 2026-11-20)
+
+The owner confirmed that customer-provided AI API keys, several providers and several saved keys per provider are
+essential, and decided parity-audit item **G1**. Implemented in the existing credential architecture (no second
+credential system):
+
+- **Selection by name.** `GET/PUT /{enterprises|organisations|bots}/{id}/ai` returns the allowed providers and models
+  (platform + Enterprise policy), the credentials usable at that object (`check_use`) and the current selection; the
+  PUT validates provider, model and key together (`resolver.apply_override_patch` now applies `ai.provider`,
+  `ai.model`, `ai.credential_id` in order). Users never type internal ids. API reference: `api-ai-settings.md`.
+- **Editors select.** `ai.provider`, `ai.model` and `ai.credential_id` need Editor (was Admin) — credential *use*
+  already needed Editor; Enterprise policies `ai.allowed_providers` / `ai.allowed_models` bound the choice. Managing
+  keys still needs Admin on the owning Enterprise/Organisation.
+- **Connection test** `POST …/ai/test`: one tiny real generation (≤ 32 output tokens), 20/user/hour, usage event
+  `ai_test`, audit `ai.test`, sanitised categories only.
+- **Platform AI keys** (`platform_ai_credentials`, superadmin-only routes `/platform/ai-credentials`), granted to
+  selected or all Enterprises. Loaded by `enterprise_credentials` only for granted Enterprises as ordinary
+  `Credential` objects (`platform=True`), so `check_use`, the resolver and the runtime need no second path; tenants
+  can select but never read, rotate or revoke them. (Spec §14 removed the *Emergent* platform key; this is a
+  superadmin-controlled replacement, approved by the owner.)
+- **Models.** Current Claude models added to the allowlist (`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`,
+  `claude-fable-5-2`), verified as Active against the Claude API model reference (2026-11-20); `claude-sonnet-4-5` removed
+  (deprecated, retires 2026-11-30; stored selections fall back to the provider default); defaults unchanged
+  (`claude-sonnet-4-6`, `gpt-4o`). These models think by default and `max_tokens` caps thinking plus answer, so the
+  adapter sends Haiku 5.5 `thinking: disabled`, Sonnet 5.5 `thinking: between_tools`, and Opus 5.5 / Fable 5.2 (thinking
+  cannot be disabled) `output_config.effort: low` with +2048 tokens headroom; OpenAI reasoning models (GPT-5 family,
+  o3, o4-mini) get the same headroom. Real calls remain to be confirmed in the Anthropic validation.
+- **G1 — GENERAL mode uses approved, selected knowledge as optional reference context.** Retrieval runs in GENERAL when
+  the object has approved sources selected (Enterprise approval ∩ selection, unchanged); the evidence is passed as
+  untrusted reference material, the answer is a normal general answer (no claim validation, no refusal, no
+  citations), conflicting evidence is not offered. KNOWLEDGE_PREFERRED and STRICT_KNOWLEDGE_ONLY are unchanged
+  (strict never falls back).
+
 ## L-1 — Enterprise creation at launch (approved 2026-11-18, resolves X10)
 
 - **Approved outcome:** for the initial BitBotPro release, **only Platform

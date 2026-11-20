@@ -108,7 +108,9 @@ class RoleTests(Base):
         self.assertFalse(eff.permissions["manage_members"])
         self.assertTrue(eff.overridable["behaviour.persona"])
         self.assertFalse(eff.overridable["knowledge.mode"])            # admin-level setting
-        self.assertFalse(eff.overridable["ai.provider"])
+        # Stage 0 (2026-11-20): editors select the AI provider/model/credential (bounded by policy)
+        self.assertTrue(eff.overridable["ai.provider"])
+        self.assertTrue(eff.overridable["ai.credential_id"])
         eff = resolve(self.chain("bot"), actor=self.bob, memberships=self.ms)
         self.assertTrue(eff.overridable["knowledge.mode"])
 

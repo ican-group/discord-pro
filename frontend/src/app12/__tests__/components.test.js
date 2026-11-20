@@ -22,7 +22,8 @@ describe("ConfigPanel", () => {
   test("shows provenance, own overrides, policy locks", () => {
     render(<ConfigPanel view={view()} targetId={IDS.bot} canEdit onPatch={jest.fn()} names={{ [IDS.organisation]: "Org A" }} />);
     expect(screen.getByText("Inherited from Organisation Org A")).toBeInTheDocument();
-    expect(screen.getAllByText("Set here")).toHaveLength(1);
+    const own = Object.values(view().sources).filter((src) => src.kind === "override" && src.object_id === IDS.bot);
+    expect(screen.getAllByText("Set here")).toHaveLength(own.length);
     expect(screen.getAllByText("Platform default").length).toBeGreaterThan(5);
     expect(screen.getByText(/Locked: set by a parent policy/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Override ai.model" })).toBeNull();

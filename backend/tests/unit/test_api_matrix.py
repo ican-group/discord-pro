@@ -210,6 +210,31 @@ async def _platform_cred(w, who):
                                                                                 "metadata": {"client_id": "bitbotpro"}})
 
 
+def _ai_mock(w):
+    import httpx
+    from runtime.providers import build_providers
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "OK"}],
+                                          "usage": {"input_tokens": 1, "output_tokens": 1}})
+    w.S.providers = build_providers(transport=httpx.MockTransport(handler))     # never a live provider
+
+
+async def _ai_test(w, who):
+    _ai_mock(w)
+
+
+async def _platform_ai(w, who):
+    # Stage 0: one superadmin-owned AI key granted to Enterprise A
+    _ai_mock(w)
+    r = await w.call("POST", "/platform/ai-credentials", "root",
+                     {"provider": "anthropic", "name": "Shared", "secret": "not-a-real-platform-key-" + "p" * 20,
+                      "enterprise_ids": [w.eA.id]})
+    w.pai = r.json()["id"]
+
+
 def cases():
     L = "{type_:objtype}"
     AI = "/api-integrations/{integration_id}"
@@ -448,6 +473,23 @@ def cases():
              {"parameters": {}}, prepare=_api_int),
         Case("GET", AI + "/activity", "/api-integrations/{AI}/activity", "viewer", prepare=_api_int),
         Case("GET", AI + "/stats", "/api-integrations/{AI}/stats", "viewer", prepare=_api_int),
+        # Stage 0: AI provider / model / credential selection and platform AI keys
+        Case("GET", "/{type_:scopetype}/{object_id}/ai", "/bots/{B}/ai", "viewer"),
+        Case("PUT", "/{type_:scopetype}/{object_id}/ai", "/bots/{B}/ai", "editor",
+             {"provider": "anthropic", "model": "claude-haiku-4-5", "credential_id": "{CAI}"}),
+        Case("POST", "/{type_:scopetype}/{object_id}/ai/test", "/bots/{B}/ai/test", "editor",
+             {"credential_id": "{CAI}"}, prepare=_ai_test),
+        Case("GET", "/platform/ai-credentials", "/platform/ai-credentials", "superadmin"),
+        Case("POST", "/platform/ai-credentials", "/platform/ai-credentials", "superadmin",
+             {"provider": "openai", "name": "Shared OpenAI", "secret": "not-a-real-openai-key-0123456789"}),
+        Case("PATCH", "/platform/ai-credentials/{cred_id}", "/platform/ai-credentials/{PAI}", "superadmin",
+             {"name": "Renamed"}, prepare=_platform_ai),
+        Case("POST", "/platform/ai-credentials/{cred_id}/revoke", "/platform/ai-credentials/{PAI}/revoke",
+             "superadmin", prepare=_platform_ai),
+        Case("DELETE", "/platform/ai-credentials/{cred_id}", "/platform/ai-credentials/{PAI}", "superadmin",
+             prepare=_platform_ai),
+        Case("POST", "/platform/ai-credentials/{cred_id}/test", "/platform/ai-credentials/{PAI}/test", "superadmin",
+             prepare=_platform_ai),
     ]
     return out
 
@@ -489,7 +531,7 @@ def _fill(template, w):
            "INV": getattr(w, "inv_id", "x"), "T": w.iA_tg.id, "D": w.iA_dc.id, "CONV": getattr(w, "conv_id", "x"), "SHARE": getattr(w, "share_id", "x"),
            "DLV": getattr(w, "delivery_id", "x"), "ZI": getattr(w, "integ_id", "x"),
            "SUG": getattr(w, "sugg_id", "x"), "ZC": getattr(w, "zcred", "x"), "EV": getattr(w, "event_id", "x"),
-           "KS": getattr(w, "ksrc", "x"), "KD": getattr(w, "kdoc", "x"), "AI": getattr(w, "api_int", "x"), "AE": getattr(w, "api_ep", "x"), "MSG": getattr(w, "msg_id", "x"), **{k: u.id for k, u in w.users.items()}}
+           "KS": getattr(w, "ksrc", "x"), "KD": getattr(w, "kdoc", "x"), "AI": getattr(w, "api_int", "x"), "AE": getattr(w, "api_ep", "x"), "CAI": w.cA_ai.id, "PAI": getattr(w, "pai", "x"), "MSG": getattr(w, "msg_id", "x"), **{k: u.id for k, u in w.users.items()}}
     if isinstance(template, str):
         for k, v in ids.items():
             template = template.replace("{" + k + "}", v)

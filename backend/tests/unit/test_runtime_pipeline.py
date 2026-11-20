@@ -307,6 +307,64 @@ class StrictKnowledgeBoundaryTests(unittest.TestCase):
         self.assertNotIn("upstream", out.text)
 
 
+class GeneralModeKnowledgeContextTests(unittest.TestCase):
+    """Stage 0 (owner decision G1): GENERAL uses approved, *selected* knowledge as optional
+    reference context; it never refuses for lack of evidence and never validates claims."""
+
+    def general(self, w, allowed=True, selected=True):
+        if allowed:
+            w.set_policy(Level.ENTERPRISE, w.e.id, {"knowledge.allowed_sources": [w.src.id]})
+        if selected:
+            w.set_overrides(Level.BOT, w.b.id, {"knowledge.approved_sources": [w.src.id]})
+
+    def test_selected_knowledge_is_offered_as_reference_context(self):
+        from runtime.providers import system_prompt
+        w = World()
+        self.general(w)
+        ev = w.ev()
+        retr = FakeRetriever(RetrievalResult(RetrievalStatus.OK, (ev,)))
+        out = run(w.pipeline(retriever=retr).handle(w.web()))
+        self.assertEqual((out.kind, out.text, out.citations), ("answer", "General answer.", ()))
+        req = w.provider.requests[0]
+        self.assertFalse(req.structured_claims_required)
+        self.assertEqual([e.evidence_id for e in req.evidence], [ev.evidence_id])
+        prompt = system_prompt(req)
+        self.assertIn("Reference material", prompt)
+        self.assertIn("Refunds take 14 days.", prompt)
+        self.assertNotIn('{"claims"', prompt)
+        self.assertEqual(retr.calls, [{w.src.id}])
+
+    def test_unselected_or_unapproved_sources_are_not_used(self):
+        for allowed, selected in ((True, False), (False, True), (False, False)):
+            w = World()
+            self.general(w, allowed=allowed, selected=selected)
+            retr = FakeRetriever(RetrievalResult(RetrievalStatus.OK, (w.ev(),)))
+            out = run(w.pipeline(retriever=retr).handle(w.web()))
+            self.assertEqual(out.kind, "answer")
+            self.assertEqual(w.provider.requests[0].evidence, ())
+            if not selected:
+                self.assertEqual(retr.calls, [])                                 # nothing selected: no retrieval
+
+    def test_knowledge_outage_or_conflict_still_gives_a_general_answer(self):
+        w = World()
+        self.general(w)
+        out = run(w.pipeline(retriever=FakeRetriever(error=RuntimeError("down"))).handle(w.web()))
+        self.assertEqual((out.kind, w.provider.requests[0].evidence), ("answer", ()))
+        w = World()
+        self.general(w)
+        ev = w.ev()
+        retr = FakeRetriever(RetrievalResult(RetrievalStatus.OK, (ev,), conflicting=frozenset({ev.evidence_id})))
+        out = run(w.pipeline(retriever=retr).handle(w.web()))
+        self.assertEqual((out.kind, w.provider.requests[0].evidence), ("answer", ()))
+
+    def test_foreign_tenant_evidence_never_reaches_the_prompt(self):
+        w = World()
+        self.general(w)
+        retr = FakeRetriever(RetrievalResult(RetrievalStatus.OK, (w.ev(source=w.foreign_src),)))
+        run(w.pipeline(retriever=retr).handle(w.web()))
+        self.assertEqual(w.provider.requests[0].evidence, ())
+
+
 class LedgerIdentityTests(unittest.TestCase):
     def test_only_definitely_unbilled_keys_can_be_reserved_again(self):
         from runtime.usage import AlreadyReserved, StoreUsageTracker

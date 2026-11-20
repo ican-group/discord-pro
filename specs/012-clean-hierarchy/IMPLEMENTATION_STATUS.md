@@ -25,7 +25,8 @@ is deployed, mounted or committed.
 | 6C | Private beta preparation: B-ACCT account creation by invitation, decisions B-API/changelog/new database, zlib fix, gateway Identify-spacing fix, real-service validation and beta activation plans | **Accepted** (2026-11-19, beta1 tree `4219354d1469`) |
 | 6D | Private beta activation preflight (manifests, isolation, DNS/Caddy, beta database, e-mail, model allowlist) | **Preflight PASS (conditional), awaiting activation approval** (2026-11-19): `beta-preflight-6d.md`, `beta-activation-checklist.md`, `deploy/proposed/beta/`. Nothing started on BBP1; no code change |
 | 7 | Production cutover (direct replacement at bitbotpro.io / api.bitbotpro.io; new database `bitbotpro_v12`, decision 6C-D) | **API CUT OVER 2026-11-19 11:01 UTC** — release `aa55976b` (tag `bitbotpro-spec012-r1`), image `spec012-beta1-4219354d1469` serving api.bitbotpro.io; Spec 012 frontend live on Emergent; legacy container `bitbotpro-api` stopped (kept); config fix: `ALLOWED_HOSTS` += `10.50.0.20` (Caddy health checks). **Real-service validation (V1–V5) pending; no testers invited.** Runbook: `phase7-cutover-runbook.md` |
-| R | Restoration of missing features (approved 2026-11-19, prototype-first): R1 website URL import, R2 bounded same-site crawl, R3 API integrations | **R1, R2 and R3 implemented locally** (not committed, not deployed). See "Restoration R1–R3" below |
+| R | Restoration of missing features (approved 2026-11-19, prototype-first): R1 website URL import, R2 bounded same-site crawl, R3 API integrations | **Deployed to the API 2026-11-20** (commit `02bbd40`, image `spec012-r3-8163947a3153`); frontend via Emergent pending. See "Restoration R1–R3" below |
+| S0 | Feature-parity Stage 0 (audit 2026-11-20): customer AI keys by name, provider/model selection, connection test, platform AI keys, GENERAL uses selected knowledge (G1) | **Implemented locally 2026-11-20** (not committed, not deployed). See "Stage 0 — AI keys" below; API reference `api-ai-settings.md` |
 
 ## Phase 2 — core foundation
 
@@ -944,6 +945,18 @@ delimited untrusted data block, activity logged. Only GET endpoints are executab
 "API integrations" tab; Credentials offer the `api_integration` provider. Tests: `tests/unit/test_api_integrations_r3.py`
 (11), 16 matrix rows, Jest `apiIntegrations.test.js` (5). The Spec 011 root modules `api_integrations*.py` remain
 (unshipped) only for their SSRF regression tests and can be removed.
+
+## Stage 0 — AI keys, provider and model selection (2026-11-20)
+
+Owner requirement: a normal authorised administrator adds their own AI key, selects provider and model, assigns the key
+to a Bot and gets a real answer without developer help (`DECISIONS.md` "Stage 0"). Backend: `api/ai_settings.py`
+(9 routes: `GET/PUT …/ai`, `POST …/ai/test`, `/platform/ai-credentials` CRUD + revoke + test), `core/credentials.py`
+(platform AI keys through `enterprise_credentials`/`check_use`), `core/resolver.py` (ordered AI keys in one patch),
+`runtime/providers.py` (`probe`), `core/knowledge.py` + `runtime/pipeline.py` (G1). Frontend (minimal): Bot/Organisation/
+Enterprise "AI provider and model" panel (provider, model, named key dropdown, inline "Add a new API key", Test connection,
+clear messages; raw `ai.*` fields hidden from the generic config panel); Platform → "Platform AI keys". Tests:
+`tests/unit/test_api_ai_settings.py` (12), `test_runtime_pipeline.GeneralModeKnowledgeContextTests` (4), 9 matrix rows,
+Jest `aiSettings.test.js` (6). **Real Anthropic validation pending** (owner supplies a temporary key through the UI).
 
 ## Unresolved production release requirements (recorded 2026-11-18)
 

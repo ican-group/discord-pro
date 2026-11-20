@@ -56,6 +56,42 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("You are helpful.", seen["body"]["system"])
         self.assertEqual([m["role"] for m in seen["body"]["messages"]], ["user", "assistant", "user"])
 
+    def test_model_specific_thinking_controls(self):
+        """Stage 0: newer models think by default and max_tokens caps thinking + answer
+        (Claude API model reference): thinking off where the model allows it, otherwise low
+        effort with headroom; older models get exactly the old request."""
+        import httpx
+        bodies = []
+
+        def handler(req):
+            bodies.append(json.loads(req.content))
+            return httpx.Response(200, json={"content": [{"type": "thinking", "thinking": "hmm"},
+                                                         {"type": "text", "text": "OK"}],
+                                             "usage": {"input_tokens": 1, "output_tokens": 1}})
+        p = self.provider("AnthropicProvider", handler)
+        for model in ("claude-sonnet-4-6", "claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5",
+                      "claude-opus-5-5", "claude-fable-5-2"):
+            self.assertEqual(self.go(p.generate(request(model=model))).text, "OK")     # thinking blocks ignored
+        old, haiku4, haiku, sonnet, opus, fable = bodies
+        for b in (old, haiku4):
+            self.assertEqual(b["max_tokens"], 1024)
+            self.assertNotIn("thinking", b)
+            self.assertNotIn("output_config", b)
+        self.assertEqual((haiku["thinking"], haiku["max_tokens"]), ({"type": "disabled"}, 1024))
+        self.assertEqual((sonnet["thinking"], sonnet["max_tokens"]), ({"type": "between_tools"}, 1024))
+        for b in (opus, fable):
+            self.assertEqual((b["output_config"], b["max_tokens"]), ({"effort": "low"}, 1024 + 2048))
+            self.assertNotIn("thinking", b)
+        seen = []
+
+        def oai(req):
+            seen.append(json.loads(req.content))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}], "usage": {}})
+        o = self.provider("OpenAIProvider", oai)
+        for model in ("gpt-4o", "gpt-5.4-mini", "o4-mini"):
+            self.go(o.generate(request(provider="openai", model=model)))
+        self.assertEqual([b["max_completion_tokens"] for b in seen], [1024, 1024 + 2048, 1024 + 2048])
+
     def test_openai_request_and_response(self):
         import httpx
         seen = {}

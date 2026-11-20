@@ -111,6 +111,10 @@ export function makeApi(client) {
     revokeCredential: (credential_id) => call("POST /credentials/{credential_id}/revoke", { credential_id }),
     testCredential: (credential_id) => call("POST /credentials/{credential_id}/test", { credential_id }),
     deleteCredential: (credential_id) => call("DELETE /credentials/{credential_id}", { credential_id }),
+    // ── Stage 0: AI provider / model / credential selection ──
+    aiSettings: (type, object_id) => call("GET /{type_}/{object_id}/ai", { type_: T(type), object_id }),
+    putAiSettings: (type, object_id, body) => call("PUT /{type_}/{object_id}/ai", { type_: T(type), object_id }, { body }),
+    testAi: (type, object_id, body) => call("POST /{type_}/{object_id}/ai/test", { type_: T(type), object_id }, { body: body || {} }),
 
     // ── knowledge (C11) ──
     sources: (type, owner_id) => call("GET /{owner_type}/{owner_id}/knowledge/sources", { owner_type: T(type), owner_id }),
@@ -237,6 +241,12 @@ export function makeApi(client) {
     platformCredentials: () => call("GET /platform/credentials", {}),
     putPlatformCredential: (kind, body) => call("PUT /platform/credentials/{kind}", { kind }, { body }),
     revokePlatformCredential: (kind) => call("POST /platform/credentials/{kind}/revoke", { kind }),
+    platformAiCredentials: () => call("GET /platform/ai-credentials", {}),
+    createPlatformAiCredential: (body) => call("POST /platform/ai-credentials", {}, { body }),
+    patchPlatformAiCredential: (cred_id, body) => call("PATCH /platform/ai-credentials/{cred_id}", { cred_id }, { body }),
+    revokePlatformAiCredential: (cred_id) => call("POST /platform/ai-credentials/{cred_id}/revoke", { cred_id }),
+    deletePlatformAiCredential: (cred_id) => call("DELETE /platform/ai-credentials/{cred_id}", { cred_id }),
+    testPlatformAiCredential: (cred_id) => call("POST /platform/ai-credentials/{cred_id}/test", { cred_id }),
     discordApp: (enterprise_id) => call("GET /platform/enterprises/{enterprise_id}/discord-application", { enterprise_id }),
     putDiscordApp: (enterprise_id, body) =>
       call("PUT /platform/enterprises/{enterprise_id}/discord-application", { enterprise_id }, { body }),

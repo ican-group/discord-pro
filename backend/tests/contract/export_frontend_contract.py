@@ -60,6 +60,22 @@ async def samples():
     await w.call("POST", f"/api-integrations/{api_int.get('id')}/test-connection", "owner")
     await w.call("POST", f"/enterprises/{w.eA.id}/invitations", "owner",
                  {"email": "new.person@example.test", "role": "viewer"})
+    # Stage 0: AI selection (one platform key granted to Enterprise A; provider calls go to a mock)
+    import httpx
+    from runtime.providers import build_providers
+
+    def _ai(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "OK"}],
+                                          "usage": {"input_tokens": 14, "output_tokens": 2}})
+    S.providers = build_providers(transport=httpx.MockTransport(_ai))
+    pai = (await w.call("POST", "/platform/ai-credentials", "root",
+                        {"provider": "anthropic", "name": "BitBotPro shared Claude",
+                         "secret": "sample-platform-key-" + "x" * 24, "enterprise_ids": [w.eA.id]})).json()
+    put_ai = await w.call("PUT", f"/bots/{w.bA.id}/ai", "owner",
+                          {"provider": "anthropic", "model": "claude-haiku-4-5", "credential_id": w.cA_ai.id})
+    test_ai = await w.call("POST", f"/bots/{w.bA.id}/ai/test", "owner", {})
     gets = {
         "session": ("/auth/session", "owner"),
         "session_root": ("/auth/session", "root"),
@@ -99,6 +115,9 @@ async def samples():
         "conversations": (f"/instances/{w.iA_web.id}/conversations", "owner"),
         "embed_snippet": (f"/instances/{w.iA_web.id}/embed-snippet", "owner"),
         "deliveries_tg": (f"/instances/{w.iA_tg.id}/deliveries", "owner"),
+        "ai_settings_bot": (f"/bots/{w.bA.id}/ai", "owner"),
+        "ai_settings_enterprise": (f"/enterprises/{w.eA.id}/ai", "owner"),
+        "platform_ai_credentials": ("/platform/ai-credentials", "root"),
     }
     out = {"_ids": {"enterprise": w.eA.id, "organisation": w.oA.id, "bot": w.bA.id, "instance_web": w.iA_web.id,
                     "instance_discord": w.iA_dc.id, "instance_telegram": w.iA_tg.id, "integration": zi.get("id"),
@@ -128,6 +147,10 @@ async def samples():
     for name, (path, who) in more.items():
         r = await w.call("GET", path, who)
         out[name] = {"path": path, "status": r.status_code, "body": r.json()}
+    out["ai_settings_put"] = {"status": put_ai.status_code, "body": put_ai.json()}
+    out["ai_test"] = {"status": test_ai.status_code, "body": test_ai.json()}
+    out["_ids"]["platform_ai_credential"] = pai.get("id")
+    out["_ids"]["credential_ai"] = w.cA_ai.id
     hook = out["zendesk_webhook"]["body"]
     hook["url"] = hook["url"].rsplit("/", 1)[0] + "/<path-secret>"      # synthetic, but never a usable secret
     r = await w.call("POST", f"/instances/{w.iA_dc.id}/channel/discord/share-links", "owner", {})

@@ -94,6 +94,10 @@ EDIT THE ENTERPRISE DISCORD APPLICATION.**
 ### 1.5 Credentials
 - Platform credentials (Zendesk OAuth client) are separate from
   Enterprise/Organisation credentials; tenant users can never manage them.
+  Platform AI keys (Stage 0, `/platform/ai-credentials`) are superadmin-owned and
+  granted per Enterprise; tenants may select them by name but never read or manage them.
+- **Customer AI keys are a core feature** (Stage 0): several providers and several
+  keys per provider, chosen by name via `GET/PUT /{type}/{id}/ai` (never by typing ids).
 - Zendesk is a **Bot Integration** (Enterprise → Organisation → Bot →
   Integration), never a Bot Instance. All Zendesk outbound calls go through the
   kept `outbound_guard`; webhook signatures are mandatory (D-Q10); no ticket

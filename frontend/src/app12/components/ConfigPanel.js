@@ -136,12 +136,12 @@ function Row({ k, value, source, own, editable, lockedReason, targetId, names, o
   );
 }
 
-export default function ConfigPanel({ view, targetId, canEdit, onPatch, names, title = "Configuration" }) {
+export default function ConfigPanel({ view, targetId, canEdit, onPatch, names, title = "Configuration", hideKeys = [] }) {
   const { busy, error, notice, run } = useAction();
   if (!view) return null;
   const { values, sources, overridable, own } = normalise(view, targetId);
   const groups = {};
-  Object.keys(values).sort().forEach((k) => {
+  Object.keys(values).sort().filter((k) => !hideKeys.includes(k)).forEach((k) => {
     const g = k.split(".")[0];
     (groups[g] = groups[g] || []).push(k);
   });
