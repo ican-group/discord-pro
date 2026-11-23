@@ -852,6 +852,15 @@ async def _kb_vector_search(query: str, instance_id: str) -> list[dict]:
     return [dict(r) for r in rows if r["similarity"] >= KB_MIN_SIMILARITY]
 
 
+async def _kb_has_active_entries(instance_id: str) -> bool:
+    async with _paradedb_pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM knowledge_sources_index "
+            "WHERE instance_id = $1 AND is_active = true)",
+            instance_id,
+        )
+
+
 def _kb_fuse(bm25_rows: list[dict], vector_rows: list[dict]) -> list[dict]:
     """Reciprocal rank fusion of the two rankings, with the entry priority boost."""
     fused: dict[str, dict] = {}
@@ -945,7 +954,9 @@ async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
         vector_rows = await _kb_vector_search(query, instance_id)
         if not rows and not vector_rows:
             logger.debug("No BM25 or vector match for query=%r instance=%s", query, instance_id)
-            return ""
+            # No match: tell an empty knowledge base apart from a miss, so an instance
+            # with no active entries refuses instead of offering general knowledge.
+            return "" if await _kb_has_active_entries(instance_id) else "__NO_KB__"
         return _kb_context(_kb_fuse([dict(r) for r in rows], vector_rows), query, instance_id)
     except Exception as e:
         logger.error(f"ParadeDB search error: {e}")
@@ -1416,8 +1427,10 @@ async def start_shared_discord_bot(token: str):
                 bot_config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
                 knowledge = await search_knowledge(user_text, instance_id)
                 if knowledge == "__NO_KB__":
-                    bot_name = bot_config.get("name", "I")
-                    response = f"I don't have any knowledge base configured yet. Please check back later or contact the administrator to set up my knowledge base."
+                    if live_cfg.get("passive_mode", False) and not is_mentioned and not is_dm:
+                        # Passive mode only answers from the knowledge base; with none, stay silent.
+                        return
+                    response = "I don't have any knowledge base configured yet. Please check back later or contact the administrator to set up my knowledge base."
                 else:
                     tone = await get_tone_examples_text(instance_id, bot_config)
                     passive_mode = bool(live_cfg.get("passive_mode", False))
