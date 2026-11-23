@@ -8,7 +8,7 @@ import { colors, fonts, T, onFocus, onBlur } from "../theme";
 export default function BotSettings() {
   const { selectedInstance } = useAuth();
   const instanceId = selectedInstance?.id;
-  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-4-5-20251101" });
+  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-4-5-20251101" });
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -21,7 +21,7 @@ export default function BotSettings() {
   useEffect(() => {
     api.get(`/admin/bot-config`).then(r => {
       if (r.data) {
-        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-4-5-20251101" });
+        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-4-5-20251101" });
         setApiKeySet(r.data.api_key_set || false);
         setApiKeyInput("");
       }
@@ -156,7 +156,17 @@ export default function BotSettings() {
               onChange={e => setConfig(p => ({ ...p, custom_instructions: e.target.value }))}
               placeholder="Always respond in English. Never share pricing without directing to sales..."
               data-testid="bot-instructions-input" onFocus={onFocus} onBlur={onBlur} />
-            <p style={T.hint}>These rules override everything else.</p>
+            <p style={T.hint}>These rules override everything else. They apply to chat replies (web, Discord and API) and to Zendesk suggested replies, but not to Zendesk ticket summaries.</p>
+          </div>
+
+          <div style={{ ...T.card, marginBottom: "20px" }}>
+            <p style={T.sectionTitle}>Zendesk Summary Instructions</p>
+            <p style={T.sectionSub}>Format and rules for AI ticket summaries on the Zendesk page.</p>
+            <textarea style={{ ...T.textarea, minHeight: "100px" }} value={config.zendesk_summary_instructions}
+              onChange={e => setConfig(p => ({ ...p, zendesk_summary_instructions: e.target.value }))}
+              placeholder="Use the sections Overview, Action Taken and Last Update from Customer. Aim for one to three sentences per section..."
+              data-testid="bot-zendesk-summary-instructions-input" onFocus={onFocus} onBlur={onBlur} />
+            <p style={T.hint}>Used only for Zendesk ticket summaries, and never sent to chat replies. Takes precedence over the built-in summary brief on length, structure and content. Leave blank to use the built-in brief.</p>
           </div>
 
           <div style={{ display: "flex", gap: "12px" }}>
