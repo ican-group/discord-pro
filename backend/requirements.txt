@@ -31,3 +31,4 @@ discord.py==2.7.1
 httpx==0.28.1
 PyPDF2==3.0.1
 asyncpg>=0.29.0
+fastembed==0.9.1
