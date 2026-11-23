@@ -10,6 +10,7 @@ import logging
 import asyncio
 import uuid
 import re
+import math
 import jwt
 import bcrypt
 import secrets
@@ -572,6 +573,93 @@ def _sanitize_bm25_query(raw: str) -> str:
     return re.sub(r'[+\-!(){}\[\]^"~*?:\\/]', ' ', raw).strip()
 
 
+# Characters of each knowledge base entry sent to the model.
+_KB_ENTRY_CHARS = 1200
+# Target size of the passages a long entry is split into before choosing the best ones.
+_KB_PASSAGE_CHARS = 400
+_KB_WORD_RE = re.compile(r"[a-z0-9]+")
+_KB_STOPWORDS = frozenset(
+    "the and for are but not you your with this that from have has had was were will can "
+    "how what why when where who which does did doing its into about there their they them "
+    "then than out our use using get got any all some more most also just only very".split()
+)
+
+
+def _kb_terms(text: str) -> set[str]:
+    """Lower-cased query words, without stopwords or a plural "s", for passage scoring."""
+    terms = set()
+    for word in _KB_WORD_RE.findall(text.lower()):
+        if len(word) < 3 or word in _KB_STOPWORDS:
+            continue
+        terms.add(word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") else word)
+    return terms
+
+
+def _kb_passages(content: str) -> list[str]:
+    """Split text into passages of about _KB_PASSAGE_CHARS, on paragraph and sentence breaks."""
+    pieces: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", content):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if len(paragraph) <= _KB_PASSAGE_CHARS:
+            pieces.append(paragraph)
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+            while len(sentence) > _KB_PASSAGE_CHARS:   # no sentence breaks: hard cut
+                pieces.append(sentence[:_KB_PASSAGE_CHARS])
+                sentence = sentence[_KB_PASSAGE_CHARS:]
+            if sentence:
+                pieces.append(sentence)
+    passages: list[str] = []
+    for piece in pieces:   # pack consecutive small pieces back together
+        if passages and len(passages[-1]) + 1 + len(piece) <= _KB_PASSAGE_CHARS:
+            passages[-1] += ("\n" if "\n" in content else " ") + piece
+        else:
+            passages.append(piece)
+    return passages
+
+
+def _kb_excerpt(content: str, query: str, limit: int = _KB_ENTRY_CHARS) -> str:
+    """The parts of an entry most relevant to the query, within `limit` characters.
+
+    Short entries are returned whole. For long entries, passages are scored by the
+    query words they contain (rarer words within the entry count more) and the best
+    ones are returned in document order, so an answer deep in a long article still
+    reaches the model. With no matching words, the opening is returned as before.
+    """
+    if len(content) <= limit:
+        return content
+    terms = _kb_terms(query)
+    passages = _kb_passages(content)
+    words = [set(_kb_terms(p)) for p in passages]
+    df = {t: sum(t in w for w in words) for t in terms}
+    scores = [sum(math.log((len(passages) + 1) / (df[t] + 0.5)) for t in terms if t in w) for w in words]
+    if not terms or max(scores, default=0) <= 0:
+        return content[:limit]
+    chosen, used = [], 0
+    for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)):
+        if scores[i] <= 0:
+            break
+        cost = len(passages[i]) + 5
+        if used + cost > limit:
+            continue
+        chosen.append(i)
+        used += cost
+    if not chosen:   # best passage alone is over the limit
+        best = max(range(len(passages)), key=lambda i: (scores[i], -i))
+        return passages[best][:limit]
+    chosen.sort()
+    parts = []
+    for n, i in enumerate(chosen):
+        if (n == 0 and i > 0) or (n > 0 and i != chosen[n - 1] + 1):
+            parts.append("…")
+        parts.append(passages[i])
+    if chosen[-1] != len(passages) - 1:
+        parts.append("…")
+    return "\n".join(parts)
+
+
 async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
     if not _paradedb_bm25_ready:
         logger.error("search_knowledge: BM25 index not ready, returning empty context")
@@ -645,7 +733,7 @@ async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
                 " [PRIORITY: HIGH]" if pri >= 2
                 else (" [PRIORITY: MEDIUM]" if pri == 1 else "")
             )
-            chunk = f"[{r['title'] or 'Unknown'}]{pri_label}\n{(r['content'] or '')[:1200]}"
+            chunk = f"[{r['title'] or 'Unknown'}]{pri_label}\n{_kb_excerpt(r['content'] or '', query)}"
             if total_chars + len(chunk) > 30000:
                 break
             chunks.append(chunk)
