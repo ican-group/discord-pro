@@ -388,6 +388,9 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_kc_source   ON knowledge_chunks (source_id);
 CREATE INDEX IF NOT EXISTS idx_kc_instance ON knowledge_chunks (instance_id);
+
+-- Fingerprint of the entry fields the parts were built from (see _kb_fingerprint).
+ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS source_fingerprint TEXT;
 """
 
 _PARADEDB_VECTOR_DDL = """
@@ -475,6 +478,21 @@ KB_MAX_TEXT_CHARS = 1_500_000
 KB_CHUNK_CHARS = 900
 KB_CHUNK_OVERLAP = 150
 KB_MAX_CHUNKS = 2000
+# Bump when the splitting rules change, so every entry is rebuilt on the next startup.
+KB_CHUNKER_VERSION = "1"
+
+
+def _kb_fingerprint(source: dict) -> str:
+    """Hash of the inputs the parts are built from. Must match _KB_FINGERPRINT_SQL."""
+    raw = "\x1f".join((KB_CHUNKER_VERSION, source.get("instance_id") or "",
+                       source.get("title") or "", source.get("content") or ""))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# Same hash computed in PostgreSQL ($1 = KB_CHUNKER_VERSION), so the startup check
+# doesn't have to read every entry's text.
+_KB_FINGERPRINT_SQL = ("encode(sha256(convert_to($1 || chr(31) || s.instance_id || chr(31) "
+                       "|| s.title || chr(31) || s.content, 'UTF8')), 'hex')")
 
 
 def _chunk_text(text: str) -> list[str]:
@@ -554,8 +572,9 @@ async def _prepare_source_chunks(source: dict) -> list[tuple]:
     title = source.get("title") or ""
     vectors = await _embed_passages([f"{title}\n\n{text}" for text in parts])
     model = KB_EMBED_MODEL if vectors else None
+    fingerprint = _kb_fingerprint(source)
     return [(f"{source['id']}:{i}", source["id"], source["instance_id"], i, len(parts), title, text,
-             vectors[i - 1] if vectors else None, model) for i, text in enumerate(parts, 1)]
+             vectors[i - 1] if vectors else None, model, fingerprint) for i, text in enumerate(parts, 1)]
 
 
 async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
@@ -565,8 +584,9 @@ async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
         await conn.executemany(
             """
             INSERT INTO knowledge_chunks
-                (id, source_id, instance_id, part, parts, title, content, embedding, embed_model)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
+                (id, source_id, instance_id, part, parts, title, content, embedding, embed_model,
+                 source_fingerprint)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10)
             """,
             rows,
         )
@@ -579,25 +599,42 @@ async def _index_source_chunks(source: dict) -> int:
         return await _write_source_chunks(conn, source["id"], rows)
 
 
-async def backfill_knowledge_chunks() -> None:
-    """Split and embed entries with no parts, or parts not embedded with the current model."""
+async def backfill_knowledge_chunks() -> dict:
+    """Rebuild parts that are missing or stale; runs on startup.
+
+    An entry is rebuilt when it has no parts, when its parts were built from different
+    fields (fingerprint mismatch, e.g. an edit made by a version without parts), or when
+    the embedding model is available and its parts lack embeddings from that model.
+    Without the model, rebuilt parts have no embeddings and BM25 search still works.
+    """
+    result = {"checked": 0, "rebuilt": 0}
     try:
-        if await asyncio.to_thread(_load_embedder) is None:
-            stale_sql = "NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id)"
-        else:
-            stale_sql = ("NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id "
-                         "AND c.embed_model IS NOT DISTINCT FROM $1)")
+        embedder_ready = await asyncio.to_thread(_load_embedder) is not None
         async with _paradedb_pool.acquire() as conn:
+            result["checked"] = await conn.fetchval("SELECT count(*) FROM knowledge_sources_index")
             rows = await conn.fetch(
-                f"SELECT s.id, s.instance_id, s.title, s.content FROM knowledge_sources_index s WHERE {stale_sql}",
-                *([KB_EMBED_MODEL] if "$1" in stale_sql else []),
+                f"""
+                SELECT s.id, s.instance_id, s.title, s.content
+                FROM   knowledge_sources_index s
+                LEFT   JOIN LATERAL (
+                    SELECT count(*) AS n,
+                           bool_and(c.source_fingerprint IS NOT DISTINCT FROM {_KB_FINGERPRINT_SQL}) AS fingerprint_ok,
+                           bool_and(c.embed_model IS NOT DISTINCT FROM $2) AS model_ok
+                    FROM   knowledge_chunks c
+                    WHERE  c.source_id = s.id
+                ) c ON true
+                WHERE  c.n = 0 OR NOT c.fingerprint_ok OR ($3 AND NOT c.model_ok)
+                """,
+                KB_CHUNKER_VERSION, KB_EMBED_MODEL, embedder_ready,
             )
         for row in rows:
             await _index_source_chunks(dict(row))
-        if rows:
-            logger.info(f"Knowledge base: split and indexed {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}")
+        result["rebuilt"] = len(rows)
+        logger.info(f"Knowledge base parts: {result['checked']} entries checked, {result['rebuilt']} rebuilt"
+                    + ("" if embedder_ready else " (embeddings unavailable: BM25 only)"))
     except Exception as e:
         logger.warning(f"Knowledge base part backfill failed: {e}")
+    return result
 
 
 async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
