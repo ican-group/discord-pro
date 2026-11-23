@@ -11,7 +11,14 @@ const outcomes = {
   failed: "Zendesk couldn’t complete the connection. Check the OAuth client settings and try again.",
 };
 
-function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
+const reviewStyles = {
+  needs_summary: { color: "#fecaca", borderColor: "#ef4444", label: "Needs summary" },
+  summary_posted: { color: "#fed7aa", borderColor: "#f97316", label: "Summary posted" },
+  solved: { color: "#bbf7d0", borderColor: "#22c55e", label: "Solved" },
+  unavailable: { color: "#cbd5e1", borderColor: "#64748b", label: "Status unavailable" },
+};
+
+function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPosted, onSavedToKb }) {
   const [history, setHistory] = useState(null);
   const [summary, setSummary] = useState(null);
   const [historyError, setHistoryError] = useState("");
@@ -19,6 +26,11 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
   const [posting, setPosting] = useState(false);
   const [posted, setPosted] = useState(false);
   const [postError, setPostError] = useState("");
+  const [solution, setSolution] = useState("");
+  const [savingSolution, setSavingSolution] = useState(false);
+  const [solutionMessage, setSolutionMessage] = useState("");
+  const [solutionError, setSolutionError] = useState("");
+  const solved = ["solved", "closed"].includes(ticket.status);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -29,7 +41,10 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
       if (controller.signal.aborted) return;
       setHistory(data.comments);
       api.post(`${path}/summary`, null, options).then(({ data: result }) => {
-        if (!controller.signal.aborted) setSummary(result);
+        if (!controller.signal.aborted) {
+          setSummary(result);
+          setSolution(result.solution || "");
+        }
       }).catch((error) => {
         if (!controller.signal.aborted) setSummaryError(
           typeof error.response?.data?.detail === "string" ? error.response.data.detail : "Couldn’t summarize the ticket."
@@ -48,8 +63,11 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
     const options = { headers: { "X-Instance-ID": instanceId } };
     const path = `/zendesk/tickets/${ticket.id}`;
     try {
-      await api.post(`${path}/notes`, { body: summary.summary }, options);
+      await api.post(`${path}/notes`, {
+        body: summary.summary, summary: true, requester_comment_id: summary.requester_comment_id,
+      }, options);
       setPosted(true);
+      onSummaryPosted(ticket.id, solved ? "solved" : "summary_posted");
     } catch (error) {
       const detail = error.response?.data?.detail;
       setPostError(typeof detail === "string" ? detail : "Couldn’t confirm the summary was posted. Check Zendesk before retrying.");
@@ -63,6 +81,24 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
       setHistory(data.comments);
     } catch {
       // Posting succeeded. Keep the conversation visible if refreshing it fails.
+    }
+  }
+
+  async function saveSolution() {
+    setSavingSolution(true);
+    setSolutionMessage("");
+    setSolutionError("");
+    try {
+      await api.post(`/zendesk/tickets/${ticket.id}/knowledge-source`, { solution }, {
+        headers: { "X-Instance-ID": instanceId },
+      });
+      setSolutionMessage("Reviewed solution saved to the Knowledge Base.");
+      onSavedToKb?.(ticket.id);
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setSolutionError(typeof detail === "string" ? detail : "Couldn’t save the reviewed solution.");
+    } finally {
+      setSavingSolution(false);
     }
   }
 
@@ -112,13 +148,28 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes }) {
           )}
         </section>
       )}
+      {solved && summary && (
+        <section style={{ ...T.card, marginBottom: 20 }}>
+          <h4 style={T.sectionTitle}>Solution</h4>
+          <label style={T.label}>Review or edit the solution before adding it to the Knowledge Base.
+            <textarea style={T.textarea} rows={6} value={solution} disabled={savingSolution}
+              onChange={(event) => { setSolution(event.target.value); setSolutionMessage(""); }} />
+          </label>
+          <button type="button" style={T.btnPrimary} disabled={savingSolution || !solution.trim()}
+            onClick={saveSolution}>
+            {savingSolution ? "Saving solution…" : "Add to KB"}
+          </button>
+          {solutionMessage && <p role="status">{solutionMessage}</p>}
+          {solutionError && <p role="alert">{solutionError}</p>}
+        </section>
+      )}
     </>
   );
 }
 
 const SOLVED_STATUSES = ["solved", "closed"];
 
-function SaveToKnowledgeBase({ instanceId, ticketId }) {
+function SaveToKnowledgeBase({ instanceId, ticketId, onSaved }) {
   const [draft, setDraft] = useState(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -143,6 +194,7 @@ function SaveToKnowledgeBase({ instanceId, ticketId }) {
       const { data } = await api.post(`/zendesk/tickets/${ticketId}/kb-draft`, null, options);
       setDraft({ title: data.title, content: data.content });
       setSaved(data.already_saved);
+      if (data.already_saved) onSaved?.(ticketId);
     });
   }
 
@@ -151,6 +203,7 @@ function SaveToKnowledgeBase({ instanceId, ticketId }) {
     run(async () => {
       await api.post(`/zendesk/tickets/${ticketId}/kb`, draft, options);
       setSaved(true);
+      onSaved?.(ticketId);
     });
   }
 
@@ -197,6 +250,8 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   const [queueRefresh, setQueueRefresh] = useState(0);
   const [queue, setQueue] = useState(null);
   const [queueError, setQueueError] = useState("");
+  const [reviewStates, setReviewStates] = useState({});
+  const [savedToKb, setSavedToKb] = useState({});
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState(null);
   const [note, setNote] = useState("");
@@ -221,8 +276,30 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
     return () => controller.abort();
   }, [instanceId, listMode, queuePage, queueRefresh]);
 
+  useEffect(() => {
+    if (!queue?.tickets.length) return;
+    const controller = new AbortController();
+    // Solved/closed tickets are labelled from their status; only open ones need a history check.
+    const ids = queue.tickets.filter(({ status }) => !["solved", "closed"].includes(status)).map(({ id }) => id);
+    if (ids.length) {
+      api.post("/zendesk/ticket-review-states", { ids }, {
+        headers: { "X-Instance-ID": instanceId }, signal: controller.signal,
+      }).then(({ data }) => {
+        if (!controller.signal.aborted) setReviewStates(data.states);
+      }).catch(() => {
+        if (!controller.signal.aborted) setReviewStates(Object.fromEntries(ids.map((id) => [id, "unavailable"])));
+      });
+    }
+    return () => controller.abort();
+  }, [instanceId, queue]);
+
+  function markSavedToKb(id) {
+    setSavedToKb((current) => ({ ...current, [id]: true }));
+  }
+
   function changeListMode(mode) {
     if (mode === listMode) return;
+    setReviewStates({});
     setQueue(null);
     setQueueError("");
     setQueuePage(1);
@@ -230,6 +307,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   }
 
   function changeQueuePage(page) {
+    setReviewStates({});
     setQueue(null);
     setQueueError("");
     setQueuePage(page);
@@ -304,13 +382,23 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
       )}
       {queue?.tickets.length > 0 && (
         <ul style={{ display: "grid", gap: 8, paddingLeft: 0, listStyle: "none" }}>
-          {queue.tickets.map(({ id, subject }) => (
-            <li key={id}>
-              <button type="button" style={T.btnSecondary} disabled={busy} onClick={() => loadTicket(id)}>
-                #{id} {subject || "Untitled ticket"}
-              </button>
-            </li>
-          ))}
+          {queue.tickets.map(({ id, subject, status, in_kb: inKb }) => {
+            const state = ["solved", "closed"].includes(status) ? "solved" : reviewStates[id];
+            const appearance = reviewStyles[state];
+            return (
+              <li key={id}>
+                <button type="button" style={{ ...T.btnSecondary, color: appearance?.color,
+                  borderColor: appearance?.borderColor }} disabled={busy} onClick={() => loadTicket(id)}>
+                  #{id} {subject || "Untitled ticket"}
+                  {appearance && <span style={{ display: "block", fontSize: 11 }}>{appearance.label}</span>}
+                  {(inKb || savedToKb[id]) && (
+                    <span style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", fontSize: 11,
+                      color: "#00F5FF", border: "1px solid #00F5FF", borderRadius: 4 }}>Added to KB</span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
       {listMode === "open" && (queuePage > 1 || queue?.has_more) && (
@@ -338,13 +426,17 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           <h3 style={T.sectionTitle}>#{ticket.id} {ticket.subject}</h3>
           <p style={T.sectionSub}>{ticket.status}</p>
           <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{ticket.description}</p>
-          <ZendeskTicketHistory key={ticket.id} instanceId={instanceId} ticket={ticket} canPostNotes={canPostNotes} />
+          <ZendeskTicketHistory key={ticket.id} instanceId={instanceId} ticket={ticket}
+            canPostNotes={canPostNotes}
+            onSummaryPosted={(id, state) => setReviewStates((current) => ({ ...current, [id]: state }))}
+            onSavedToKb={markSavedToKb} />
           {SOLVED_STATUSES.includes(ticket.status) && (
-            <SaveToKnowledgeBase key={ticket.id} instanceId={instanceId} ticketId={ticket.id} />
+            <SaveToKnowledgeBase key={ticket.id} instanceId={instanceId} ticketId={ticket.id}
+              onSaved={markSavedToKb} />
           )}
           <form onSubmit={postNote} style={{ display: "grid", gap: 12 }}>
             <button type="button" style={T.btnPrimary} onClick={draftNote} disabled={busy}>
-              Draft from Knowledge Base
+              Suggest solution or follow-up questions
             </button>
             <label style={T.label}>Internal note
               <textarea style={T.textarea} rows={7} value={note}
