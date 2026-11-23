@@ -192,6 +192,9 @@ ALLOWED_MODELS = {
     "claude-opus-4-5-20251101",
 }
 
+# Effort levels admins can choose (xhigh/max left out: cost is hard to predict for a support bot).
+ALLOWED_EFFORTS = ("low", "medium", "high")
+
 class BotConfigUpdate(BaseModel):
     name: Optional[str] = None
     persona: Optional[str] = None
@@ -770,16 +773,19 @@ class _ChatSession:
         # messages[0] is always the system turn so existing refresh logic works unchanged.
         self.messages: List[Dict[str, str]] = [{"role": "system", "content": system_message}]
 
-    async def send_message(self, text: str):
+    async def send_message(self, text: str, effort: Optional[str] = None):
         self.messages.append({"role": "user", "content": text})
         system = next((m["content"] for m in self.messages if m["role"] == "system"), "")
         history = [m for m in self.messages if m["role"] != "system"]
-        response = await self._client.messages.create(
+        request = dict(
             model=self._model,
             max_tokens=8096,
             system=system,
             messages=history,
         )
+        if effort in ALLOWED_EFFORTS:
+            request["output_config"] = {"effort": effort}
+        response = await self._client.messages.create(**request)
         reply = response.content[0].text
         self.messages.append({"role": "assistant", "content": reply})
         input_tokens = getattr(response.usage, "input_tokens", 0) or 0
@@ -789,7 +795,8 @@ class _ChatSession:
 
 async def call_claude(session_id: str, user_message: str, system_prompt: str,
                       instance_id: str = "default", platform: str = "web",
-                      model: str = None, instance_api_key: str = None) -> str:
+                      model: str = None, instance_api_key: str = None,
+                      effort: Optional[str] = None) -> str:
     api_key = instance_api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="LLM API key not configured")
@@ -821,7 +828,7 @@ async def call_claude(session_id: str, user_message: str, system_prompt: str,
                         messages.insert(0, {"role": "system", "content": system_prompt})
             except Exception as _e:
                 logger.warning(f"[session-refresh] non-fatal: {_e}")
-        return await llm_sessions[key].send_message(user_message)
+        return await llm_sessions[key].send_message(user_message, effort=effort)
 
     # Try primary model with retries
     for attempt in range(max_retries + 1):
