@@ -192,10 +192,25 @@ class AssignUser(BaseModel):
     user_email: str
 
 ALLOWED_MODELS = {
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-4-5-20251101",
-    "claude-opus-4-5-20251101",
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
 }
+DEFAULT_MODEL = "claude-sonnet-5-5"
+FALLBACK_MODEL = "claude-haiku-5-5"
+
+# Model IDs saved by earlier versions, mapped to their current tier. The Sonnet ID
+# BridgeBot used ("-20251101") never existed; Sonnet 4.5 itself retires 2026-11-30.
+LEGACY_MODEL_IDS = {
+    "claude-haiku-4-5-20251001": "claude-haiku-5-5",
+    "claude-sonnet-4-5-20251101": "claude-sonnet-5-5",
+    "claude-sonnet-4-5-20250929": "claude-sonnet-5-5",
+    "claude-opus-4-5-20251101": "claude-opus-5-5",
+}
+
+
+def _current_model_id(model: Optional[str]) -> Optional[str]:
+    return LEGACY_MODEL_IDS.get(model, model)
 
 # Effort levels admins can choose (xhigh/max left out: cost is hard to predict for a support bot).
 ALLOWED_EFFORTS = ("low", "medium", "high")
@@ -793,7 +808,8 @@ class _ChatSession:
         if effort in ALLOWED_EFFORTS:
             request["output_config"] = {"effort": effort}
         response = await self._client.messages.create(**request)
-        reply = response.content[0].text
+        # Read by block type: replies from newer models can start with a thinking block.
+        reply = "".join(block.text for block in response.content if block.type == "text").strip()
         self.messages.append({"role": "assistant", "content": reply})
         input_tokens = getattr(response.usage, "input_tokens", 0) or 0
         output_tokens = getattr(response.usage, "output_tokens", 0) or 0
@@ -808,8 +824,9 @@ async def call_claude(session_id: str, user_message: str, system_prompt: str,
     if not api_key:
         raise HTTPException(status_code=500, detail="LLM API key not configured")
 
-    primary_model = model if model in ALLOWED_MODELS else "claude-sonnet-4-5-20251101"
-    fallback_model = "claude-haiku-4-5-20251001"
+    model = _current_model_id(model)
+    primary_model = model if model in ALLOWED_MODELS else DEFAULT_MODEL
+    fallback_model = FALLBACK_MODEL
     max_retries = 2
     retry_count = 0
     used_fallback = False
@@ -854,10 +871,10 @@ async def call_claude(session_id: str, user_message: str, system_prompt: str,
                           else "unknown")
             if attempt < max_retries:
                 retry_count += 1
-                logger.warning(f"Claude Opus attempt {attempt+1} failed ({error_type}), retrying...")
+                logger.warning(f"{primary_model} attempt {attempt+1} failed ({error_type}), retrying...")
                 await asyncio.sleep(1.5 ** attempt)  # 1s, 1.5s backoff
             else:
-                logger.error(f"Claude Opus exhausted retries: {e}")
+                logger.error(f"{primary_model} exhausted retries: {e}")
 
     # Fallback to Haiku
     try:
@@ -1209,6 +1226,14 @@ async def startup_event():
         await db.external_api_keys.create_index([("key_hash", 1)], unique=True)
     except Exception as e:
         logger.warning(f"Index creation: {e}")
+    try:
+        # Move bots saved with retired or invalid model IDs onto the current model of the same tier.
+        for old_id, new_id in LEGACY_MODEL_IDS.items():
+            result = await db.bot_config.update_many({"model": old_id}, {"$set": {"model": new_id}})
+            if result.modified_count:
+                logger.info(f"Migrated {result.modified_count} bot config(s) from {old_id} to {new_id}")
+    except Exception as e:
+        logger.warning(f"Model ID migration: {e}")
 
     # Seed admin user
     if not await db.users.find_one({"email": ADMIN_EMAIL}):
@@ -1656,6 +1681,8 @@ async def update_bot_config(body: BotConfigUpdate, instance_id: str = Depends(ge
     for k, v in body.dict().items():
         if v is not None:
             update_data[k] = v
+    if "model" in update_data:
+        update_data["model"] = _current_model_id(update_data["model"])
     if "model" in update_data and update_data["model"] not in ALLOWED_MODELS:
         raise HTTPException(status_code=400, detail=f"Invalid model. Allowed: {sorted(ALLOWED_MODELS)}")
     if not update_data:

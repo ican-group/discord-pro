@@ -23,8 +23,13 @@ const ACTIVE_DOT = { r: 5 };
 const LEGEND_STYLE = { fontFamily: fonts.body, fontSize: "12px", color: colors.text.secondary, paddingTop: "16px" };
 const PLATFORM_COLORS = [colors.brand.blue, colors.brand.discord];
 
-// Anthropic list prices in USD per million tokens (updated May 2026)
+// Anthropic list prices in USD per million tokens (updated November 2026).
+// Claude Haiku 5.5 is priced for prompts up to 100K tokens ($0.50 / $2.50 above that).
 const MODEL_PRICING = {
+  "claude-haiku-5-5":           { input: 0.10,  output: 0.50  },
+  "claude-sonnet-5-5":          { input: 2.00,  output: 10.00 },
+  "claude-opus-5-5":            { input: 4.00,  output: 20.00 },
+  // Legacy IDs, kept so cost still shows for older usage records.
   "claude-haiku-4-5-20251001":  { input: 0.80,  output: 4.00  },
   "claude-sonnet-4-5-20251101": { input: 3.00,  output: 15.00 },
   "claude-opus-4-5-20251101":   { input: 15.00, output: 75.00 },

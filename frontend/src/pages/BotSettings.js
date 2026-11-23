@@ -8,7 +8,7 @@ import { colors, fonts, T, onFocus, onBlur } from "../theme";
 export default function BotSettings() {
   const { selectedInstance } = useAuth();
   const instanceId = selectedInstance?.id;
-  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-4-5-20251101" });
+  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-5-5" });
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -21,7 +21,7 @@ export default function BotSettings() {
   useEffect(() => {
     api.get(`/admin/bot-config`).then(r => {
       if (r.data) {
-        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-4-5-20251101" });
+        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-5-5" });
         setApiKeySet(r.data.api_key_set || false);
         setApiKeyInput("");
       }
@@ -88,9 +88,9 @@ export default function BotSettings() {
               <label style={T.label}>AI Model</label>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px" }}>
                 {[
-                  { value: "claude-haiku-4-5-20251001", label: "Haiku", sub: "Fast · Cheapest" },
-                  { value: "claude-sonnet-4-5-20251101", label: "Sonnet", sub: "Balanced" },
-                  { value: "claude-opus-4-5-20251101", label: "Opus", sub: "Most capable" },
+                  { value: "claude-haiku-5-5", label: "Haiku", sub: "Fast · Cheapest" },
+                  { value: "claude-sonnet-5-5", label: "Sonnet", sub: "Balanced" },
+                  { value: "claude-opus-5-5", label: "Opus", sub: "Most capable" },
                 ].map(({ value, label, sub }) => {
                   const active = config.model === value;
                   return (
