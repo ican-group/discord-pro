@@ -5,10 +5,15 @@ import { toast } from "sonner";
 import { Save, Eye, EyeOff, Plus, X, ExternalLink, MessageSquare, Lightbulb, Cpu, Key } from "lucide-react";
 import { colors, fonts, T, onFocus, onBlur } from "../theme";
 
+// What each model does when no effort is sent (mirrors MODEL_DEFAULT_EFFORT in server.py).
+const MODEL_DEFAULT_EFFORT = { "claude-sonnet-5-5": "high", "claude-opus-5-5": "medium", "claude-haiku-5-5": "medium" };
+const EFFORT_LABEL = { low: "Low", medium: "Medium", high: "High" };
+
 export default function BotSettings() {
   const { selectedInstance } = useAuth();
   const instanceId = selectedInstance?.id;
-  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-5-5" });
+  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-5-5", effort: null });
+  const [effortRec, setEffortRec] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -21,11 +26,13 @@ export default function BotSettings() {
   useEffect(() => {
     api.get(`/admin/bot-config`).then(r => {
       if (r.data) {
-        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-5-5" });
+        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-5-5", effort: r.data.effort || null });
         setApiKeySet(r.data.api_key_set || false);
         setApiKeyInput("");
       }
     }).catch(() => {});
+    setEffortRec(null);
+    api.get(`/admin/effort-recommendation`).then(r => setEffortRec(r.data)).catch(() => setEffortRec({ error: true }));
     api.get(`/analytics/overview`).then(r => setApprovedCount(r.data?.approved_for_training ?? 0)).catch(() => {});
   }, [instanceId]);
 
@@ -34,7 +41,8 @@ export default function BotSettings() {
     if (!config.persona.trim()) { toast.error("Persona description is required"); return; }
     setSaving(true);
     try {
-      const payload = { ...config };
+      // "default" clears a saved effort so the model's own default applies.
+      const payload = { ...config, effort: config.effort || "default" };
       if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
       await api.put(`/admin/bot-config`, payload);
       if (apiKeyInput.trim()) { setApiKeySet(true); setApiKeyInput(""); }
@@ -110,6 +118,61 @@ export default function BotSettings() {
                 })}
               </div>
               <p style={T.hint}>Haiku is fastest and cheapest. Opus gives the best answers but costs more.</p>
+            </div>
+
+            <div style={{ marginBottom: "18px" }}>
+              <label style={T.label}>Effort</label>
+              <div role="group" aria-label="Effort" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(90px, 1fr))", gap: "8px" }}>
+                {[
+                  { value: null, label: "Default", sub: `Model: ${MODEL_DEFAULT_EFFORT[config.model] || "high"}` },
+                  { value: "low", label: "Low", sub: "Quickest · Cheapest" },
+                  { value: "medium", label: "Medium", sub: "Balanced" },
+                  { value: "high", label: "High", sub: "Most careful" },
+                ].map(({ value, label, sub }) => {
+                  const active = (config.effort || null) === value;
+                  return (
+                    <button key={label} type="button" aria-pressed={active} data-testid={`effort-${label.toLowerCase()}`}
+                      onClick={() => setConfig(p => ({ ...p, effort: value }))}
+                      style={{
+                        padding: "10px 8px", borderRadius: "8px", border: `1px solid ${active ? colors.brand.light : colors.border.default}`,
+                        backgroundColor: active ? "rgba(59,130,246,0.1)" : colors.bg.panel,
+                        cursor: "pointer", textAlign: "center", transition: "all 0.2s",
+                      }}>
+                      <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: active ? colors.brand.light : colors.text.primary, margin: 0 }}>{label}</p>
+                      <p style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, margin: "2px 0 0", textTransform: "uppercase", letterSpacing: "0.08em" }}>{sub}</p>
+                    </button>
+                  );
+                })}
+              </div>
+              <p style={T.hint}>How much the model thinks before replying. Lower is quicker and cheaper; higher reads harder questions more carefully.</p>
+
+              {effortRec && !effortRec.error && (
+                <div data-testid="effort-recommendation" style={{ marginTop: "10px", padding: "10px 14px", backgroundColor: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.15)", borderRadius: "10px" }}>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <Lightbulb size={12} color={colors.brand.blue} style={{ flexShrink: 0, marginTop: "2px" }} />
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.primary, margin: 0, fontWeight: "600" }}>
+                        Recommended: {EFFORT_LABEL[effortRec.recommended]}
+                        {effortRec.confidence === "low" && <span style={{ fontWeight: "400", color: colors.text.muted }}> · limited usage data</span>}
+                      </p>
+                      <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.text.secondary, margin: "4px 0 0", lineHeight: "1.5" }}>{effortRec.reason}</p>
+                      <p style={{ fontFamily: fonts.mono, fontSize: "10px", color: colors.text.muted, margin: "6px 0 0" }}>
+                        Last {effortRec.window_days} days: {effortRec.stats.total} requests · {effortRec.stats.chat} chat · {effortRec.stats.ticket} Zendesk
+                        {effortRec.stats.total > 0 && ` · ${Math.round(effortRec.stats.fallback_rate * 100)}% used backup model`}
+                      </p>
+                      {config.effort !== effortRec.recommended ? (
+                        <button type="button" onClick={() => setConfig(p => ({ ...p, effort: effortRec.recommended }))}
+                          data-testid="use-recommended-effort" style={{ ...T.btnGhost, fontSize: "12px", marginTop: "8px" }}>
+                          Use {EFFORT_LABEL[effortRec.recommended]}
+                        </button>
+                      ) : (
+                        <p style={{ fontFamily: fonts.body, fontSize: "12px", color: colors.brand.success, margin: "8px 0 0" }}>Selected</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {effortRec?.error && <p style={T.hint}>Couldn’t load an effort recommendation.</p>}
             </div>
 
             <div>

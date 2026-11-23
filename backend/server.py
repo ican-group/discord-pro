@@ -199,6 +199,8 @@ ALLOWED_MODELS = {
 }
 DEFAULT_MODEL = "claude-sonnet-5-5"
 FALLBACK_MODEL = "claude-haiku-5-5"
+# Claude Haiku 5.5 has no server-side fallback: a "fallbacks" list on its requests is a 400.
+_SERVER_FALLBACK_MODELS = {"claude-sonnet-5-5", "claude-opus-5-5"}
 
 # Model IDs saved by earlier versions, mapped to their current tier. The Sonnet ID
 # BridgeBot used ("-20251101") never existed; Sonnet 4.5 itself retires 2026-11-30.
@@ -215,6 +217,8 @@ def _current_model_id(model: Optional[str]) -> Optional[str]:
 
 # Effort levels admins can choose (xhigh/max left out: cost is hard to predict for a support bot).
 ALLOWED_EFFORTS = ("low", "medium", "high")
+# What each model does when no effort is sent.
+MODEL_DEFAULT_EFFORT = {"claude-sonnet-5-5": "high", "claude-opus-5-5": "medium", "claude-haiku-5-5": "medium"}
 
 class BotConfigUpdate(BaseModel):
     name: Optional[str] = None
@@ -224,6 +228,7 @@ class BotConfigUpdate(BaseModel):
     manual_tone_examples: Optional[List[dict]] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    effort: Optional[str] = None  # "low" | "medium" | "high", or "default" to clear
     # Used only for Zendesk ticket summaries; never sent to chat replies.
     zendesk_summary_instructions: Optional[str] = None
 
@@ -1105,24 +1110,47 @@ class _ChatSession:
         self.messages: List[Dict[str, str]] = [{"role": "system", "content": system_message}]
 
     async def send_message(self, text: str, effort: Optional[str] = None):
-        self.messages.append({"role": "user", "content": text})
         system = next((m["content"] for m in self.messages if m["role"] == "system"), "")
         history = [m for m in self.messages if m["role"] != "system"]
         request = dict(
             model=self._model,
-            max_tokens=8096,
+            # Thinking is on by default on the 5.5 models and counts toward max_tokens.
+            max_tokens=16000,
             system=system,
-            messages=history,
+            messages=history + [{"role": "user", "content": text}],
         )
         if effort in ALLOWED_EFFORTS:
             request["output_config"] = {"effort": effort}
-        response = await self._client.messages.create(**request)
-        # Read by block type: replies from newer models can start with a thinking block.
+        if self._model in _SERVER_FALLBACK_MODELS:
+            # On a policy decline the API retries on a fallback model in the same request.
+            response = await self._client.beta.messages.create(
+                **request, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            )
+        else:
+            response = await self._client.messages.create(**request)
+
+        if response.stop_reason == "refusal":
+            category = getattr(getattr(response, "stop_details", None), "category", None)
+            raise LLMRefusal(f"{self._model} declined the request (category: {category})")
+        # Read by block type: responses can start with (empty) thinking or fallback blocks.
         reply = "".join(block.text for block in response.content if block.type == "text").strip()
+        if not reply:
+            raise LLMEmptyReply(f"{self._model} returned no text (stop_reason: {response.stop_reason})")
+
+        # Only completed exchanges enter the history, so retries don't duplicate the user turn.
+        self.messages.append({"role": "user", "content": text})
         self.messages.append({"role": "assistant", "content": reply})
         input_tokens = getattr(response.usage, "input_tokens", 0) or 0
         output_tokens = getattr(response.usage, "output_tokens", 0) or 0
         return reply, input_tokens, output_tokens
+
+
+class LLMRefusal(Exception):
+    """The model declined the request (stop_reason "refusal"); retrying it unchanged won't help."""
+
+
+class LLMEmptyReply(Exception):
+    """The model finished without any text (for example, max_tokens reached while thinking)."""
 
 
 async def call_claude(session_id: str, user_message: str, system_prompt: str,
@@ -1174,10 +1202,15 @@ async def call_claude(session_id: str, user_message: str, system_prompt: str,
         except Exception as e:
             last_error = e  # noqa: F841
             err_str = str(e).lower()
-            error_type = ("rate_limit" if "rate" in err_str or "429" in err_str
+            error_type = ("refusal" if isinstance(e, LLMRefusal)
+                          else "rate_limit" if "rate" in err_str or "429" in err_str
                           else "balance" if "credit" in err_str or "balance" in err_str or "payment" in err_str
                           else "timeout" if "timeout" in err_str or "timed out" in err_str
                           else "unknown")
+            if isinstance(e, LLMRefusal):
+                # The same request would be declined again; go straight to the fallback model.
+                logger.warning(f"{primary_model} declined the request: {e}")
+                break
             if attempt < max_retries:
                 retry_count += 1
                 logger.warning(f"{primary_model} attempt {attempt+1} failed ({error_type}), retrying...")
@@ -1185,7 +1218,7 @@ async def call_claude(session_id: str, user_message: str, system_prompt: str,
             else:
                 logger.error(f"{primary_model} exhausted retries: {e}")
 
-    # Fallback to Haiku
+    # Fallback to the Haiku tier
     try:
         used_fallback = True  # noqa: F841
         result, in_tok, out_tok = await _attempt(fallback_model)
@@ -1475,7 +1508,7 @@ async def start_shared_discord_bot(token: str):
                     allow_skip = passive_mode and not is_mentioned and not is_dm
                     system_prompt = build_system_prompt(bot_config, knowledge, tone, passive_mode=passive_mode, allow_skip=allow_skip)
                     async with message.channel.typing():
-                        response = await call_claude(session_id, user_text, system_prompt, instance_id=instance_id, platform="discord", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"))
+                        response = await call_claude(session_id, user_text, system_prompt, instance_id=instance_id, platform="discord", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"), effort=bot_config.get("effort"))
                     # Passive mode: detect [SKIP] sentinel and stay silent
                     if allow_skip and response and response.strip().upper().startswith("[SKIP]"):
                         logger.info(f"[PASSIVE] instance={instance_id[:12]} channel={channel_id} — skipped (no confident answer)")
@@ -1961,7 +1994,7 @@ async def send_chat_message(body: ChatMessage):
         tone = await get_tone_examples_text(instance_id, bot_config)
         system_prompt = build_system_prompt(bot_config, knowledge, tone)
         response = await call_claude(session_id, body.message, system_prompt,
-                                    instance_id=instance_id, platform="web", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"))
+                                    instance_id=instance_id, platform="web", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"), effort=bot_config.get("effort"))
     await save_conversation(session_id, body.message, response, platform="web", instance_id=instance_id)
     return {"response": response, "session_id": session_id}
 
@@ -1994,15 +2027,80 @@ async def update_bot_config(body: BotConfigUpdate, instance_id: str = Depends(ge
     for k, v in body.dict().items():
         if v is not None:
             update_data[k] = v
+    unset_fields = {}
+    if "effort" in update_data:
+        if update_data["effort"] == "default":
+            unset_fields["effort"] = ""
+            del update_data["effort"]
+        elif update_data["effort"] not in ALLOWED_EFFORTS:
+            raise HTTPException(status_code=400, detail="Invalid effort. Allowed: default, low, medium, high")
     if "model" in update_data:
         update_data["model"] = _current_model_id(update_data["model"])
     if "model" in update_data and update_data["model"] not in ALLOWED_MODELS:
         raise HTTPException(status_code=400, detail=f"Invalid model. Allowed: {sorted(ALLOWED_MODELS)}")
-    if not update_data:
+    if not update_data and not unset_fields:
         raise HTTPException(status_code=400, detail="No fields provided")
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.bot_config.update_one({"instance_id": instance_id}, {"$set": update_data}, upsert=True)
+    update_ops = {"$set": update_data}
+    if unset_fields:
+        update_ops["$unset"] = unset_fields
+    await db.bot_config.update_one({"instance_id": instance_id}, update_ops, upsert=True)
     return await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0})
+
+
+_CHAT_PLATFORMS = ("discord", "web", "api")
+_TICKET_PLATFORMS = ("zendesk",)
+
+
+def _recommend_effort(stats: dict) -> tuple[str, str, str]:
+    """Return (effort, confidence, reason) for a bot's recent Claude usage."""
+    total, chat, ticket = stats["total"], stats["chat"], stats["ticket"]
+    if total < 20:
+        few = f"Only {total} Claude request{'s' if total != 1 else ''} in the last 30 days, not enough to judge."
+        if total and ticket > chat:
+            return ("medium", "low",
+                    f"{few} So far they are mostly Zendesk summaries and drafts, so Medium is a good "
+                    "starting point: long ticket threads get more careful reading than at Low.")
+        return ("low", "low",
+                f"{few} Low is a good starting point for a chat bot: the model skips thinking on most "
+                "simple messages, so replies come back quicker and cost less.")
+    chat_share = chat / total
+    if chat_share >= 0.5:
+        return ("low", "high",
+                f"{chat_share:.0%} of the last {total} requests were chat replies (Discord, web or API). "
+                "Low keeps those replies quick and cheap; the model skips thinking on most simple "
+                "messages. Try Medium if answers to harder questions aren't careful enough.")
+    return ("medium", "high",
+            f"{ticket / total:.0%} of the last {total} requests were Zendesk summaries and drafts, "
+            f"averaging {stats['avg_input_tokens']:,} input tokens. Medium gives long ticket threads "
+            "more careful reading than Low, at less cost and delay than High.")
+
+
+@api_router.get("/admin/effort-recommendation")
+async def effort_recommendation(instance_id: str = Depends(get_instance_access)):
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    rows = await db.llm_usage.find(
+        {"instance_id": instance_id, "timestamp": {"$gte": since}},
+        {"_id": 0, "platform": 1, "input_tokens": 1, "output_tokens": 1, "used_fallback": 1, "success": 1},
+    ).to_list(length=None)
+    total = len(rows)
+    stats = {
+        "total": total,
+        "chat": sum(r.get("platform") in _CHAT_PLATFORMS for r in rows),
+        "ticket": sum(r.get("platform") in _TICKET_PLATFORMS for r in rows),
+        "avg_input_tokens": round(sum(r.get("input_tokens") or 0 for r in rows) / total) if total else 0,
+        "avg_output_tokens": round(sum(r.get("output_tokens") or 0 for r in rows) / total) if total else 0,
+        "fallback_rate": round(sum(bool(r.get("used_fallback")) for r in rows) / total, 3) if total else 0.0,
+        "failure_rate": round(sum(not r.get("success", True) for r in rows) / total, 3) if total else 0.0,
+    }
+    recommended, confidence, reason = _recommend_effort(stats)
+    config = await db.bot_config.find_one({"instance_id": instance_id}, {"model": 1, "effort": 1}) or {}
+    model = _current_model_id(config.get("model"))
+    model = model if model in ALLOWED_MODELS else DEFAULT_MODEL
+    return {
+        "recommended": recommended, "confidence": confidence, "reason": reason, "window_days": 30,
+        "stats": stats, "current": config.get("effort"), "model_default": MODEL_DEFAULT_EFFORT[model],
+    }
 
 
 # ==================== KNOWLEDGE SOURCES (PROTECTED) ====================
@@ -2978,6 +3076,7 @@ async def external_chat(
             instance_id=instance_id, platform="api",
             model=bot_config.get("model"),
             instance_api_key=bot_config.get("api_key"),
+            effort=bot_config.get("effort"),
         )
     await save_conversation(
         session_id, body.message, reply,
