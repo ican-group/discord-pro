@@ -10,7 +10,6 @@ import logging
 import asyncio
 import uuid
 import re
-import math
 import jwt
 import bcrypt
 import secrets
@@ -373,6 +372,31 @@ CREATE INDEX IF NOT EXISTS idx_ki_canonical_url
     WHERE canonical_url IS NOT NULL;
 """
 
+# One row per part of a knowledge base entry (spec 008). Parts follow their entry:
+# deleting the entry cascades; active/priority are read from the entry at search time.
+_PARADEDB_CHUNKS_DDL = """
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id          TEXT PRIMARY KEY,
+    source_id   TEXT NOT NULL REFERENCES knowledge_sources_index (id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL,
+    part        INTEGER NOT NULL,
+    parts       INTEGER NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    content     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_kc_source   ON knowledge_chunks (source_id);
+CREATE INDEX IF NOT EXISTS idx_kc_instance ON knowledge_chunks (instance_id);
+"""
+
+_PARADEDB_CHUNKS_BM25_DDL = """
+CREATE INDEX IF NOT EXISTS knowledge_chunks_bm25_idx
+    ON knowledge_chunks
+    USING bm25 (id, title, content)
+    WITH (key_field = 'id',
+          text_fields = '{"title": {}, "content": {}}');
+"""
+
 _PARADEDB_BM25_DDL = """
 CREATE INDEX IF NOT EXISTS knowledge_bm25_idx
     ON knowledge_sources_index
@@ -406,10 +430,15 @@ async def init_paradedb() -> None:
     async with pool.acquire() as conn:
         await conn.execute(_PARADEDB_DDL)
         await conn.execute(_PARADEDB_MIGRATE_DDL)
+        await conn.execute(_PARADEDB_CHUNKS_DDL)
         try:
             await conn.execute(_PARADEDB_BM25_DDL)
         except Exception as idx_err:
             logger.warning(f"ParadeDB BM25 index DDL note: {idx_err}")
+        try:
+            await conn.execute(_PARADEDB_CHUNKS_BM25_DDL)
+        except Exception as idx_err:
+            logger.warning(f"ParadeDB chunk BM25 index DDL note: {idx_err}")
         row = await conn.fetchrow(_PARADEDB_BM25_CHECK)
         bm25_present = (row["n"] > 0) if row else False
 
@@ -423,6 +452,68 @@ async def init_paradedb() -> None:
     else:
         _paradedb_bm25_ready = True
         logger.info("ParadeDB initialised — BM25 search enabled")
+
+
+# Splitting long entries into parts (spec 008; same approach as bitbotpro chunk_text).
+KB_MAX_TEXT_CHARS = 1_500_000
+KB_CHUNK_CHARS = 900
+KB_CHUNK_OVERLAP = 150
+KB_MAX_CHUNKS = 2000
+
+
+def _chunk_text(text: str) -> list[str]:
+    """Windows of about KB_CHUNK_CHARS, cut at a paragraph, sentence or line break, with overlap."""
+    out: list[str] = []
+    pos, n = 0, len(text)
+    while pos < n and len(out) < KB_MAX_CHUNKS:
+        end = min(n, pos + KB_CHUNK_CHARS)
+        if end < n:
+            window = text[pos:end]
+            cut = max(window.rfind("\n\n"), window.rfind(". "), window.rfind("\n"))
+            if cut > KB_CHUNK_CHARS // 2:
+                end = pos + cut + 1
+        piece = text[pos:end].strip()
+        if piece:
+            out.append(piece)
+        if end >= n:
+            break
+        pos = max(end - KB_CHUNK_OVERLAP, pos + 1)
+    return out
+
+
+async def _index_source_chunks(conn, source: dict) -> int:
+    """Replace the parts of one entry. Runs on the caller's connection."""
+    parts = _chunk_text(source.get("content") or "") or [""]
+    async with conn.transaction():
+        await conn.execute("DELETE FROM knowledge_chunks WHERE source_id = $1", source["id"])
+        await conn.executemany(
+            """
+            INSERT INTO knowledge_chunks (id, source_id, instance_id, part, parts, title, content)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            [(f"{source['id']}:{i}", source["id"], source["instance_id"], i, len(parts),
+              source.get("title") or "", text) for i, text in enumerate(parts, 1)],
+        )
+    return len(parts)
+
+
+async def backfill_knowledge_chunks() -> None:
+    """Split every entry that has no parts yet (entries saved before spec 008)."""
+    try:
+        async with _paradedb_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT s.id, s.instance_id, s.title, s.content
+                FROM   knowledge_sources_index s
+                WHERE  NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id)
+                """
+            )
+            for row in rows:
+                await _index_source_chunks(conn, dict(row))
+        if rows:
+            logger.info(f"Knowledge base: split {len(rows)} existing entr{'y' if len(rows) == 1 else 'ies'} into parts")
+    except Exception as e:
+        logger.warning(f"Knowledge base part backfill failed: {e}")
 
 
 async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
@@ -462,6 +553,7 @@ async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
             source.get("created_at"),
             source.get("updated_at"),
         )
+        source["parts"] = await _index_source_chunks(conn, source)
 
 
 async def delete_knowledge_source_from_paradedb(source_id: str) -> None:
@@ -494,7 +586,11 @@ async def _pg_list_sources(instance_id: str) -> list:
             """,
             instance_id,
         )
-    return [_pg_row_to_dict(r) for r in rows]
+        counts = dict(await conn.fetch(
+            "SELECT source_id, max(parts) FROM knowledge_chunks WHERE instance_id = $1 GROUP BY source_id",
+            instance_id,
+        ))
+    return [{**_pg_row_to_dict(r), "parts": counts.get(r["id"], 0)} for r in rows]
 
 
 async def _pg_fetch_source(source_id: str, instance_id: str) -> dict | None:
@@ -542,6 +638,8 @@ async def _pg_update_source(source_id: str, instance_id: str, fields: dict) -> d
             """,
             source_id, instance_id, *values,
         )
+        if row and ("content" in fields or "title" in fields):
+            await _index_source_chunks(conn, dict(row))
     return _pg_row_to_dict(row) if row else None
 
 
@@ -573,91 +671,34 @@ def _sanitize_bm25_query(raw: str) -> str:
     return re.sub(r'[+\-!(){}\[\]^"~*?:\\/]', ' ', raw).strip()
 
 
-# Characters of each knowledge base entry sent to the model.
-_KB_ENTRY_CHARS = 1200
-# Target size of the passages a long entry is split into before choosing the best ones.
-_KB_PASSAGE_CHARS = 400
-_KB_WORD_RE = re.compile(r"[a-z0-9]+")
-_KB_STOPWORDS = frozenset(
-    "the and for are but not you your with this that from have has had was were will can "
-    "how what why when where who which does did doing its into about there their they them "
-    "then than out our use using get got any all some more most also just only very".split()
-)
+# Search over parts (spec 008).
+KB_SEARCH_CANDIDATES = 40     # parts taken from each ranking before combining
+KB_CONTEXT_PARTS = 12         # parts sent to the model
+KB_CONTEXT_CHARS = 30000
 
 
-def _kb_terms(text: str) -> set[str]:
-    """Lower-cased query words, without stopwords or a plural "s", for passage scoring."""
-    terms = set()
-    for word in _KB_WORD_RE.findall(text.lower()):
-        if len(word) < 3 or word in _KB_STOPWORDS:
-            continue
-        terms.add(word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") else word)
-    return terms
+def _kb_part_label(r: dict) -> str:
+    pri = r.get("priority") or 0
+    pri_label = " [PRIORITY: HIGH]" if pri >= 2 else (" [PRIORITY: MEDIUM]" if pri == 1 else "")
+    part = f" — part {r['part']} of {r['parts']}" if (r.get("parts") or 1) > 1 else ""
+    return f"[{r.get('title') or 'Unknown'}{part}]{pri_label}"
 
 
-def _kb_passages(content: str) -> list[str]:
-    """Split text into passages of about _KB_PASSAGE_CHARS, on paragraph and sentence breaks."""
-    pieces: list[str] = []
-    for paragraph in re.split(r"\n\s*\n", content):
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-        if len(paragraph) <= _KB_PASSAGE_CHARS:
-            pieces.append(paragraph)
-            continue
-        for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
-            while len(sentence) > _KB_PASSAGE_CHARS:   # no sentence breaks: hard cut
-                pieces.append(sentence[:_KB_PASSAGE_CHARS])
-                sentence = sentence[_KB_PASSAGE_CHARS:]
-            if sentence:
-                pieces.append(sentence)
-    passages: list[str] = []
-    for piece in pieces:   # pack consecutive small pieces back together
-        if passages and len(passages[-1]) + 1 + len(piece) <= _KB_PASSAGE_CHARS:
-            passages[-1] += ("\n" if "\n" in content else " ") + piece
-        else:
-            passages.append(piece)
-    return passages
-
-
-def _kb_excerpt(content: str, query: str, limit: int = _KB_ENTRY_CHARS) -> str:
-    """The parts of an entry most relevant to the query, within `limit` characters.
-
-    Short entries are returned whole. For long entries, passages are scored by the
-    query words they contain (rarer words within the entry count more) and the best
-    ones are returned in document order, so an answer deep in a long article still
-    reaches the model. With no matching words, the opening is returned as before.
-    """
-    if len(content) <= limit:
-        return content
-    terms = _kb_terms(query)
-    passages = _kb_passages(content)
-    words = [set(_kb_terms(p)) for p in passages]
-    df = {t: sum(t in w for w in words) for t in terms}
-    scores = [sum(math.log((len(passages) + 1) / (df[t] + 0.5)) for t in terms if t in w) for w in words]
-    if not terms or max(scores, default=0) <= 0:
-        return content[:limit]
-    chosen, used = [], 0
-    for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)):
-        if scores[i] <= 0:
+def _kb_context(ranked: list[dict], query: str, instance_id: str) -> str:
+    """Format the best parts, in rank order, within the part and character budgets."""
+    chunks: list[str] = []
+    total_chars = 0
+    for r in ranked[:KB_CONTEXT_PARTS]:
+        chunk = f"{_kb_part_label(r)}\n{r['content']}"
+        if total_chars + len(chunk) > KB_CONTEXT_CHARS:
             break
-        cost = len(passages[i]) + 5
-        if used + cost > limit:
-            continue
-        chosen.append(i)
-        used += cost
-    if not chosen:   # best passage alone is over the limit
-        best = max(range(len(passages)), key=lambda i: (scores[i], -i))
-        return passages[best][:limit]
-    chosen.sort()
-    parts = []
-    for n, i in enumerate(chosen):
-        if (n == 0 and i > 0) or (n > 0 and i != chosen[n - 1] + 1):
-            parts.append("…")
-        parts.append(passages[i])
-    if chosen[-1] != len(passages) - 1:
-        parts.append("…")
-    return "\n".join(parts)
+        chunks.append(chunk)
+        total_chars += len(chunk)
+    logger.info(
+        f"search_knowledge instance={instance_id} backend=paradedb "
+        f"query={(query or '')[:120]!r} candidates={len(ranked)} parts={len(chunks)} context_chars={total_chars}"
+    )
+    return "\n\n".join(chunks)
 
 
 async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
@@ -699,50 +740,28 @@ async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
 
     try:
         async with _paradedb_pool.acquire() as conn:
-            # Use paradedb.parse() — plain text $2 with @@@ returns no rows in 0.23.5.
-            # ORDER BY raw score only; priority boost is applied in Python below to
-            # avoid the Top K scan penalty from arithmetic in ORDER BY.
             rows = await conn.fetch(
                 """
-                SELECT id, title, content, priority,
-                       paradedb.score(id) AS bm25_score
-                FROM   knowledge_sources_index
-                WHERE  instance_id = $1
-                  AND  is_active   = true
-                  AND  id @@@ paradedb.parse($2, lenient => true)
-                ORDER  BY paradedb.score(id) DESC
-                LIMIT  100
+                SELECT c.id, c.source_id, c.title, c.content, c.part, c.parts, s.priority,
+                       paradedb.score(c.id) AS bm25_score
+                FROM   knowledge_chunks c
+                JOIN   knowledge_sources_index s ON s.id = c.source_id
+                WHERE  c.instance_id = $1
+                  AND  s.is_active   = true
+                  AND  c.id @@@ paradedb.parse($2, lenient => true)
+                ORDER  BY paradedb.score(c.id) DESC
+                LIMIT  $3
                 """,
-                instance_id,
-                safe_query,
+                instance_id, safe_query, KB_SEARCH_CANDIDATES,
             )
         if not rows:
-            logger.debug("ParadeDB BM25 returned 0 results for query=%r instance=%s", query, instance_id)
+            logger.debug("ParadeDB BM25 returned 0 parts for query=%r instance=%s", query, instance_id)
             return ""
-
-        boosted = sorted(
-            rows,
-            key=lambda r: (r["bm25_score"] or 0.0) * (1.0 + (r["priority"] or 0) * 0.1),
-            reverse=True,
-        )
-        chunks: list[str] = []
-        total_chars = 0
-        for r in boosted:
-            pri = r["priority"] or 0
-            pri_label = (
-                " [PRIORITY: HIGH]" if pri >= 2
-                else (" [PRIORITY: MEDIUM]" if pri == 1 else "")
-            )
-            chunk = f"[{r['title'] or 'Unknown'}]{pri_label}\n{_kb_excerpt(r['content'] or '', query)}"
-            if total_chars + len(chunk) > 30000:
-                break
-            chunks.append(chunk)
-            total_chars += len(chunk)
-        logger.info(
-            f"search_knowledge instance={instance_id} backend=paradedb "
-            f"query={(query or '')[:120]!r} rows={len(boosted)} context_chars={total_chars}"
-        )
-        return "\n\n".join(chunks)
+        # Priority boost on the BM25 score, as before parts existed.
+        ranked = sorted((dict(r) for r in rows),
+                        key=lambda r: (r["bm25_score"] or 0.0) * (1.0 + (r["priority"] or 0) * 0.1),
+                        reverse=True)
+        return _kb_context(ranked, query, instance_id)
     except Exception as e:
         logger.error(f"ParadeDB search error: {e}")
         return ""
@@ -1313,6 +1332,8 @@ async def startup_event():
             await col.update_many({"instance_id": {"$exists": False}}, {"$set": {"instance_id": migrate_id}})
 
     await init_paradedb()
+    # Split entries saved before parts existed, without delaying startup.
+    asyncio.create_task(backfill_knowledge_chunks())
 
     # Discord bot startup — behaviour depends on APP_MODE.
     # api mode never starts the bot; all mode treats Discord as optional;
@@ -1817,7 +1838,9 @@ async def scrape_url_source(entry: URLEntry, instance_id: str = Depends(get_inst
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        text = re.sub(r'\n{3,}', '\n\n', text).strip()[:6000]
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        original_chars = len(text)
+        text = text[:KB_MAX_TEXT_CHARS]
         title = entry.title or (soup.title.string.strip() if soup.title and soup.title.string else entry.url)
         doc = {
             "id": str(uuid.uuid4()), "type": "url", "title": str(title)[:150],
@@ -1826,7 +1849,7 @@ async def scrape_url_source(entry: URLEntry, instance_id: str = Depends(get_inst
             "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()
         }
         await upsert_knowledge_source_to_paradedb(doc)
-        return doc
+        return {**doc, "truncated": original_chars > len(text), "original_chars": original_chars}
     except HTTPException:
         raise
     except Exception as e:
@@ -1859,7 +1882,9 @@ async def upload_document(
                 raise HTTPException(status_code=400, detail=f"PDF parse error: {str(e)}")
         else:
             raise HTTPException(status_code=400, detail="Only .txt and .pdf files are supported")
-        text = re.sub(r'\n{3,}', '\n\n', text).strip()[:6000]
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        original_chars = len(text)
+        text = text[:KB_MAX_TEXT_CHARS]
         doc = {
             "id": str(uuid.uuid4()), "type": "document", "title": title or filename,
             "content": text, "filename": filename, "instance_id": instance_id,
@@ -1867,7 +1892,7 @@ async def upload_document(
             "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()
         }
         await upsert_knowledge_source_to_paradedb(doc)
-        return doc
+        return {**doc, "truncated": original_chars > len(text), "original_chars": original_chars}
     except HTTPException:
         raise
     except Exception as e:

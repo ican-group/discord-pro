@@ -204,8 +204,9 @@ export default function KnowledgeBase() {
       const payload = { url: urlEntry.url, title: urlEntry.title, priority: urlEntry.priority };
       if (urlEntry.auth_username?.trim()) payload.auth_username = urlEntry.auth_username.trim();
       if (urlEntry.auth_password?.trim()) payload.auth_password = urlEntry.auth_password.trim();
-      await api.post(`/knowledge/sources/url`, payload);
-      toast.success("URL scraped and saved successfully");
+      const { data } = await api.post(`/knowledge/sources/url`, payload);
+      toast.success(`URL scraped and saved${data.parts > 1 ? ` in ${data.parts} parts` : ""}`);
+      if (data.truncated) toast.warning(`Page text was cut to ${data.content.length.toLocaleString()} of ${data.original_chars.toLocaleString()} characters`);
       setUrlEntry({ url: "", title: "", priority: 0, auth_username: "", auth_password: "" });
       loadSources();
     } catch (e) { toast.error(e.response?.data?.detail || "Failed to scrape URL"); }
@@ -222,8 +223,9 @@ export default function KnowledgeBase() {
     form.append("priority", docPriority);
     setUploading(true);
     try {
-      await api.post(`/knowledge/sources/upload`, form);
-      toast.success("Document uploaded successfully");
+      const { data } = await api.post(`/knowledge/sources/upload`, form);
+      toast.success(`Document uploaded${data.parts > 1 ? ` in ${data.parts} parts` : ""}`);
+      if (data.truncated) toast.warning(`Document text was cut to ${data.content.length.toLocaleString()} of ${data.original_chars.toLocaleString()} characters`);
       setDocTitle("");
       setDocPriority(0);
       if (fileRef.current) fileRef.current.value = "";
@@ -440,7 +442,15 @@ export default function KnowledgeBase() {
                   onMouseEnter={rowEnter} onMouseLeave={rowLeave} data-testid="knowledge-source-row">
                   <td style={{ padding: "12px 20px" }}><TypeBadge type={source.type} /></td>
                   <td style={{ padding: "12px 20px", fontFamily: fonts.body, fontSize: "13px", color: colors.text.primary, maxWidth: "300px" }}>
-                    <div style={{ fontWeight: 500 }}>{source.title}</div>
+                    <div style={{ fontWeight: 500 }}>
+                      {source.title}
+                      {source.parts > 1 && (
+                        <span data-testid="parts-badge" title="Stored and searched as separate parts" style={{
+                          marginLeft: "8px", padding: "1px 6px", borderRadius: "10px", fontSize: "11px",
+                          fontFamily: fonts.mono, color: colors.text.accent, border: `1px solid ${colors.text.accent}55`,
+                        }}>{source.parts} parts</span>
+                      )}
+                    </div>
                     {source.url && <div style={{ fontSize: "11px", color: colors.text.secondary, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</div>}
                   </td>
                   <td style={{ padding: "12px 20px" }}>
