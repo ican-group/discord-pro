@@ -659,7 +659,15 @@ async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
             )
         if not rows:
             logger.debug("ParadeDB BM25 returned 0 results for query=%r instance=%s", query, instance_id)
-            return ""
+            # No match: tell an empty knowledge base apart from a miss, so an instance
+            # with no active entries refuses instead of offering general knowledge.
+            async with _paradedb_pool.acquire() as conn:
+                has_entries = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM knowledge_sources_index "
+                    "WHERE instance_id = $1 AND is_active = true)",
+                    instance_id,
+                )
+            return "" if has_entries else "__NO_KB__"
 
         boosted = sorted(
             rows,
@@ -1187,8 +1195,10 @@ async def start_shared_discord_bot(token: str):
                 bot_config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
                 knowledge = await search_knowledge(user_text, instance_id)
                 if knowledge == "__NO_KB__":
-                    bot_name = bot_config.get("name", "I")
-                    response = f"I don't have any knowledge base configured yet. Please check back later or contact the administrator to set up my knowledge base."
+                    if live_cfg.get("passive_mode", False) and not is_mentioned and not is_dm:
+                        # Passive mode only answers from the knowledge base; with none, stay silent.
+                        return
+                    response = "I don't have any knowledge base configured yet. Please check back later or contact the administrator to set up my knowledge base."
                 else:
                     tone = await get_tone_examples_text(instance_id, bot_config)
                     passive_mode = bool(live_cfg.get("passive_mode", False))
