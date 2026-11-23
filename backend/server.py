@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 import logging
 import asyncio
+import threading
 import uuid
 import re
 import jwt
@@ -389,6 +390,17 @@ CREATE INDEX IF NOT EXISTS idx_kc_source   ON knowledge_chunks (source_id);
 CREATE INDEX IF NOT EXISTS idx_kc_instance ON knowledge_chunks (instance_id);
 """
 
+_PARADEDB_VECTOR_DDL = """
+CREATE EXTENSION IF NOT EXISTS vector;
+
+ALTER TABLE knowledge_chunks
+    ADD COLUMN IF NOT EXISTS embedding   vector(384),
+    ADD COLUMN IF NOT EXISTS embed_model TEXT;
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_idx
+    ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);
+"""
+
 _PARADEDB_CHUNKS_BM25_DDL = """
 CREATE INDEX IF NOT EXISTS knowledge_chunks_bm25_idx
     ON knowledge_chunks
@@ -439,6 +451,10 @@ async def init_paradedb() -> None:
             await conn.execute(_PARADEDB_CHUNKS_BM25_DDL)
         except Exception as idx_err:
             logger.warning(f"ParadeDB chunk BM25 index DDL note: {idx_err}")
+        try:
+            await conn.execute(_PARADEDB_VECTOR_DDL)
+        except Exception as vec_err:
+            logger.warning(f"pgvector unavailable, knowledge search will use BM25 only: {vec_err}")
         row = await conn.fetchrow(_PARADEDB_BM25_CHECK)
         bm25_present = (row["n"] > 0) if row else False
 
@@ -481,37 +497,105 @@ def _chunk_text(text: str) -> list[str]:
     return out
 
 
-async def _index_source_chunks(conn, source: dict) -> int:
-    """Replace the parts of one entry. Runs on the caller's connection."""
+# Local embeddings for vector search (spec 008). Text never leaves the server.
+KB_EMBED_MODEL = "BAAI/bge-small-en-v1.5"   # 384 dimensions
+KB_EMBED_CACHE = ROOT_DIR / ".cache" / "fastembed"
+# Vector matches below this cosine similarity are ignored, so unrelated questions still
+# find nothing. Measured for bge-small: related 0.55-0.82, unrelated 0.42-0.48.
+KB_MIN_SIMILARITY = float(os.environ.get("KB_MIN_SIMILARITY", "0.52"))
+_kb_embedder = None
+_kb_embedder_failed = False
+_kb_embedder_lock = threading.Lock()
+
+
+def _load_embedder():
+    global _kb_embedder, _kb_embedder_failed
+    with _kb_embedder_lock:
+        if _kb_embedder is None and not _kb_embedder_failed:
+            try:
+                from fastembed import TextEmbedding
+                _kb_embedder = TextEmbedding(KB_EMBED_MODEL, cache_dir=str(KB_EMBED_CACHE))
+                logger.info(f"Knowledge base embeddings: loaded {KB_EMBED_MODEL}")
+            except Exception as e:
+                _kb_embedder_failed = True
+                logger.warning(f"Knowledge base embeddings unavailable, using BM25 only: {e}")
+    return _kb_embedder
+
+
+def _vector_literal(values) -> str:
+    return "[" + ",".join(f"{float(v):.6f}" for v in values) + "]"
+
+
+async def _embed_passages(texts: list[str]) -> list[str] | None:
+    def run():
+        model = _load_embedder()
+        return [_vector_literal(v) for v in model.passage_embed(texts)] if model else None
+    try:
+        return await asyncio.to_thread(run)
+    except Exception as e:
+        logger.warning(f"Embedding knowledge base parts failed: {e}")
+        return None
+
+
+async def _embed_query(text: str) -> str | None:
+    def run():
+        model = _load_embedder()
+        return _vector_literal(next(iter(model.query_embed([text])))) if model else None
+    try:
+        return await asyncio.to_thread(run)
+    except Exception as e:
+        logger.warning(f"Embedding a knowledge base query failed: {e}")
+        return None
+
+
+async def _prepare_source_chunks(source: dict) -> list[tuple]:
+    """Split one entry and embed its parts. Needs no database connection."""
     parts = _chunk_text(source.get("content") or "") or [""]
+    title = source.get("title") or ""
+    vectors = await _embed_passages([f"{title}\n\n{text}" for text in parts])
+    model = KB_EMBED_MODEL if vectors else None
+    return [(f"{source['id']}:{i}", source["id"], source["instance_id"], i, len(parts), title, text,
+             vectors[i - 1] if vectors else None, model) for i, text in enumerate(parts, 1)]
+
+
+async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
+    """Replace the parts of one entry on the caller's connection."""
     async with conn.transaction():
-        await conn.execute("DELETE FROM knowledge_chunks WHERE source_id = $1", source["id"])
+        await conn.execute("DELETE FROM knowledge_chunks WHERE source_id = $1", source_id)
         await conn.executemany(
             """
-            INSERT INTO knowledge_chunks (id, source_id, instance_id, part, parts, title, content)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO knowledge_chunks
+                (id, source_id, instance_id, part, parts, title, content, embedding, embed_model)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
             """,
-            [(f"{source['id']}:{i}", source["id"], source["instance_id"], i, len(parts),
-              source.get("title") or "", text) for i, text in enumerate(parts, 1)],
+            rows,
         )
-    return len(parts)
+    return len(rows)
+
+
+async def _index_source_chunks(source: dict) -> int:
+    rows = await _prepare_source_chunks(source)
+    async with _paradedb_pool.acquire() as conn:
+        return await _write_source_chunks(conn, source["id"], rows)
 
 
 async def backfill_knowledge_chunks() -> None:
-    """Split every entry that has no parts yet (entries saved before spec 008)."""
+    """Split and embed entries with no parts, or parts not embedded with the current model."""
     try:
+        if await asyncio.to_thread(_load_embedder) is None:
+            stale_sql = "NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id)"
+        else:
+            stale_sql = ("NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id "
+                         "AND c.embed_model IS NOT DISTINCT FROM $1)")
         async with _paradedb_pool.acquire() as conn:
             rows = await conn.fetch(
-                """
-                SELECT s.id, s.instance_id, s.title, s.content
-                FROM   knowledge_sources_index s
-                WHERE  NOT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id = s.id)
-                """
+                f"SELECT s.id, s.instance_id, s.title, s.content FROM knowledge_sources_index s WHERE {stale_sql}",
+                *([KB_EMBED_MODEL] if "$1" in stale_sql else []),
             )
-            for row in rows:
-                await _index_source_chunks(conn, dict(row))
+        for row in rows:
+            await _index_source_chunks(dict(row))
         if rows:
-            logger.info(f"Knowledge base: split {len(rows)} existing entr{'y' if len(rows) == 1 else 'ies'} into parts")
+            logger.info(f"Knowledge base: split and indexed {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}")
     except Exception as e:
         logger.warning(f"Knowledge base part backfill failed: {e}")
 
@@ -519,6 +603,7 @@ async def backfill_knowledge_chunks() -> None:
 async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
     if _paradedb_pool is None:
         raise RuntimeError("ParadeDB pool is not initialised — cannot write knowledge source")
+    chunk_rows = await _prepare_source_chunks(source)   # embedding is slow; no connection held
     async with _paradedb_pool.acquire() as conn:
         await conn.execute(
             """
@@ -553,7 +638,7 @@ async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
             source.get("created_at"),
             source.get("updated_at"),
         )
-        source["parts"] = await _index_source_chunks(conn, source)
+        source["parts"] = await _write_source_chunks(conn, source["id"], chunk_rows)
 
 
 async def delete_knowledge_source_from_paradedb(source_id: str) -> None:
@@ -638,8 +723,8 @@ async def _pg_update_source(source_id: str, instance_id: str, fields: dict) -> d
             """,
             source_id, instance_id, *values,
         )
-        if row and ("content" in fields or "title" in fields):
-            await _index_source_chunks(conn, dict(row))
+    if row and ("content" in fields or "title" in fields):
+        await _index_source_chunks(dict(row))
     return _pg_row_to_dict(row) if row else None
 
 
@@ -675,6 +760,69 @@ def _sanitize_bm25_query(raw: str) -> str:
 KB_SEARCH_CANDIDATES = 40     # parts taken from each ranking before combining
 KB_CONTEXT_PARTS = 12         # parts sent to the model
 KB_CONTEXT_CHARS = 30000
+
+
+KB_RRF_K = 60
+
+# Common words dropped from the BM25 query: the index has no stopword filter, so words
+# like "the" or "what" matched almost every part and unrelated questions found context.
+_KB_STOPWORDS = frozenset("""
+a about above after again against all am an and any are as at be because been before being
+below between both but by can cannot could did do does doing down during each few for from
+further had has have having he her here hers him his how i if in into is it its itself just
+let me more most my no nor not now of off on once only or other our out over own same she
+should so some such than that the their them then there these they this those through to
+too under until up very was we were what when where which while who whom why will with would
+you your yours hi hello hey please thanks thank tell know want need get got make way thing
+things anything something someone good bad best really also any much many lot im ive dont
+cant wont isnt arent doesnt didnt whats hows
+""".split())
+
+
+def _kb_bm25_query(safe_query: str) -> str:
+    """The meaningful words of a sanitised query, for BM25."""
+    words = re.findall(r"[A-Za-z0-9]+", safe_query)
+    return " ".join(w for w in words if len(w) > 1 and w.lower() not in _KB_STOPWORDS)
+
+
+async def _kb_vector_search(query: str, instance_id: str) -> list[dict]:
+    """Parts closest in meaning to the query, at or above KB_MIN_SIMILARITY."""
+    vector = await _embed_query(query)
+    if vector is None:
+        return []
+    try:
+        async with _paradedb_pool.acquire() as conn:
+            async with conn.transaction():
+                # Keep scanning the HNSW graph until enough rows pass the filters.
+                await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+                rows = await conn.fetch(
+                    """
+                    SELECT c.id, c.source_id, c.title, c.content, c.part, c.parts, s.priority,
+                           1 - (c.embedding <=> $2::vector) AS similarity
+                    FROM   knowledge_chunks c
+                    JOIN   knowledge_sources_index s ON s.id = c.source_id
+                    WHERE  c.instance_id = $1
+                      AND  s.is_active   = true
+                      AND  c.embedding IS NOT NULL
+                    ORDER  BY c.embedding <=> $2::vector
+                    LIMIT  $3
+                    """,
+                    instance_id, vector, KB_SEARCH_CANDIDATES,
+                )
+    except Exception as e:
+        logger.warning(f"Vector search failed, using BM25 only: {e}")
+        return []
+    return [dict(r) for r in rows if r["similarity"] >= KB_MIN_SIMILARITY]
+
+
+def _kb_fuse(bm25_rows: list[dict], vector_rows: list[dict]) -> list[dict]:
+    """Reciprocal rank fusion of the two rankings, with the entry priority boost."""
+    fused: dict[str, dict] = {}
+    for ranking in (bm25_rows, vector_rows):
+        for rank, r in enumerate(ranking, 1):
+            entry = fused.setdefault(r["id"], {**r, "rrf": 0.0})
+            entry["rrf"] += 1.0 / (KB_RRF_K + rank)
+    return sorted(fused.values(), key=lambda r: r["rrf"] * (1.0 + (r.get("priority") or 0) * 0.1), reverse=True)
 
 
 def _kb_part_label(r: dict) -> str:
@@ -739,29 +887,29 @@ async def search_knowledge(query: str, instance_id: str, limit: int = 5) -> str:
             return ""
 
     try:
-        async with _paradedb_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT c.id, c.source_id, c.title, c.content, c.part, c.parts, s.priority,
-                       paradedb.score(c.id) AS bm25_score
-                FROM   knowledge_chunks c
-                JOIN   knowledge_sources_index s ON s.id = c.source_id
-                WHERE  c.instance_id = $1
-                  AND  s.is_active   = true
-                  AND  c.id @@@ paradedb.parse($2, lenient => true)
-                ORDER  BY paradedb.score(c.id) DESC
-                LIMIT  $3
-                """,
-                instance_id, safe_query, KB_SEARCH_CANDIDATES,
-            )
-        if not rows:
-            logger.debug("ParadeDB BM25 returned 0 parts for query=%r instance=%s", query, instance_id)
+        bm25_query = _kb_bm25_query(safe_query)
+        rows = []
+        if bm25_query:
+            async with _paradedb_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT c.id, c.source_id, c.title, c.content, c.part, c.parts, s.priority,
+                           paradedb.score(c.id) AS bm25_score
+                    FROM   knowledge_chunks c
+                    JOIN   knowledge_sources_index s ON s.id = c.source_id
+                    WHERE  c.instance_id = $1
+                      AND  s.is_active   = true
+                      AND  c.id @@@ paradedb.parse($2, lenient => true)
+                    ORDER  BY paradedb.score(c.id) DESC
+                    LIMIT  $3
+                    """,
+                    instance_id, bm25_query, KB_SEARCH_CANDIDATES,
+                )
+        vector_rows = await _kb_vector_search(query, instance_id)
+        if not rows and not vector_rows:
+            logger.debug("No BM25 or vector match for query=%r instance=%s", query, instance_id)
             return ""
-        # Priority boost on the BM25 score, as before parts existed.
-        ranked = sorted((dict(r) for r in rows),
-                        key=lambda r: (r["bm25_score"] or 0.0) * (1.0 + (r["priority"] or 0) * 0.1),
-                        reverse=True)
-        return _kb_context(ranked, query, instance_id)
+        return _kb_context(_kb_fuse([dict(r) for r in rows], vector_rows), query, instance_id)
     except Exception as e:
         logger.error(f"ParadeDB search error: {e}")
         return ""
