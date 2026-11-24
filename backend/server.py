@@ -621,9 +621,21 @@ async def _prepare_source_chunks(source: dict, embed: bool = True) -> list[tuple
              vectors[i - 1] if vectors else None, model, fingerprint) for i, text in enumerate(parts, 1)]
 
 
-async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
-    """Replace the parts of one entry on the caller's connection."""
+async def _write_source_chunks(conn, source_id: str, rows: list[tuple], only_if_current: bool = False) -> int:
+    """Replace the parts of one entry on the caller's connection.
+
+    With only_if_current, the parts are written only if the entry still has the text they were
+    built from (row locked, fingerprint compared), so a slow rebuild started before an edit
+    can't overwrite the parts of the edited text. Returns 0 when skipped.
+    """
     async with conn.transaction():
+        if only_if_current:
+            current = await conn.fetchrow(
+                "SELECT instance_id, title, content FROM knowledge_sources_index WHERE id = $1 FOR UPDATE",
+                source_id,
+            )
+            if not current or not rows or _kb_fingerprint(dict(current)) != rows[0][9]:
+                return 0
         await conn.execute("DELETE FROM knowledge_chunks WHERE source_id = $1", source_id)
         await conn.executemany(
             """
@@ -638,9 +650,10 @@ async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
 
 
 async def _index_source_chunks(source: dict) -> int:
-    rows = await _prepare_source_chunks(source)
+    """Rebuild an entry's parts; skipped (0) if the entry changed while they were being built."""
+    rows = await _prepare_source_chunks(source)   # embedding is slow; no connection held
     async with _paradedb_pool.acquire() as conn:
-        return await _write_source_chunks(conn, source["id"], rows)
+        return await _write_source_chunks(conn, source["id"], rows, only_if_current=True)
 
 
 async def backfill_knowledge_chunks() -> dict:
@@ -2573,14 +2586,16 @@ async def _kb_embed_entries(instance_id: str, source_ids: list[str]) -> None:
     for source_id in source_ids:
         try:
             source = await _pg_fetch_source(source_id, instance_id)
-            if source:
-                await _index_source_chunks(source)
+            # 0 when the entry was edited meanwhile: the edit has already rebuilt its parts.
+            if source and await _index_source_chunks(source):
                 done += 1
         except Exception as e:
             # Usually the entry was deleted meanwhile; if it still exists, startup redoes it.
             logger.warning(f"KB import: embedding {source_id} skipped ({type(e).__name__}); "
                            "if the entry still exists, startup will add its embeddings")
-    logger.info(f"KB import instance={instance_id}: embeddings added to {done}/{len(source_ids)} entries")
+    rest = len(source_ids) - done
+    logger.info(f"KB import instance={instance_id}: embeddings added to {done}/{len(source_ids)} entries"
+                + (f"; {rest} edited or deleted meanwhile" if rest else ""))
 
 
 def _kb_embed_later(instance_id: str, source_ids: list[str]) -> None:

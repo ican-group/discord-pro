@@ -40,6 +40,10 @@ A multi-part article has `total_parts` rows sharing `group_id`, titled `<title> 
 - The entry and its BM25 parts are written immediately; embeddings are added by a background task
   (the startup backfill completes any that are interrupted). Version other than 1, or an empty
   file: 422.
+- Edits during background indexing: every part rebuild (edit, background embedding, startup
+  backfill) writes its parts only if the entry still holds the text they were built from (row
+  locked, fingerprint compared). An edit is searchable as soon as it is saved, and a slower
+  rebuild of the old text is discarded instead of overwriting it.
 
 Response: `rows, articles, imported, skipped_existing, incomplete, categories, embeddings_pending`.
 
@@ -61,3 +65,38 @@ the entry's `import_key` (the original group) or its id.
 `knowledge_sources_index` gains `category TEXT NOT NULL DEFAULT ''` and `import_key TEXT` with
 a unique index on `(instance_id, import_key)`. Additive: older code ignores them. Writes that
 don't set them keep the stored values. The list endpoint returns up to 2,000 entries (was 200).
+
+## What the version 1 format can't recover
+
+BitBotPro stripped whitespace at each cut, and the file doesn't record where a cut was or what
+was removed. Import infers the joins:
+
+- A part shorter than 8,000 characters ended at a paragraph break: joined with a blank line.
+  Where the cut actually fell on a single space or line break, the article gets a blank line
+  instead (whitespace only; no effect on search).
+- A part of exactly 8,000 characters was a hard cut: joined directly. If the character after the
+  cut was a space, the space is lost and two words are glued ("for" + "bob" → "forbob").
+
+In `kb-export-2026-11-15.json` (159 joins across 92 articles): 37 paragraph joins, 84 hard cuts
+inside a word that also occurs elsewhere (join correct), 11 next to punctuation, and 27 where both
+halves are also words. Reviewing those 27, about 18 are lost spaces (e.g. "is also", "during the",
+"maintain decentralization") and the rest are genuine mid-word cuts ("noneth|eless",
+"compari|sons", a hex value). A glued pair is one token for keyword search, so that occurrence
+doesn't match either word. In 15 of the 18 both words also occur separately elsewhere in the same
+article; in 3 articles one word ("decentralization", "purify", "systems") occurs only inside the
+glued token, so keyword search can't find that article by that word. Vector search still sees the
+surrounding passage. Guessing spaces from a vocabulary was rejected: it would also split real
+mid-word cuts. Also not carried by the format: the original part boundaries as such (BridgeBot
+re-splits on export), ids (new per import), `updated_at`, and anything BitBotPro didn't export.
+
+Round trip of BridgeBot's own exports is exact: parts are slices cut after whitespace, so they
+join back without guessing.
+
+## Known search behaviour (unchanged here)
+
+Chat search sends its top 12 parts to the model. For a 12-word phrase from the last part of each
+of the 92 multi-part articles, a later part of the right article matched in 92/92, and the
+article reached the top 12 in 87/92 once embeddings were built (79/92 with keyword search only,
+before embeddings). Misses are mostly Normal-priority articles outranked by the High-priority
+boost (286 of 327 rows in the file are High), one passage shared by 42 articles, and two
+articles ranked 13th and 16th. Ranking changes belong in a separate PR.
