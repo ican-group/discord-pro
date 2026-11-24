@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any
 from dotenv import load_dotenv
 import os
 import logging
@@ -236,6 +236,8 @@ class BotConfigUpdate(BaseModel):
 class FAQEntry(BaseModel):
     title: str
     content: str
+    # Manual entries are FAQs or Tech Notes; both are stored, split and searched the same way.
+    type: Literal["faq", "tech_note"] = "faq"
     tags: Optional[List[str]] = []
     priority: Optional[int] = 0
 
@@ -2116,7 +2118,7 @@ async def get_knowledge_sources(instance_id: str = Depends(get_instance_access))
 @api_router.post("/knowledge/sources/faq")
 async def add_faq(entry: FAQEntry, instance_id: str = Depends(get_instance_access)):
     doc = {
-        "id": str(uuid.uuid4()), "type": "faq", "title": entry.title,
+        "id": str(uuid.uuid4()), "type": entry.type, "title": entry.title,
         "content": entry.content, "tags": entry.tags or [],
         "instance_id": instance_id, "priority": entry.priority or 0,
         "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()
