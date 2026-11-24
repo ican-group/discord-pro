@@ -3841,15 +3841,21 @@ def _zendesk_is_summary_note(body: str) -> bool:
     return False
 
 
+def _zendesk_is_response_note(body: str) -> bool:
+    # Internal notes posted from the ticket panel ("Post internal note"); summaries are checked first.
+    return " ".join(body.split()).startswith(_ZENDESK_RESPONSE_HEADER)
+
+
 def _zendesk_review_state(ticket: dict, history: list[dict]) -> str:
     if ticket.get("status") in ZENDESK_SOLVED_STATUSES:
         return "solved"
     requester_id = ticket.get("requester_id")
     state = "needs_summary"
     for comment in history:
-        is_summary = _zendesk_is_summary_note(comment["body"])
-        if not comment["public"] and is_summary:
+        if not comment["public"] and _zendesk_is_summary_note(comment["body"]):
             state = "summary_posted"
+        elif not comment["public"] and _zendesk_is_response_note(comment["body"]):
+            state = "note_posted"
         elif comment["public"] and requester_id and comment.get("author_id") == requester_id:
             state = "needs_summary"
     return state

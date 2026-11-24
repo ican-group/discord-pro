@@ -14,6 +14,7 @@ const outcomes = {
 const reviewStyles = {
   needs_summary: { color: "#fecaca", borderColor: "#ef4444", label: "Needs summary" },
   summary_posted: { color: "#fed7aa", borderColor: "#f97316", label: "Summary posted" },
+  note_posted: { color: "#fed7aa", borderColor: "#f97316", label: "Note posted" },
   solved: { color: "#bbf7d0", borderColor: "#22c55e", label: "Solved" },
   unavailable: { color: "#cbd5e1", borderColor: "#64748b", label: "Status unavailable" },
 };
@@ -576,6 +577,9 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
     run(async () => {
       await api.post(`/zendesk/tickets/${ticket.id}/notes`, { body: note }, options);
       setNote("");
+      if (!["solved", "closed"].includes(ticket.status)) {
+        setReviewStates((current) => ({ ...current, [ticket.id]: "note_posted" }));
+      }
       setNotice(`Internal note posted to ticket #${ticket.id}.`);
     });
   }
