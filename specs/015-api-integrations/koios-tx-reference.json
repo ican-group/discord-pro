@@ -1,0 +1,14 @@
+{
+  "endpoints": [
+    {
+      "path": "/tx_info",
+      "method": "GET",
+      "summary": "Transaction details by hash (Koios tx_info, GET form)",
+      "parameters": [
+        {"name": "_tx_hashes", "in": "query", "required": true,
+         "description": "PostgREST array of transaction hashes, e.g. {hash}"}
+      ]
+    },
+    {"path": "/tip", "method": "GET", "summary": "Current chain tip"}
+  ]
+}

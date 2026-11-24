@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import AdminLayout from "@/components/AdminLayout";
 import Dashboard from "@/pages/Dashboard";
 import KnowledgeBase from "@/pages/KnowledgeBase";
+import ApiIntegrations from "@/pages/ApiIntegrations";
 import Conversations from "@/pages/Conversations";
 import BotSettings from "@/pages/BotSettings";
 import Analytics from "@/pages/Analytics";
@@ -68,6 +69,7 @@ function AppRoutes() {
         <Route path="analytics" element={<Analytics />} />
         <Route path="discord" element={<DiscordSettings />} />
         <Route path="zendesk" element={<Zendesk />} />
+        <Route path="api-integrations" element={<ApiIntegrations />} />
         <Route path="discord-app-setup" element={<AdminOnlyRoute><DiscordAppSetup /></AdminOnlyRoute>} />
         <Route path="embed" element={<EmbedCode />} />
         <Route path="instances" element={<AdminOnlyRoute><Instances /></AdminOnlyRoute>} />
