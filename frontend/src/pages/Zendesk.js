@@ -182,7 +182,12 @@ const SPAM_CHECK_MODES = ["new", "open", "pending"];
 const tagStyle = { display: "inline-block", marginTop: 4, marginRight: 6, padding: "1px 6px", fontSize: 11, borderRadius: 4 };
 const spamTagStyle = { ...tagStyle, color: "#fde68a", border: "1px solid #f59e0b" };
 
-const KB_KIND_LABELS = { faq: "FAQ", tech_note: "Tech Note", ticket_solution: "Ticket solution" };
+const KB_KIND_LABELS = { faq: "FAQ", tech_note: "Tech Note", ticket_solution: "Ticket solution", url: "Web page", document: "Document" };
+// Suggested-reply source groups, in the priority order the server uses.
+const SOURCE_GROUPS = [
+  ["knowledge", "FAQs and Tech Notes"], ["ticket_solutions", "Past ticket solutions"],
+  ["urls", "Web pages"], ["documents", "Documents"],
+];
 const kbKindStyle = { ...tagStyle, marginTop: 0, color: "#c4b5fd", border: "1px solid #8b5cf6" };
 
 function KbKind({ entry }) {
@@ -265,11 +270,11 @@ function LinkedKbEntries({ instanceId, ticketId }) {
       )}
       <form onSubmit={search} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
         <input style={{ ...T.input, flex: "1 1 200px" }} value={query} maxLength={300}
-          aria-label="Search FAQs and Tech Notes" placeholder="Search FAQs and Tech Notes"
+          aria-label="Search the Knowledge Base" placeholder="Search FAQs, Tech Notes, pages and documents"
           onChange={(e) => setQuery(e.target.value)} disabled={busy} />
         <button type="submit" style={T.btnSecondary} disabled={busy}>Search</button>
       </form>
-      {results?.length === 0 && <p style={T.sectionSub}>No matching FAQs or Tech Notes.</p>}
+      {results?.length === 0 && <p style={T.sectionSub}>No matching Knowledge Base entries.</p>}
       {results?.length > 0 && (
         <ul style={{ display: "grid", gap: 6, paddingLeft: 0, listStyle: "none", marginTop: 8 }}>
           {results.map((entry) => (
@@ -677,10 +682,11 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
               Suggest solution or follow-up questions
             </button>
             {evidence && (
-              <div style={T.sectionSub} aria-label="Evidence used">
-                {[["knowledge", "FAQs and Tech Notes"], ["ticket_solutions", "Past ticket solutions"]].map(([group, label]) => (
+              <div style={T.sectionSub} aria-label="Sources considered">
+                <p>Sources considered (searched in this order; the draft cites the ones it used):</p>
+                {SOURCE_GROUPS.map(([group, label]) => (
                   <p key={group}>
-                    {label}: {evidence[group].length === 0 ? "none found" : evidence[group].map((entry) =>
+                    {label}: {!evidence[group]?.length ? "none found" : evidence[group].map((entry) =>
                       `${entry.title || "Untitled"}${entry.linked ? " (linked)" : ""}`).join("; ")}
                   </p>
                 ))}
