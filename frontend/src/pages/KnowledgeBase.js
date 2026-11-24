@@ -1,13 +1,15 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import api from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Plus, Trash2, Globe, FileText, HelpCircle, ToggleLeft, ToggleRight, Loader2, ChevronUp, ChevronDown, ArrowUpCircle, Pencil, X, Save, Lock, Wrench } from "lucide-react";
+import { Plus, Trash2, Globe, FileText, HelpCircle, ToggleLeft, ToggleRight, Loader2, ChevronUp, ChevronDown, ArrowUpCircle, Pencil, X, Save, Lock, Wrench, Download, Upload } from "lucide-react";
 import { colors, fonts, T, onFocus, onBlur, rowEnter, rowLeave } from "../theme";
 
 const typeIcon = { faq: HelpCircle, tech_note: Wrench, url: Globe, document: FileText };
 const typeColor = { faq: colors.brand.blue, tech_note: colors.brand.warning, url: colors.brand.success, document: colors.text.secondary };
 const typeLabel = { faq: "FAQ", tech_note: "Tech Note" };
+const UNCATEGORIZED = "Uncategorized";
+const categoryOf = (source) => (source.category || "").trim() || UNCATEGORIZED;
 
 // Manual entry types: same storage, editing, chunking and search; only the label differs.
 const MANUAL_TYPES = {
@@ -80,8 +82,9 @@ function PrioritySelector({ value, onChange, style }) {
   );
 }
 
-function EditModal({ source, onClose, onSaved }) {
+function EditModal({ source, categories, onClose, onSaved }) {
   const [title, setTitle] = useState(source.title || "");
+  const [category, setCategory] = useState(source.category || "");
   const [content, setContent] = useState(source.content || "");
   const [url, setUrl] = useState(source.url || "");
   const [priority, setPriority] = useState(source.priority || 0);
@@ -91,7 +94,7 @@ function EditModal({ source, onClose, onSaved }) {
     if (!title.trim()) { toast.error("Title is required"); return; }
     setSaving(true);
     try {
-      const payload = { title: title.trim(), content: content.trim(), priority };
+      const payload = { title: title.trim(), content: content.trim(), priority, category: category.trim() };
       if (source.type === "url" && url.trim()) payload.url = url.trim();
       const res = await api.put(`/knowledge/sources/${source.id}`, payload);
       toast.success("Source updated");
@@ -136,6 +139,18 @@ function EditModal({ source, onClose, onSaved }) {
               placeholder="Source title" data-testid="edit-title-input"
               onFocus={onFocus} onBlur={onBlur}
             />
+          </div>
+
+          <div>
+            <label style={T.label}>Category</label>
+            <input
+              style={T.input} value={category} onChange={e => setCategory(e.target.value)} maxLength={80}
+              placeholder="Leave blank for Uncategorized" data-testid="edit-category-input" list="kb-categories"
+              onFocus={onFocus} onBlur={onBlur}
+            />
+            <datalist id="kb-categories">
+              {categories.map(c => <option key={c} value={c} />)}
+            </datalist>
           </div>
 
           {source.type === "url" && (
@@ -191,13 +206,74 @@ export default function KnowledgeBase() {
   const [scraping, setScraping] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [categoryTab, setCategoryTab] = useState("all");
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const fileRef = useRef(null);
+  const importRef = useRef(null);
 
   const loadSources = useCallback(() => {
     api.get(`/knowledge/sources`).then(r => setSources(r.data)).catch(() => {});
   }, [instanceId]);
 
   useEffect(() => { loadSources(); }, [loadSources, instanceId]);
+  useEffect(() => { setCategoryTab("all"); }, [instanceId]);
+
+  // Category tabs: All, named categories (A-Z), then Uncategorized. One article per row.
+  const categoryTabs = useMemo(() => {
+    const counts = {};
+    sources.forEach(s => { const c = categoryOf(s); counts[c] = (counts[c] || 0) + 1; });
+    const named = Object.keys(counts).filter(c => c !== UNCATEGORIZED).sort((a, b) => a.localeCompare(b));
+    return [
+      { id: "all", label: "All", count: sources.length },
+      ...named.map(c => ({ id: c, label: c, count: counts[c] })),
+      ...(counts[UNCATEGORIZED] ? [{ id: UNCATEGORIZED, label: UNCATEGORIZED, count: counts[UNCATEGORIZED] }] : []),
+    ];
+  }, [sources]);
+  const namedCategories = categoryTabs.slice(1).map(t => t.id).filter(c => c !== UNCATEGORIZED);
+  const activeCategory = categoryTabs.some(t => t.id === categoryTab) ? categoryTab : "all";
+  const visibleSources = activeCategory === "all" ? sources : sources.filter(s => categoryOf(s) === activeCategory);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const { data } = await api.get("/knowledge/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `kb-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${data.count} rows`);
+    } catch { toast.error("Export failed"); }
+    finally { setExporting(false); }
+  };
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data?.sources)) { toast.error("Not a knowledge base export: no 'sources' list"); return; }
+      if ((data.version ?? 1) !== 1) { toast.error(`Unsupported export version ${data.version}`); return; }
+      const { data: r } = await api.post("/knowledge/import", { version: data.version ?? 1, sources: data.sources });
+      const parts = [`Imported ${r.imported} of ${r.articles} articles from ${r.rows} rows`];
+      if (r.skipped_existing) parts.push(`${r.skipped_existing} already in this workspace`);
+      if (r.incomplete?.length) parts.push(`${r.incomplete.length} with missing parts`);
+      toast.success(parts.join("; "), r.embeddings_pending ? {
+        description: "Keyword search works now; search by meaning is being prepared in the background.",
+      } : undefined);
+      loadSources();
+    } catch (err) {
+      if (err instanceof SyntaxError) toast.error("The file isn't valid JSON");
+      else toast.error(typeof err.response?.data?.detail === "string" ? err.response.data.detail : "Import failed");
+    } finally {
+      setImporting(false);
+      if (importRef.current) importRef.current.value = "";
+    }
+  };
 
   const addFaq = async () => {
     if (!faq.title.trim() || !faq.content.trim()) { toast.error("Title and content are required"); return; }
@@ -449,10 +525,41 @@ export default function KnowledgeBase() {
             All Sources
             <span style={{ marginLeft: "10px", fontFamily: fonts.mono, fontSize: "11px", color: colors.text.secondary }}>{sources.length}</span>
           </p>
-          <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.muted, margin: 0 }}>
-            Sorted by priority (highest first)
-          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.muted, margin: 0 }}>
+              Sorted by priority (highest first)
+            </p>
+            <input ref={importRef} type="file" accept="application/json,.json" onChange={handleImportFile}
+              style={{ display: "none" }} data-testid="kb-import-input" />
+            <button onClick={() => importRef.current?.click()} disabled={importing} data-testid="kb-import-btn"
+              title={`Import a knowledge base export into ${selectedInstance?.name || "this workspace"}`}
+              style={{ ...T.btnGhost, padding: "6px 12px", fontSize: "12px", opacity: importing ? 0.6 : 1 }}>
+              {importing ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+              {importing ? "Importing…" : `Import into ${selectedInstance?.name || "workspace"}`}
+            </button>
+            <button onClick={handleExport} disabled={exporting || sources.length === 0} data-testid="kb-export-btn"
+              style={{ ...T.btnGhost, padding: "6px 12px", fontSize: "12px", opacity: exporting || sources.length === 0 ? 0.6 : 1 }}>
+              {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+              Export
+            </button>
+          </div>
         </div>
+        {sources.length > 0 && (
+          <div role="tablist" aria-label="Categories" data-testid="kb-category-tabs"
+            style={{ display: "flex", gap: "4px", padding: "0 12px", overflowX: "auto", borderBottom: `1px solid ${colors.border.subtle}` }}>
+            {categoryTabs.map(({ id, label, count }) => (
+              <button key={id} role="tab" aria-selected={activeCategory === id} onClick={() => setCategoryTab(id)}
+                data-testid={`kb-category-tab-${id}`} style={{
+                  padding: "10px 12px", backgroundColor: "transparent", border: "none", whiteSpace: "nowrap",
+                  borderBottom: activeCategory === id ? `2px solid ${colors.brand.cyan}` : "2px solid transparent",
+                  color: activeCategory === id ? colors.text.primary : colors.text.secondary, cursor: "pointer",
+                  fontFamily: fonts.body, fontSize: "12px", fontWeight: 500, marginBottom: "-1px",
+                }}>
+                {label}<span style={{ marginLeft: "6px", fontFamily: fonts.mono, fontSize: "11px", color: colors.text.muted }}>{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {sources.length === 0 ? (
           <div style={{ padding: "48px", textAlign: "center" }}>
             <p style={{ fontFamily: fonts.body, color: colors.text.secondary, fontSize: "14px" }}>No knowledge sources yet. Add your first source above.</p>
@@ -467,7 +574,7 @@ export default function KnowledgeBase() {
               </tr>
             </thead>
             <tbody>
-              {sources.map(source => (
+              {visibleSources.map(source => (
                 <tr key={source.id} style={{ borderBottom: `1px solid ${colors.border.faint}`, transition: "background-color 0.2s ease" }}
                   onMouseEnter={rowEnter} onMouseLeave={rowLeave} data-testid="knowledge-source-row">
                   <td style={{ padding: "12px 20px" }}><TypeBadge type={source.type} /></td>
@@ -481,6 +588,11 @@ export default function KnowledgeBase() {
                         }}>{source.parts} parts</span>
                       )}
                     </div>
+                    {activeCategory === "all" && (
+                      <div data-testid="kb-row-category" style={{ fontSize: "11px", color: source.category ? colors.text.accent : colors.text.muted, marginTop: "2px" }}>
+                        {categoryOf(source)}
+                      </div>
+                    )}
                     {source.url && <div style={{ fontSize: "11px", color: colors.text.secondary, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</div>}
                   </td>
                   <td style={{ padding: "12px 20px" }}>
@@ -545,7 +657,7 @@ export default function KnowledgeBase() {
 
       {/* Edit Modal */}
       {editing && (
-        <EditModal source={editing} onClose={() => setEditing(null)} onSaved={handleEditSaved} />
+        <EditModal source={editing} categories={namedCategories} onClose={() => setEditing(null)} onSaved={handleEditSaved} />
       )}
     </div>
   );

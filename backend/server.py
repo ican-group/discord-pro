@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Dict, Any
 from dotenv import load_dotenv
 import os
@@ -405,6 +405,15 @@ ALTER TABLE knowledge_sources_index
 CREATE INDEX IF NOT EXISTS idx_ki_canonical_url
     ON knowledge_sources_index (instance_id, canonical_url)
     WHERE canonical_url IS NOT NULL;
+
+-- KB import/export (spec 014): category tabs, and the export file's group_id for repeat imports.
+ALTER TABLE knowledge_sources_index
+    ADD COLUMN IF NOT EXISTS category   TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS import_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ki_import_key
+    ON knowledge_sources_index (instance_id, import_key)
+    WHERE import_key IS NOT NULL;
 """
 
 # One row per part of a knowledge base entry (spec 008). Parts follow their entry:
@@ -514,6 +523,7 @@ KB_CHUNK_OVERLAP = 150
 KB_MAX_CHUNKS = 2000
 # Bump when the splitting rules change, so every entry is rebuilt on the next startup.
 KB_CHUNKER_VERSION = "1"
+KB_CATEGORY_CHARS = 80
 
 
 def _kb_fingerprint(source: dict) -> str:
@@ -600,20 +610,32 @@ async def _embed_query(text: str) -> str | None:
         return None
 
 
-async def _prepare_source_chunks(source: dict) -> list[tuple]:
+async def _prepare_source_chunks(source: dict, embed: bool = True) -> list[tuple]:
     """Split one entry and embed its parts. Needs no database connection."""
     parts = _chunk_text(source.get("content") or "") or [""]
     title = source.get("title") or ""
-    vectors = await _embed_passages([f"{title}\n\n{text}" for text in parts])
+    vectors = await _embed_passages([f"{title}\n\n{text}" for text in parts]) if embed else None
     model = KB_EMBED_MODEL if vectors else None
     fingerprint = _kb_fingerprint(source)
     return [(f"{source['id']}:{i}", source["id"], source["instance_id"], i, len(parts), title, text,
              vectors[i - 1] if vectors else None, model, fingerprint) for i, text in enumerate(parts, 1)]
 
 
-async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
-    """Replace the parts of one entry on the caller's connection."""
+async def _write_source_chunks(conn, source_id: str, rows: list[tuple], only_if_current: bool = False) -> int:
+    """Replace the parts of one entry on the caller's connection.
+
+    With only_if_current, the parts are written only if the entry still has the text they were
+    built from (row locked, fingerprint compared), so a slow rebuild started before an edit
+    can't overwrite the parts of the edited text. Returns 0 when skipped.
+    """
     async with conn.transaction():
+        if only_if_current:
+            current = await conn.fetchrow(
+                "SELECT instance_id, title, content FROM knowledge_sources_index WHERE id = $1 FOR UPDATE",
+                source_id,
+            )
+            if not current or not rows or _kb_fingerprint(dict(current)) != rows[0][9]:
+                return 0
         await conn.execute("DELETE FROM knowledge_chunks WHERE source_id = $1", source_id)
         await conn.executemany(
             """
@@ -628,9 +650,10 @@ async def _write_source_chunks(conn, source_id: str, rows: list[tuple]) -> int:
 
 
 async def _index_source_chunks(source: dict) -> int:
-    rows = await _prepare_source_chunks(source)
+    """Rebuild an entry's parts; skipped (0) if the entry changed while they were being built."""
+    rows = await _prepare_source_chunks(source)   # embedding is slow; no connection held
     async with _paradedb_pool.acquire() as conn:
-        return await _write_source_chunks(conn, source["id"], rows)
+        return await _write_source_chunks(conn, source["id"], rows, only_if_current=True)
 
 
 async def backfill_knowledge_chunks() -> dict:
@@ -671,17 +694,20 @@ async def backfill_knowledge_chunks() -> dict:
     return result
 
 
-async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
+async def upsert_knowledge_source_to_paradedb(source: dict, embed: bool = True) -> None:
+    """Write an entry and its parts. With embed=False the parts are searchable by BM25 only
+    until _kb_embed_later (or the startup backfill) adds their embeddings."""
     if _paradedb_pool is None:
         raise RuntimeError("ParadeDB pool is not initialised — cannot write knowledge source")
-    chunk_rows = await _prepare_source_chunks(source)   # embedding is slow; no connection held
+    chunk_rows = await _prepare_source_chunks(source, embed)   # embedding is slow; no connection held
     async with _paradedb_pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO knowledge_sources_index
                 (id, instance_id, type, title, content, tags,
-                 priority, is_active, url, canonical_url, filename, created_at, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 priority, is_active, url, canonical_url, filename, created_at, updated_at,
+                 category, import_key)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,COALESCE($14, ''),$15)
             ON CONFLICT (id) DO UPDATE SET
                 instance_id   = EXCLUDED.instance_id,
                 type          = EXCLUDED.type,
@@ -693,7 +719,9 @@ async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
                 url           = EXCLUDED.url,
                 canonical_url = EXCLUDED.canonical_url,
                 filename      = EXCLUDED.filename,
-                updated_at    = EXCLUDED.updated_at
+                updated_at    = EXCLUDED.updated_at,
+                category      = COALESCE($14, knowledge_sources_index.category),
+                import_key    = COALESCE($15, knowledge_sources_index.import_key)
             """,
             source.get("id"),
             source.get("instance_id"),
@@ -708,6 +736,8 @@ async def upsert_knowledge_source_to_paradedb(source: dict) -> None:
             source.get("filename"),
             source.get("created_at"),
             source.get("updated_at"),
+            source.get("category"),
+            source.get("import_key"),
         )
         source["parts"] = await _write_source_chunks(conn, source["id"], chunk_rows)
 
@@ -734,11 +764,11 @@ async def _pg_list_sources(instance_id: str) -> list:
         rows = await conn.fetch(
             """
             SELECT id, instance_id, type, title, content, tags, priority,
-                   is_active, url, canonical_url, filename, created_at, updated_at
+                   is_active, url, canonical_url, filename, created_at, updated_at, category
             FROM   knowledge_sources_index
             WHERE  instance_id = $1
             ORDER  BY priority DESC, created_at DESC
-            LIMIT  200
+            LIMIT  2000
             """,
             instance_id,
         )
@@ -754,7 +784,7 @@ async def _pg_fetch_source(source_id: str, instance_id: str) -> dict | None:
         row = await conn.fetchrow(
             """
             SELECT id, instance_id, type, title, content, tags, priority,
-                   is_active, url, canonical_url, filename, created_at, updated_at
+                   is_active, url, canonical_url, filename, created_at, updated_at, category
             FROM   knowledge_sources_index
             WHERE  id = $1 AND instance_id = $2
             """,
@@ -790,7 +820,7 @@ async def _pg_update_source(source_id: str, instance_id: str, fields: dict) -> d
             SET    {set_clauses}
             WHERE  id = $1 AND instance_id = $2
             RETURNING id, instance_id, type, title, content, tags, priority,
-                      is_active, url, canonical_url, filename, created_at, updated_at
+                      is_active, url, canonical_url, filename, created_at, updated_at, category
             """,
             source_id, instance_id, *values,
         )
@@ -813,7 +843,7 @@ async def _pg_find_by_canonical_url(instance_id: str, canonical_url: str) -> dic
         row = await conn.fetchrow(
             """
             SELECT id, instance_id, type, title, content, tags, priority,
-                   is_active, url, canonical_url, filename, created_at, updated_at
+                   is_active, url, canonical_url, filename, created_at, updated_at, category
             FROM   knowledge_sources_index
             WHERE  instance_id = $1 AND canonical_url = $2 AND type = 'url'
             """,
@@ -2478,6 +2508,7 @@ class SourceUpdate(BaseModel):
     tags: Optional[List[str]] = None
     url: Optional[str] = None
     priority: Optional[int] = None
+    category: Optional[str] = Field(None, max_length=KB_CATEGORY_CHARS)
 
 @api_router.patch("/knowledge/sources/{source_id}/priority")
 async def update_source_priority(source_id: str, body: PriorityUpdate, instance_id: str = Depends(get_instance_access)):
@@ -2490,6 +2521,8 @@ async def update_source_priority(source_id: str, body: PriorityUpdate, instance_
 @api_router.put("/knowledge/sources/{source_id}")
 async def update_source(source_id: str, body: SourceUpdate, instance_id: str = Depends(get_instance_access)):
     fields = {k: v for k, v in body.dict().items() if v is not None}
+    if "category" in fields:
+        fields["category"] = fields["category"].strip()
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -2497,6 +2530,218 @@ async def update_source(source_id: str, body: SourceUpdate, instance_id: str = D
     if not updated:
         raise HTTPException(status_code=404, detail="Source not found")
     return updated
+
+
+# ── KB export / import (spec 014) ──
+# Version 1 file format from BitBotPro (aa55976^ /knowledge/export): one row per stored part,
+# grouped by group_id, with "(part N/M)" titles and parts of up to 8,000 characters.
+# BridgeBot stores one entry per article and splits it into its own search parts, so import
+# rebuilds articles from their parts and export splits them again.
+
+KB_EXPORT_VERSION = 1
+KB_EXPORT_PART_CHARS = 8000
+KB_IMPORT_MAX_ROWS = 20000
+KB_IMPORT_TYPES = {"faq", "tech_note", "url", "document"}
+_KB_PART_TITLE = re.compile(r"\s*\(part (\d+)/(\d+)\)$")
+
+
+def _kb_export_parts(text: str) -> list[str]:
+    """Split for export. Parts are exact slices (they join back with no separator), cut after
+    a paragraph break or other whitespace where possible."""
+    parts, pos, n = [], 0, len(text)
+    while n - pos > KB_EXPORT_PART_CHARS:
+        window = text[pos:pos + KB_EXPORT_PART_CHARS]
+        floor = KB_EXPORT_PART_CHARS // 2
+        cut = next((i + len(sep) for sep in ("\n\n", "\n", " ") if (i := window.rfind(sep, floor)) > 0),
+                   KB_EXPORT_PART_CHARS)
+        parts.append(text[pos:pos + cut])
+        pos += cut
+    parts.append(text[pos:])
+    return parts
+
+
+def _kb_join_parts(parts: list[str]) -> str:
+    """Rebuild an article from its parts.
+
+    BitBotPro split at a paragraph break before the 8,000-character limit, or cut at exactly
+    8,000 characters, and stripped the whitespace at each cut. A part that ends or the next one
+    starts with whitespace was not stripped (BridgeBot exports), so it joins as is.
+    """
+    text = parts[0] if parts else ""
+    for prev, cur in zip(parts, parts[1:]):
+        if not prev or not cur or prev[-1].isspace() or cur[0].isspace() or len(prev) >= KB_EXPORT_PART_CHARS:
+            text += cur
+        else:
+            text += "\n\n" + cur
+    return text
+
+
+_kb_background_tasks: set = set()
+
+
+async def _kb_embed_entries(instance_id: str, source_ids: list[str]) -> None:
+    """Add embeddings to entries imported without them. Entries edited or deleted meanwhile
+    are re-read, so the latest text is used; anything left over is redone on startup."""
+    done = 0
+    for source_id in source_ids:
+        try:
+            source = await _pg_fetch_source(source_id, instance_id)
+            # 0 when the entry was edited meanwhile: the edit has already rebuilt its parts.
+            if source and await _index_source_chunks(source):
+                done += 1
+        except Exception as e:
+            # Usually the entry was deleted meanwhile; if it still exists, startup redoes it.
+            logger.warning(f"KB import: embedding {source_id} skipped ({type(e).__name__}); "
+                           "if the entry still exists, startup will add its embeddings")
+    rest = len(source_ids) - done
+    logger.info(f"KB import instance={instance_id}: embeddings added to {done}/{len(source_ids)} entries"
+                + (f"; {rest} edited or deleted meanwhile" if rest else ""))
+
+
+def _kb_embed_later(instance_id: str, source_ids: list[str]) -> None:
+    if source_ids:
+        task = asyncio.create_task(_kb_embed_entries(instance_id, source_ids))
+        _kb_background_tasks.add(task)
+        task.add_done_callback(_kb_background_tasks.discard)
+
+
+def _kb_part_number(row: dict) -> int | None:
+    match = _KB_PART_TITLE.search(str(row.get("title") or ""))
+    return int(match.group(1)) if match else None
+
+
+@api_router.get("/knowledge/export")
+async def export_knowledge_base(instance_id: str = Depends(get_instance_access)):
+    """Export every entry of the workspace in the version 1 format."""
+    async with _paradedb_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, type, title, content, tags, priority, is_active, url, filename,
+                   created_at, category, import_key
+            FROM   knowledge_sources_index
+            WHERE  instance_id = $1
+            ORDER  BY created_at, id
+            """,
+            instance_id,
+        )
+    out = []
+    for row in rows:
+        parts = _kb_export_parts(row["content"] or "")
+        group_id = row["import_key"] or row["id"]
+        for i, text in enumerate(parts, 1):
+            title = row["title"] or ""
+            entry = {
+                "id": row["id"] if i == 1 else str(uuid.uuid5(uuid.NAMESPACE_URL, f"{row['id']}:{i}")),
+                "type": row["type"],
+                "title": f"{title} (part {i}/{len(parts)})" if len(parts) > 1 else title,
+                "content": text,
+                "url": row["url"] or "",
+                "priority": row["priority"],
+                "group_id": group_id,
+                "total_parts": len(parts),
+                "is_active": row["is_active"],
+                "created_at": row["created_at"],
+                "category": row["category"] or "",
+            }
+            if row["tags"]:
+                entry["tags"] = list(row["tags"])
+            if row["filename"]:
+                entry["filename"] = row["filename"]
+            out.append(entry)
+    return {
+        "version": KB_EXPORT_VERSION,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source_instance_id": instance_id,
+        "count": len(out),
+        "sources": out,
+    }
+
+
+class KBImportPayload(BaseModel):
+    version: int = KB_EXPORT_VERSION
+    sources: list[dict]
+
+
+@api_router.post("/knowledge/import")
+async def import_knowledge_base(payload: KBImportPayload, instance_id: str = Depends(get_instance_access)):
+    """Import a version 1 export into the selected workspace, one entry per article.
+
+    Rows are grouped by group_id (rows without one are single articles) and ordered by the
+    "(part N/M)" title. An article whose group_id is already in the workspace, as an earlier
+    import or as an entry id from an export of it, is skipped.
+    """
+    import asyncpg
+    if payload.version != KB_EXPORT_VERSION:
+        raise HTTPException(422, f"Unsupported export version {payload.version}; expected {KB_EXPORT_VERSION}")
+    if not payload.sources:
+        raise HTTPException(422, "The file has no knowledge base entries")
+    if len(payload.sources) > KB_IMPORT_MAX_ROWS:
+        raise HTTPException(422, f"The file has more than {KB_IMPORT_MAX_ROWS:,} rows")
+    groups: dict[str, list[tuple[int, dict]]] = {}
+    for index, row in enumerate(payload.sources):
+        if not isinstance(row, dict) or not isinstance(row.get("content", ""), str):
+            raise HTTPException(422, f"Row {index + 1} is not a knowledge base entry")
+        key = str(row.get("group_id") or row.get("id") or f"row-{index}")[:200]
+        groups.setdefault(key, []).append((index, row))
+
+    async with _paradedb_pool.acquire() as conn:
+        existing = await conn.fetch(
+            "SELECT id, import_key FROM knowledge_sources_index WHERE instance_id = $1", instance_id,
+        )
+    known = {r["id"] for r in existing} | {r["import_key"] for r in existing if r["import_key"]}
+
+    imported = skipped = 0
+    incomplete, categories, new_ids = [], {}, []
+    now = datetime.now(timezone.utc).isoformat()
+    for key, members in groups.items():
+        members.sort(key=lambda m: (_kb_part_number(m[1]) or 0, m[0]))
+        rows = [m[1] for m in members]
+        first = rows[0]
+        title = _KB_PART_TITLE.sub("", str(first.get("title") or "")).strip()[:300] or "Untitled"
+        category = str(first.get("category") or "").strip()[:KB_CATEGORY_CHARS]
+        expected = first.get("total_parts")
+        numbers = [_kb_part_number(r) for r in rows]
+        if (isinstance(expected, int) and expected != len(rows)) or (
+                len(rows) > 1 and numbers != list(range(1, len(rows) + 1))):
+            incomplete.append({"title": title, "rows": len(rows), "total_parts": expected})
+        if key in known:
+            skipped += 1
+            continue
+        kind = first.get("type") if first.get("type") in KB_IMPORT_TYPES else "document"
+        try:
+            priority = max(0, min(2, int(first.get("priority") or 0)))
+        except (TypeError, ValueError):
+            priority = 0
+        url = str(first.get("url") or "").strip() or None
+        doc = {
+            "id": str(uuid.uuid4()), "instance_id": instance_id, "type": kind, "title": title,
+            "content": _kb_join_parts([str(r.get("content") or "") for r in rows])[:KB_MAX_TEXT_CHARS],
+            "tags": [str(t) for t in first.get("tags") or [] if isinstance(t, (str, int))][:50],
+            "priority": priority, "is_active": first.get("is_active") is not False,
+            "url": url, "canonical_url": _canonical_url(url) if kind == "url" and url else None,
+            "filename": str(first.get("filename") or "") or None,
+            "created_at": str(first.get("created_at") or now), "updated_at": now,
+            "category": category, "import_key": key,
+        }
+        try:
+            # Embeddings are added in the background so a large file imports in seconds;
+            # BM25 search works on the parts straight away.
+            await upsert_knowledge_source_to_paradedb(doc, embed=False)
+        except asyncpg.UniqueViolationError:
+            skipped += 1   # imported concurrently
+            continue
+        new_ids.append(doc["id"])
+        known.add(key)
+        imported += 1
+        categories[category] = categories.get(category, 0) + 1
+    logger.info(f"KB import instance={instance_id}: rows={len(payload.sources)} articles={len(groups)} "
+                f"imported={imported} skipped={skipped} incomplete={len(incomplete)}")
+    _kb_embed_later(instance_id, new_ids)
+    return {
+        "rows": len(payload.sources), "articles": len(groups), "imported": imported,
+        "skipped_existing": skipped, "incomplete": incomplete[:50], "categories": categories,
+        "embeddings_pending": len(new_ids),
+    }
 
 
 # ==================== CONVERSATIONS (PROTECTED) ====================
