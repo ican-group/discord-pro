@@ -3408,10 +3408,12 @@ async def _zendesk_ticket_request(instance_id: str, ticket_id: int, note: str | 
 @api_router.get("/zendesk/open-tickets")
 async def zendesk_open_tickets(
     page: int = Query(1, ge=1, le=40),
+    status: str = Query("open", pattern="^(new|open|pending)$"),
     instance_id: str = Depends(get_instance_access),
 ):
+    # One unsolved status per tab: New, Open or Pending. Defaults to Open, as before.
     data = await _zendesk_request(instance_id, "search.json", params={
-        "query": "type:ticket status:open",
+        "query": f"type:ticket status:{status}",
         "sort_by": "updated_at",
         "sort_order": "desc",
         "page": page,
@@ -3420,7 +3422,7 @@ async def zendesk_open_tickets(
     tickets = [
         {key: ticket.get(key) for key in ("id", "subject", "status", "updated_at")}
         for ticket in data.get("results", [])
-        if ticket.get("status") == "open"
+        if ticket.get("status") == status
     ]
     return {
         "tickets": await _zendesk_mark_in_kb(instance_id, tickets),

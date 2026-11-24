@@ -169,6 +169,14 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPoste
 
 const SOLVED_STATUSES = ["solved", "closed"];
 
+// Ticket list tabs. New, Open and Pending each search one Zendesk status.
+const LIST_MODES = [
+  { mode: "new", label: "New", noun: "new" },
+  { mode: "open", label: "Open", noun: "open" },
+  { mode: "pending", label: "Pending", noun: "pending" },
+  { mode: "solved", label: "Recently solved", noun: "solved" },
+];
+
 function SaveToKnowledgeBase({ instanceId, ticketId, onSaved }) {
   const [draft, setDraft] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -259,22 +267,22 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const options = { headers: { "X-Instance-ID": instanceId } };
+  const listNoun = LIST_MODES.find(({ mode }) => mode === listMode).noun;
 
   useEffect(() => {
     const controller = new AbortController();
     const solved = listMode === "solved";
     api.get(solved ? "/zendesk/solved-tickets" : "/zendesk/open-tickets", {
       headers: { "X-Instance-ID": instanceId },
-      params: solved ? undefined : { page: queuePage },
+      params: solved ? undefined : { page: queuePage, status: listMode },
       signal: controller.signal,
     }).then(({ data }) => setQueue(data)).catch((requestError) => {
       if (controller.signal.aborted) return;
       const detail = requestError.response?.data?.detail;
-      setQueueError(typeof detail === "string" ? detail
-        : solved ? "Couldn’t load solved tickets." : "Couldn’t load open tickets.");
+      setQueueError(typeof detail === "string" ? detail : `Couldn’t load ${listNoun} tickets.`);
     });
     return () => controller.abort();
-  }, [instanceId, listMode, queuePage, queueRefresh]);
+  }, [instanceId, listMode, listNoun, queuePage, queueRefresh]);
 
   useEffect(() => {
     if (!queue?.tickets.length) return;
@@ -359,7 +367,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
       <section style={{ ...T.card, minWidth: 0 }}>
       <h2 style={T.sectionTitle}>Zendesk tickets</h2>
       <div role="group" aria-label="Ticket list" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        {[["open", "Open"], ["solved", "Recently solved"]].map(([mode, label]) => (
+        {LIST_MODES.map(({ mode, label }) => (
           <button key={mode} type="button" aria-pressed={listMode === mode}
             style={listMode === mode ? T.btnPrimary : T.btnSecondary}
             onClick={() => changeListMode(mode)}>
@@ -375,10 +383,10 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
       )}
       {queueError && <p role="alert">{queueError}</p>}
       {!queue && !queueError && (
-        <p role="status">{listMode === "solved" ? "Loading solved tickets…" : "Loading open tickets…"}</p>
+        <p role="status">Loading {listNoun} tickets…</p>
       )}
       {queue && queue.tickets.length === 0 && (
-        <p style={T.sectionSub}>{listMode === "solved" ? "No solved tickets found." : "No open tickets on this page."}</p>
+        <p style={T.sectionSub}>{listMode === "solved" ? "No solved tickets found." : `No ${listNoun} tickets on this page.`}</p>
       )}
       {queue?.tickets.length > 0 && (
         <ul style={{ display: "grid", gap: 8, paddingLeft: 0, listStyle: "none" }}>
@@ -401,7 +409,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           })}
         </ul>
       )}
-      {listMode === "open" && (queuePage > 1 || queue?.has_more) && (
+      {listMode !== "solved" && (queuePage > 1 || queue?.has_more) && (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button type="button" style={T.btnSecondary} disabled={queuePage === 1}
             onClick={() => changeQueuePage(queuePage - 1)}>Previous</button>
