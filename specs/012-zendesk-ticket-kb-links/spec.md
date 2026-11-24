@@ -45,14 +45,22 @@ update, description). Groups, in priority order:
 | 3 | Web pages | scraped URLs | 6 / 12,000 |
 | 4 | Documents | uploaded documents | 6 / 12,000 |
 
-Links within a group: a linked part is boosted (×1.5) only when it is itself a strong match,
-judged on raw scores: its BM25 score is at least 60% of the group's best, or its cosine
-similarity is within 0.05 of the group's best. (Fused RRF ranks are too compressed to judge
-this: a one-word match can score 97% of the best.) Links reorder close matches, but an
-unrelated linked entry can't displace a relevant unlinked one. Linked entries the search didn't
-match are ranked after all matches of their group. Linked entries that don't make the group's
-budget still reach the model in extra slots after it (best part of each, up to 3 parts / 6,000
-characters per group), so an agent's link is always considered but never pushes out a match.
+Relevance check: every part sent to the model must pass the same check, linked or not: a BM25
+match, or cosine similarity at or above `KB_MIN_SIMILARITY` (0.52).
+
+Links within a group: a linked part that passed the check is boosted (×1.5) only when it is
+itself a strong match, judged on raw scores. With both a BM25 and a vector score, both must be
+strong: BM25 at least 60% of the group's best and similarity within 0.15 of the group's best
+(one rare shared word can lift BM25 alone). With only one score, that one must be strong: BM25
+at least 60%, or similarity within 0.05. It must also be near the best match
+across all groups (BM25 at least 30% of the overall best, or similarity within 0.15 of it), so a
+noise match that leads a weak group isn't treated as strong. (Fused RRF ranks are too
+compressed to judge this: a one-word match can score 97% of the best.) Links reorder close
+matches, but an unrelated linked entry can't displace a relevant unlinked one. Linked entries
+that passed the check but don't make the group's budget reach the model in extra slots after
+it (best part of each, up to 3 parts / 6,000 characters per group), so they never push out a
+match. Linked entries that fail the check are not sent; they stay linked and visible in the
+ticket panel, and the draft's "Sources considered" lists them as linked but not sent.
 
 The model receives the four groups separately and is told to:
 - use only relevant evidence; when relevant sources disagree, follow the higher-priority group

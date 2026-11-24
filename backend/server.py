@@ -1030,13 +1030,20 @@ _KB_GROUP_BUDGETS = {"knowledge": (8, 16000), "ticket_solutions": (6, 12000),
                      "urls": (6, 12000), "documents": (6, 12000)}
 KB_LINK_BOOST = 1.5
 # A linked part is boosted only when it is itself a strong match for the ticket, judged on the
-# raw scores (RRF ranks are too compressed: a one-word match can score close to the best):
-# its BM25 score is at least this share of the group's best, or its cosine similarity is
-# within this margin of the group's best. An unrelated linked entry can't jump the queue.
+# raw scores (RRF ranks are too compressed: a one-word match can score close to the best).
+# With both scores, both must be strong: BM25 at least KB_LINK_BM25_SHARE of the group's best
+# and similarity within KB_LINK_SIM_MARGIN_BOTH of it (one rare shared word can lift BM25
+# alone). With one score, it must be strong: BM25 share, or similarity within KB_LINK_SIM_MARGIN.
 KB_LINK_BM25_SHARE = 0.6
 KB_LINK_SIM_MARGIN = 0.05
-# Linked entries that didn't make a group's budget still reach the model, in extra slots after
-# the budget (so they never push out an unlinked match): best part of each, up to these limits.
+KB_LINK_SIM_MARGIN_BOTH = 0.15
+# ...and it must also be near the best match across all groups, so a noise match that happens to
+# be the best of a weak group (e.g. one shared product name) isn't treated as strong.
+KB_LINK_GLOBAL_BM25_SHARE = 0.3
+KB_LINK_GLOBAL_SIM_MARGIN = 0.15
+# Linked entries that passed the relevance check but didn't make a group's budget still reach
+# the model, in extra slots after the budget (so they never push out an unlinked match): best
+# part of each, up to these limits. Linked entries that fail the check are not sent at all.
 KB_LINK_EXTRA_PARTS = 3
 KB_LINK_EXTRA_CHARS = 6000
 
@@ -1059,12 +1066,24 @@ def _kb_kind(source: dict) -> str:
     return source.get("type") or "faq"
 
 
+async def _kb_reference_scores(query: str, instance_id: str) -> tuple[float, float]:
+    """Best BM25 score and best cosine similarity over all entries, for the link-boost floor."""
+    safe_query = _sanitize_bm25_query(query) if query else ""
+    bm25_query = _kb_bm25_query(safe_query) if safe_query else ""
+    rows = await _kb_bm25_rows(instance_id, bm25_query) if bm25_query else []
+    vector_rows = await _kb_vector_search(query, instance_id) if (query or "").strip() else []
+    return (max((r["bm25_score"] for r in rows), default=0.0),
+            max((r["similarity"] for r in vector_rows), default=0.0))
+
+
 async def _kb_group_search(query: str, instance_id: str, group: str,
-                           linked_ids: frozenset = frozenset()) -> list[dict]:
+                           linked_ids: frozenset = frozenset(),
+                           reference: tuple[float, float] | None = None) -> list[dict]:
     """Hybrid search restricted to one group.
 
-    Linked entries that are close matches get a boost; linked entries the search didn't match
-    are added after every match, so they never displace a relevant unlinked entry.
+    Every part returned passed the same relevance check: a BM25 match, or cosine similarity
+    at or above KB_MIN_SIMILARITY. Linked entries get no exemption; a linked part that is a
+    strong match gets a boost (see KB_LINK_BM25_SHARE / KB_LINK_SIM_MARGIN).
     """
     source_filter = _KB_GROUP_FILTERS[group]
     safe_query = _sanitize_bm25_query(query) if query else ""
@@ -1076,37 +1095,28 @@ async def _kb_group_search(query: str, instance_id: str, group: str,
     bm25 = {r["id"]: r["bm25_score"] for r in rows}
     sims = {r["id"]: r["similarity"] for r in vector_rows}
     best_bm25, best_sim = max(bm25.values(), default=0.0), max(sims.values(), default=0.0)
+    ref_bm25, ref_sim = reference or (best_bm25, best_sim)
     for r in ranked:
         r["linked"] = r["source_id"] in linked_ids
-        strong = (best_bm25 > 0 and bm25.get(r["id"], 0.0) >= KB_LINK_BM25_SHARE * best_bm25) or \
-                 (r["id"] in sims and sims[r["id"]] >= best_sim - KB_LINK_SIM_MARGIN)
-        r["boosted"] = r["linked"] and strong
+        part_bm25, part_sim = bm25.get(r["id"]), sims.get(r["id"])
+        bm25_strong = part_bm25 is not None and part_bm25 >= KB_LINK_BM25_SHARE * best_bm25
+        if part_bm25 is not None and part_sim is not None:
+            strong_in_group = bm25_strong and part_sim >= best_sim - KB_LINK_SIM_MARGIN_BOTH
+        else:
+            strong_in_group = bm25_strong or (part_sim is not None and part_sim >= best_sim - KB_LINK_SIM_MARGIN)
+        part_bm25 = part_bm25 or 0.0
+        near_overall_best = (ref_bm25 > 0 and part_bm25 >= KB_LINK_GLOBAL_BM25_SHARE * ref_bm25) or \
+                            (part_sim is not None and part_sim >= ref_sim - KB_LINK_GLOBAL_SIM_MARGIN)
+        r["boosted"] = r["linked"] and strong_in_group and near_overall_best
     ranked.sort(key=lambda r: base[r["id"]] * (KB_LINK_BOOST if r["boosted"] else 1.0), reverse=True)
-    missing = linked_ids - {r["source_id"] for r in ranked}
-    if missing:
-        # Linked by an agent but not matched by the search: still offer the start of the entry.
-        async with _paradedb_pool.acquire() as conn:
-            extra = await conn.fetch(
-                """
-                SELECT c.id, c.source_id, c.title, c.content, c.part, c.parts, s.priority,
-                       s.type, s.url, s.tags
-                FROM   knowledge_chunks c
-                JOIN   knowledge_sources_index s ON s.id = c.source_id
-                WHERE  c.instance_id = $1 AND s.is_active = true
-                  AND  c.source_id = ANY($2::text[]) AND c.part <= 2
-                """ + source_filter + """
-                ORDER  BY s.priority DESC, c.source_id, c.part
-                """,
-                instance_id, list(missing),
-            )
-        ranked += [{**dict(r), "rrf": 0.0, "linked": True, "boosted": False} for r in extra]
     return ranked
 
 
 def _kb_group_context(ranked: list[dict], group: str) -> tuple[str, list[dict]]:
     """Labelled parts for one group within its budget, and the entries they came from.
 
-    Linked entries left out by the budget are added afterwards in extra slots.
+    ranked holds only parts that passed the relevance check. Linked entries among them that the
+    budget left out are added afterwards in extra slots.
     """
     max_parts, max_chars = _KB_GROUP_BUDGETS[group]
     chunks, used, total = [], {}, 0
@@ -1155,19 +1165,30 @@ async def _zendesk_draft_evidence(query: str, instance_id: str, ticket_id: int) 
     """All four searches for a suggested reply, in priority order (KB_DRAFT_GROUPS)."""
     linked = frozenset(await _zendesk_linked_source_ids(instance_id, ticket_id))
     evidence = {}
+    sent: set[str] = set()
+    try:
+        reference = await _kb_reference_scores(query, instance_id) if linked else None
+    except Exception as e:
+        logger.error(f"zendesk draft reference search failed: {e}")
+        reference = None
     for group in KB_DRAFT_GROUPS:
         try:
-            ranked = await _kb_group_search(query, instance_id, group, linked)
+            ranked = await _kb_group_search(query, instance_id, group, linked, reference)
         except Exception as e:
             logger.error(f"zendesk draft search failed group={group}: {e}")
             ranked = []
         context, used = _kb_group_context(ranked, group)
         evidence[group] = {"context": context, "entries": used, "candidates": len(ranked)}
+        sent |= {entry["source_id"] for entry in used}
+    # Linked entries that failed the relevance check for this ticket: kept on the ticket, not sent.
+    excluded = [{**_kb_entry_view(src), "linked": True} for sid, src in
+                (await _kb_linkable_sources(instance_id, sorted(linked - sent))).items()]
+    evidence["linked_not_sent"] = sorted(excluded, key=lambda e: (e["title"] or "").lower())
     logger.info(
         f"zendesk_draft_evidence instance={instance_id} ticket={ticket_id} linked={len(linked)} "
         + " ".join(f"{group}={evidence[group]['candidates']}/{len(evidence[group]['entries'])}"
                    for group in KB_DRAFT_GROUPS)
-        + " (candidates/entries)"
+        + f" (candidates/entries) linked_not_sent={len(evidence['linked_not_sent'])}"
     )
     return evidence
 
@@ -4324,7 +4345,10 @@ async def zendesk_draft_note(ticket_id: int, instance_id: str = Depends(get_inst
         for model in ALLOWED_MODELS:
             llm_sessions.pop(f"{session_id}_{instance_id}_{model}", None)
     # Entries retrieved for the model in each group (sources considered, not verified citations).
-    return {"draft": draft, "evidence": {group: evidence[group]["entries"] for group in KB_DRAFT_GROUPS}}
+    return {"draft": draft, "evidence": {
+        **{group: evidence[group]["entries"] for group in KB_DRAFT_GROUPS},
+        "linked_not_sent": evidence["linked_not_sent"],
+    }}
 
 
 @api_router.post("/zendesk/tickets/{ticket_id}/notes")

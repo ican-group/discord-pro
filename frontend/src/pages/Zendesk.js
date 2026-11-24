@@ -690,6 +690,12 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
                       `${entry.title || "Untitled"}${entry.linked ? " (linked)" : ""}`).join("; ")}
                   </p>
                 ))}
+                {evidence.linked_not_sent?.length > 0 && (
+                  <p>
+                    Linked but not relevant to this request, so not sent: {evidence.linked_not_sent.map((entry) =>
+                      entry.title || "Untitled").join("; ")}. They stay linked to the ticket.
+                  </p>
+                )}
               </div>
             )}
             <label style={T.label}>Internal note
