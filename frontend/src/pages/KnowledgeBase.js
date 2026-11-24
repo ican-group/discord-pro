@@ -2,11 +2,25 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { Plus, Trash2, Globe, FileText, HelpCircle, ToggleLeft, ToggleRight, Loader2, ChevronUp, ChevronDown, ArrowUpCircle, Pencil, X, Save, Lock } from "lucide-react";
+import { Plus, Trash2, Globe, FileText, HelpCircle, ToggleLeft, ToggleRight, Loader2, ChevronUp, ChevronDown, ArrowUpCircle, Pencil, X, Save, Lock, Wrench } from "lucide-react";
 import { colors, fonts, T, onFocus, onBlur, rowEnter, rowLeave } from "../theme";
 
-const typeIcon = { faq: HelpCircle, url: Globe, document: FileText };
-const typeColor = { faq: colors.brand.blue, url: colors.brand.success, document: colors.text.secondary };
+const typeIcon = { faq: HelpCircle, tech_note: Wrench, url: Globe, document: FileText };
+const typeColor = { faq: colors.brand.blue, tech_note: colors.brand.warning, url: colors.brand.success, document: colors.text.secondary };
+const typeLabel = { faq: "FAQ", tech_note: "Tech Note" };
+
+// Manual entry types: same storage, editing, chunking and search; only the label differs.
+const MANUAL_TYPES = {
+  faq: {
+    label: "FAQ", titleLabel: "Question / Title *", contentLabel: "Answer / Content *",
+    titlePlaceholder: "e.g. How do I reset my password?", contentPlaceholder: "Provide a clear, detailed answer...",
+  },
+  tech_note: {
+    label: "Tech Note", titleLabel: "Title *", contentLabel: "Technical content *",
+    titlePlaceholder: "e.g. Node stuck syncing after the v2.3 upgrade",
+    contentPlaceholder: "Symptoms, cause, fix or workaround, affected versions...",
+  },
+};
 
 const PRIORITY_LEVELS = [
   { value: 0, label: "Normal", color: colors.text.secondary },
@@ -23,7 +37,7 @@ function TypeBadge({ type }) {
       fontSize: "11px", fontFamily: fonts.mono, textTransform: "uppercase", letterSpacing: "0.05em",
       backgroundColor: `${c}18`, color: c
     }}>
-      <Icon size={10} />{type}
+      <Icon size={10} />{typeLabel[type] || type}
     </span>
   );
 }
@@ -170,7 +184,7 @@ export default function KnowledgeBase() {
   const [activeTab, setActiveTab] = useState("faq");
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [faq, setFaq] = useState({ title: "", content: "", priority: 0 });
+  const [faq, setFaq] = useState({ type: "faq", title: "", content: "", priority: 0 });
   const [urlEntry, setUrlEntry] = useState({ url: "", title: "", priority: 0, auth_username: "", auth_password: "" });
   const [docTitle, setDocTitle] = useState("");
   const [docPriority, setDocPriority] = useState(0);
@@ -190,10 +204,10 @@ export default function KnowledgeBase() {
     setLoading(true);
     try {
       await api.post(`/knowledge/sources/faq`, faq);
-      toast.success("FAQ added successfully");
-      setFaq({ title: "", content: "", priority: 0 });
+      toast.success(`${MANUAL_TYPES[faq.type].label} added successfully`);
+      setFaq((p) => ({ type: p.type, title: "", content: "", priority: 0 }));
       loadSources();
-    } catch { toast.error("Failed to add FAQ"); }
+    } catch { toast.error(`Failed to add ${MANUAL_TYPES[faq.type].label}`); }
     finally { setLoading(false); }
   };
 
@@ -270,7 +284,7 @@ export default function KnowledgeBase() {
   };
 
   const tabs = [
-    { id: "faq", label: "FAQ", icon: HelpCircle },
+    { id: "faq", label: "FAQ / Tech Note", icon: HelpCircle },
     { id: "url", label: "URL Scraper", icon: Globe },
     { id: "document", label: "Upload Document", icon: FileText },
   ];
@@ -299,18 +313,34 @@ export default function KnowledgeBase() {
       {/* FAQ Tab */}
       {activeTab === "faq" && (
         <div style={T.card}>
-          <p style={T.sectionTitle}>Add FAQ Entry</p>
+          <p style={T.sectionTitle}>Add {MANUAL_TYPES[faq.type].label} Entry</p>
           <div style={{ display: "grid", gap: "14px", marginTop: "16px" }}>
             <div>
-              <label style={T.label}>Question / Title *</label>
+              <label style={T.label}>Entry type</label>
+              <div role="radiogroup" aria-label="Entry type" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                {Object.entries(MANUAL_TYPES).map(([value, { label }]) => {
+                  const Icon = typeIcon[value];
+                  const selected = faq.type === value;
+                  return (
+                    <button key={value} type="button" role="radio" aria-checked={selected}
+                      data-testid={`entry-type-${value}`} onClick={() => setFaq(p => ({ ...p, type: value }))}
+                      style={{ ...(selected ? T.btnPrimary : T.btnSecondary), display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <Icon size={14} />{label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label style={T.label}>{MANUAL_TYPES[faq.type].titleLabel}</label>
               <input style={T.input} value={faq.title} onChange={e => setFaq(p => ({ ...p, title: e.target.value }))}
-                placeholder="e.g. How do I reset my password?" data-testid="faq-title-input"
+                placeholder={MANUAL_TYPES[faq.type].titlePlaceholder} data-testid="faq-title-input"
                 onFocus={onFocus} onBlur={onBlur} />
             </div>
             <div>
-              <label style={T.label}>Answer / Content *</label>
-              <textarea style={{ ...T.textarea, minHeight: "100px" }} value={faq.content} onChange={e => setFaq(p => ({ ...p, content: e.target.value }))}
-                placeholder="Provide a clear, detailed answer..." data-testid="faq-content-input"
+              <label style={T.label}>{MANUAL_TYPES[faq.type].contentLabel}</label>
+              <textarea style={{ ...T.textarea, minHeight: faq.type === "tech_note" ? "180px" : "100px" }} value={faq.content} onChange={e => setFaq(p => ({ ...p, content: e.target.value }))}
+                placeholder={MANUAL_TYPES[faq.type].contentPlaceholder} data-testid="faq-content-input"
                 onFocus={onFocus} onBlur={onBlur} />
             </div>
             <div>
@@ -321,7 +351,7 @@ export default function KnowledgeBase() {
             <div>
               <button onClick={addFaq} disabled={loading} data-testid="faq-add-btn" style={{ ...T.btnPrimary, opacity: loading ? 0.6 : 1 }}>
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                Add FAQ
+                Add {MANUAL_TYPES[faq.type].label}
               </button>
             </div>
           </div>
