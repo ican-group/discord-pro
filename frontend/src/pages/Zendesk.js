@@ -175,7 +175,68 @@ const LIST_MODES = [
   { mode: "open", label: "Open", noun: "open" },
   { mode: "pending", label: "Pending", noun: "pending" },
   { mode: "solved", label: "Recently solved", noun: "solved" },
+  { mode: "spam", label: "Spam", noun: "spam" },
 ];
+// Tabs whose tickets get a spam check (spec 010). Solved tickets aren't checked.
+const SPAM_CHECK_MODES = ["new", "open", "pending"];
+const tagStyle = { display: "inline-block", marginTop: 4, marginRight: 6, padding: "1px 6px", fontSize: 11, borderRadius: 4 };
+const spamTagStyle = { ...tagStyle, color: "#fde68a", border: "1px solid #f59e0b" };
+
+// Spam review is stored in BridgeBot only; these buttons never change the ticket in Zendesk.
+function SpamReview({ instanceId, ticketId, spam, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const state = spam?.state;
+
+  async function decide(isSpam) {
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post(`/zendesk/tickets/${ticketId}/spam`, { spam: isSpam }, {
+        headers: { "X-Instance-ID": instanceId },
+      });
+      onChange(ticketId, { ...data, reason: data.reason || spam?.reason || "" });
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : "Couldn’t update the spam review.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-label="Spam review" style={{ ...T.card, marginTop: 16, marginBottom: 16, padding: 12 }}>
+      {state === "suspected" && (
+        <p role="status"><span style={spamTagStyle}>Suspected spam</span> {spam.reason}</p>
+      )}
+      {state === "spam" && (
+        <p role="status">
+          Marked as spam{spam.decided_by ? ` by ${spam.decided_by}` : ""}. It’s hidden from the other tabs.
+          {spam.reason && ` AI reason: ${spam.reason}`}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {state !== "spam" && (
+          <button type="button" style={T.btnSecondary} disabled={busy} onClick={() => decide(true)}>
+            {busy ? "Saving…" : "Mark as spam"}
+          </button>
+        )}
+        {state === "suspected" && (
+          <button type="button" style={T.btnSecondary} disabled={busy} onClick={() => decide(false)}>
+            Not spam
+          </button>
+        )}
+        {state === "spam" && (
+          <button type="button" style={T.btnSecondary} disabled={busy} onClick={() => decide(false)}>
+            {busy ? "Saving…" : "Restore"}
+          </button>
+        )}
+      </div>
+      <p style={T.sectionSub}>Spam review is kept in BridgeBot. The ticket isn’t changed in Zendesk.</p>
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}
 
 function SaveToKnowledgeBase({ instanceId, ticketId, onSaved }) {
   const [draft, setDraft] = useState(null);
@@ -260,6 +321,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   const [queueError, setQueueError] = useState("");
   const [reviewStates, setReviewStates] = useState({});
   const [savedToKb, setSavedToKb] = useState({});
+  const [spamStates, setSpamStates] = useState({});
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState(null);
   const [note, setNote] = useState("");
@@ -272,11 +334,19 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   useEffect(() => {
     const controller = new AbortController();
     const solved = listMode === "solved";
-    api.get(solved ? "/zendesk/solved-tickets" : "/zendesk/open-tickets", {
+    const spam = listMode === "spam";
+    api.get(spam ? "/zendesk/spam-tickets" : solved ? "/zendesk/solved-tickets" : "/zendesk/open-tickets", {
       headers: { "X-Instance-ID": instanceId },
-      params: solved ? undefined : { page: queuePage, status: listMode },
+      params: solved || spam ? undefined : { page: queuePage, status: listMode },
       signal: controller.signal,
-    }).then(({ data }) => setQueue(data)).catch((requestError) => {
+    }).then(({ data }) => {
+      setQueue(data);
+      if (spam) {
+        setSpamStates((current) => ({ ...current, ...Object.fromEntries(data.tickets.map((item) => [item.id, {
+          state: "spam", reason: item.reason, decided_by: item.decided_by, decided_at: item.decided_at,
+        }])) }));
+      }
+    }).catch((requestError) => {
       if (controller.signal.aborted) return;
       const detail = requestError.response?.data?.detail;
       setQueueError(typeof detail === "string" ? detail : `Couldn’t load ${listNoun} tickets.`);
@@ -285,7 +355,23 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   }, [instanceId, listMode, listNoun, queuePage, queueRefresh]);
 
   useEffect(() => {
-    if (!queue?.tickets.length) return;
+    if (!queue?.tickets.length || !SPAM_CHECK_MODES.includes(listMode)) return;
+    const controller = new AbortController();
+    // Flags suspected spam; tickets not seen before are checked once and cached by the server.
+    api.post("/zendesk/spam-states", { ids: queue.tickets.map(({ id }) => id) }, {
+      headers: { "X-Instance-ID": instanceId }, signal: controller.signal,
+    }).then(({ data }) => {
+      if (controller.signal.aborted) return;
+      setSpamStates((current) => ({ ...current, ...Object.fromEntries(
+        Object.entries(data.states).map(([id, value]) => [Number(id), value])) }));
+    }).catch(() => {});  // No flag is shown if the check fails; the next load retries.
+    return () => controller.abort();
+    // listMode is read with the queue it loaded; the queue changes whenever the tab does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId, queue]);
+
+  useEffect(() => {
+    if (!queue?.tickets.length || listMode === "spam") return;
     const controller = new AbortController();
     // Solved/closed tickets are labelled from their status; only open ones need a history check.
     const ids = queue.tickets.filter(({ status }) => !["solved", "closed"].includes(status)).map(({ id }) => id);
@@ -299,7 +385,17 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
       });
     }
     return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId, queue]);
+
+  function updateSpam(id, value) {
+    setSpamStates((current) => ({ ...current, [id]: value }));
+    // Confirmed spam leaves the normal tabs; a restored ticket leaves the Spam tab.
+    const leavesList = listMode === "spam" ? value.state !== "spam" : value.state === "spam";
+    if (leavesList) {
+      setQueue((current) => current && { ...current, tickets: current.tickets.filter((item) => item.id !== id) });
+    }
+  }
 
   function markSavedToKb(id) {
     setSavedToKb((current) => ({ ...current, [id]: true }));
@@ -343,6 +439,13 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
     run(async () => {
       const { data } = await api.get(`/zendesk/tickets/${id}`, options);
       setTicket(data);
+      if (!spamStates[data.id]) {
+        // Tickets opened by ID: load the stored spam review (and check unsolved ones once).
+        api.post("/zendesk/spam-states", { ids: [data.id] }, options).then(({ data: result }) => {
+          const value = result.states[String(data.id)];
+          if (value) setSpamStates((current) => ({ ...current, [data.id]: current[data.id] || value }));
+        }).catch(() => {});
+      }
     });
   }
 
@@ -378,6 +481,9 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           Refresh
         </button>
       </div>
+      {listMode === "spam" && queue && (
+        <p style={T.sectionSub}>Tickets marked as spam in BridgeBot, most recently marked first. Zendesk isn’t changed.</p>
+      )}
       {listMode === "solved" && queue && (
         <p style={T.sectionSub}>Last {queue.tickets.length} solved or closed tickets, most recently updated first.</p>
       )}
@@ -386,12 +492,14 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
         <p role="status">Loading {listNoun} tickets…</p>
       )}
       {queue && queue.tickets.length === 0 && (
-        <p style={T.sectionSub}>{listMode === "solved" ? "No solved tickets found." : `No ${listNoun} tickets on this page.`}</p>
+        <p style={T.sectionSub}>{listMode === "solved" ? "No solved tickets found."
+          : listMode === "spam" ? "No tickets marked as spam." : `No ${listNoun} tickets on this page.`}</p>
       )}
       {queue?.tickets.length > 0 && (
         <ul style={{ display: "grid", gap: 8, paddingLeft: 0, listStyle: "none" }}>
           {queue.tickets.map(({ id, subject, status, in_kb: inKb }) => {
-            const state = ["solved", "closed"].includes(status) ? "solved" : reviewStates[id];
+            const state = ["solved", "closed"].includes(status) ? "solved" : listMode === "spam" ? undefined : reviewStates[id];
+            const spam = spamStates[id];
             const appearance = reviewStyles[state];
             return (
               <li key={id}>
@@ -400,8 +508,17 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
                   #{id} {subject || "Untitled ticket"}
                   {appearance && <span style={{ display: "block", fontSize: 11 }}>{appearance.label}</span>}
                   {(inKb || savedToKb[id]) && (
-                    <span style={{ display: "inline-block", marginTop: 4, padding: "1px 6px", fontSize: 11,
-                      color: "#00F5FF", border: "1px solid #00F5FF", borderRadius: 4 }}>Added to KB</span>
+                    <span style={{ ...tagStyle, color: "#00F5FF", border: "1px solid #00F5FF" }}>Added to KB</span>
+                  )}
+                  {spam?.state === "suspected" && (
+                    <span style={{ display: "block", fontSize: 11 }}>
+                      <span style={spamTagStyle}>Suspected spam</span>{spam.reason}
+                    </span>
+                  )}
+                  {listMode === "spam" && (
+                    <span style={{ display: "block", fontSize: 11 }}>
+                      {status && `Zendesk: ${status}. `}{spam?.decided_by && `Marked by ${spam.decided_by}. `}{spam?.reason}
+                    </span>
                   )}
                 </button>
               </li>
@@ -409,7 +526,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           })}
         </ul>
       )}
-      {listMode !== "solved" && (queuePage > 1 || queue?.has_more) && (
+      {!["solved", "spam"].includes(listMode) && (queuePage > 1 || queue?.has_more) && (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button type="button" style={T.btnSecondary} disabled={queuePage === 1}
             onClick={() => changeQueuePage(queuePage - 1)}>Previous</button>
@@ -434,6 +551,8 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           <h3 style={T.sectionTitle}>#{ticket.id} {ticket.subject}</h3>
           <p style={T.sectionSub}>{ticket.status}</p>
           <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{ticket.description}</p>
+          <SpamReview key={`spam-${ticket.id}`} instanceId={instanceId} ticketId={ticket.id}
+            spam={spamStates[ticket.id]} onChange={updateSpam} />
           <ZendeskTicketHistory key={ticket.id} instanceId={instanceId} ticket={ticket}
             canPostNotes={canPostNotes}
             onSummaryPosted={(id, state) => setReviewStates((current) => ({ ...current, [id]: state }))}
