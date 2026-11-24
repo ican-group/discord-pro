@@ -14,8 +14,13 @@ const AUTH_TYPES = [
 const SOURCES = [["tx_hash", "Transaction hash from the message"], ["fixed", "Fixed value"], ["none", "Not sent"]];
 const FORMATS = [["auto", "Auto"], ["number", "Number"], ["text", "Text"], ["timestamp", "Unix timestamp"]];
 const EMPTY_INTEGRATION = { name: "", base_url: "", auth_type: "none", auth_name: "", secret: "" };
-const EMPTY_LOOKUP = { id: null, name: "Transaction lookup", endpoint_id: "", inputs: [], fields: [], enabled: true };
-const STATUS_COLORS = { ok: colors.brand.success, not_found: colors.brand.warning, api_error: colors.brand.error, blocked: colors.brand.error, invalid: colors.brand.error };
+const EMPTY_LOOKUP = { id: null, name: "Transaction lookup", endpoint_id: "", inputs: [], fields: [], not_found_on: "empty", enabled: true };
+const STATUS_COLORS = { ok: colors.brand.success, not_found: colors.brand.warning, unavailable: colors.brand.error };
+const STATUS_LABELS = { ok: "OK", not_found: "TRANSACTION NOT FOUND", unavailable: "LOOKUP UNAVAILABLE" };
+const NOT_FOUND_MODES = [
+  ["empty", "An empty result ([] or {})"],
+  ["empty_or_404", "An empty result or HTTP 404 (e.g. Blockfrost)"],
+];
 
 const detail = (e, fallback) => (typeof e?.response?.data?.detail === "string" ? e.response.data.detail : fallback);
 const small = { ...T.input, padding: "6px 10px", fontSize: "12px" };
@@ -93,8 +98,9 @@ function ResultView({ result, onAddField, fieldPaths }) {
     <div style={{ display: "grid", gap: "12px", marginTop: "14px" }} data-testid="lookup-result">
       <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap", fontFamily: fonts.mono, fontSize: "12px" }}>
         <span data-testid="lookup-status" style={{ color: STATUS_COLORS[result.status] || colors.text.primary, fontWeight: 600 }}>
-          {result.status.replace("_", " ").toUpperCase()}
+          {STATUS_LABELS[result.status] || result.status.toUpperCase()}
         </span>
+        {result.reason && result.status !== "ok" && <span style={{ color: colors.text.muted }}>({result.reason.replace("_", " ")})</span>}
         {result.http_status != null && <span style={{ color: colors.text.secondary }}>HTTP {result.http_status} · {result.duration_ms} ms</span>}
         {result.message && <span style={{ color: colors.text.secondary }}>{result.message}</span>}
       </div>
@@ -183,7 +189,7 @@ function LookupEditor({ integration, endpoints, initial, onSaved, onDeleted }) {
     const label = path.split(/[.[\]]/).filter(Boolean).pop() || path;
     setLk((p) => ({ ...p, fields: [...p.fields, { path, label: label.replace(/_/g, " "), unit: "", scale: 0, format: "auto" }] }));
   };
-  const payload = () => ({ name: lk.name, endpoint_id: lk.endpoint_id, enabled: lk.enabled,
+  const payload = () => ({ name: lk.name, endpoint_id: lk.endpoint_id, enabled: lk.enabled, not_found_on: lk.not_found_on || "empty",
     inputs: lk.inputs.map(({ param, source, template, value }) => ({ param, source, template, value })),
     fields: lk.fields.map((f) => ({ ...f, scale: Number(f.scale) || 0 })) });
 
@@ -252,6 +258,13 @@ function LookupEditor({ integration, endpoints, initial, onSaved, onDeleted }) {
             </table>
           )}
           <p style={T.hint}>The bot looks for a 64-character hexadecimal transaction hash in the user's message. <code>$input</code> in the template is replaced by it — for example <code>{"{$input}"}</code> for Koios.</p>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "10px" }}>
+            <label style={{ ...T.label, margin: 0 }}>This API reports an unknown transaction as</label>
+            <select style={{ ...small, width: "auto" }} value={lk.not_found_on || "empty"} onChange={(e) => setLk({ ...lk, not_found_on: e.target.value })} data-testid="lookup-not-found-on">
+              {NOT_FOUND_MODES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <p style={T.hint}>Anything else — a missing endpoint, errors, or a response without the configured fields — is reported as "lookup unavailable", and the bot won't say the transaction doesn't exist.</p>
         </div>
       )}
 

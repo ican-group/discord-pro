@@ -45,6 +45,15 @@ an enabled transaction lookup:
   passed as a short status so the bot can say so. Passive Discord messages don't trigger lookups.
 - With lookup data, the knowledge gate doesn't block answering about that transaction; other
   questions keep the normal knowledge-base rules.
+- Results are kept apart so the bot never implies a real transaction doesn't exist:
+  - **not found** — the API answered successfully with an empty result (`[]`, `{}`, `null`), or
+    HTTP 404 only when the lookup is set to "empty result or HTTP 404" (APIs such as Blockfrost
+    that report unknown ids that way). The bot says the service has no transaction with that hash.
+  - **lookup unavailable** — anything else: a missing or misconfigured endpoint (404 by default,
+    400), auth errors (401/403), rate limiting, server errors, redirects, non-JSON, a response with
+    none of the configured fields, network failures, blocked destinations, invalid configuration.
+    The tester shows the reason; the bot says it couldn't check the transaction and must not say
+    or imply that it doesn't exist.
 - Each call is recorded in `api_lookup_log` (workspace, lookup, source tester/bot, status,
   duration; no response data, hash prefix only).
 
@@ -62,3 +71,14 @@ that origin. Error messages are fixed and never include upstream content.
 Mongo: `api_integrations` (with imported `endpoints` and `secret_enc`), `api_lookups`,
 `api_lookup_log`; `bot_config.api_lookups_enabled`. All scoped by `instance_id`; deleting a
 workspace removes them.
+
+## Data provider used in testing: Koios (experimental example)
+
+`koios-tx-reference.json` describes `GET https://api.koios.rest/api/v1/tx_info?_tx_hashes={hash}`.
+This is **experimental**: Koios's OpenAPI document (`koiosapi.yaml`, v1.4.2) lists `tx_info` only
+as POST with a JSON body, and its documentation and SDKs use POST. The GET form works because Koios
+is served by PostgREST, which also accepts GET for read-only functions, but Koios doesn't document
+or promise it, so it may change. Koios documents no GET endpoint keyed by transaction hash. For
+production, prefer a provider with a documented GET transaction endpoint (for example Blockfrost
+`GET /txs/{hash}`, which needs a project key and reports unknown hashes as HTTP 404, so set "empty
+result or HTTP 404").

@@ -33,6 +33,8 @@ AUTH_TYPES = ("none", "header", "bearer", "query")
 INPUT_SOURCES = ("tx_hash", "fixed", "none")
 FIELD_FORMATS = ("auto", "number", "text", "timestamp")
 INPUT_PLACEHOLDER = "$input"
+# How the API reports an unknown transaction: only an empty result, or also HTTP 404 (e.g. Blockfrost).
+NOT_FOUND_MODES = ("empty", "empty_or_404")
 
 
 class ConfigError(ValueError):
@@ -428,10 +430,14 @@ def validate_lookup(lookup: Mapping[str, Any], endpoints: Mapping[str, dict], *,
             raise ConfigError(f"The decimal shift for '{path}' must be between 0 and 18.")
         fields.append({"path": path, "label": (str(f.get("label") or "").strip() or path)[:80],
                        "unit": str(f.get("unit") or "").strip()[:20], "scale": scale, "format": fmt})
+    not_found_on = lookup.get("not_found_on") or "empty"
+    if not_found_on not in NOT_FOUND_MODES:
+        raise ConfigError("Unknown setting for how the API reports an unknown transaction.")
     if not fields and require_fields:
         raise ConfigError("Choose at least one response field to show.")
     return {"name": name, "kind": "transaction", "endpoint_id": ep["id"], "method": "GET", "path": ep["path"],
-            "inputs": inputs, "fields": fields, "enabled": bool(lookup.get("enabled", True))}
+            "inputs": inputs, "fields": fields, "not_found_on": not_found_on,
+            "enabled": bool(lookup.get("enabled", True))}
 
 
 # ═════════════════════════════ input extraction ═════════════════════════════
@@ -575,62 +581,79 @@ def fields_text(rows: Sequence[Mapping[str, Any]]) -> str:
 
 # ═════════════════════════════ the lookup (tester and bot) ═════════════════════════════
 
+def _unavailable(result: Dict[str, Any], reason: str, message: str) -> Dict[str, Any]:
+    result.update(status="unavailable", reason=reason, message=message)
+    return result
+
+
 async def run_lookup(integration: Mapping[str, Any], lookup: Mapping[str, Any], tx_hash: str,
                      secret: Optional[str], *, include_raw: bool = False) -> Dict[str, Any]:
     """Call the lookup's endpoint for ``tx_hash`` and format the selected fields.
 
-    ``status``: ok | not_found | api_error | blocked | invalid. ``text`` is what the bot gets
-    (selected fields only). ``raw`` (tester only) is the parsed response, truncated for display.
+    ``status``:
+    - ``ok``: the selected fields (``text``, what the bot gets);
+    - ``not_found``: the API answered successfully with an empty result (or HTTP 404 when the
+      lookup's ``not_found_on`` is ``empty_or_404``, for APIs that report unknown ids that way);
+    - ``unavailable``: anything else — a missing or misconfigured endpoint, auth or server
+      errors, redirects, non-JSON, a response without the configured fields, network failures,
+      blocked destinations. ``reason`` says which; the bot must not infer that the transaction
+      doesn't exist.
+    ``raw`` (tester only) is the parsed response, truncated for display.
     """
-    result: Dict[str, Any] = {"status": "invalid", "message": "", "tx_hash": tx_hash, "http_status": None,
-                              "duration_ms": 0, "request_url": None, "fields": [], "text": ""}
+    result: Dict[str, Any] = {"status": "unavailable", "reason": "", "message": "", "tx_hash": tx_hash,
+                              "http_status": None, "duration_ms": 0, "request_url": None, "fields": [], "text": ""}
     try:
         req = build_request(integration, lookup, tx_hash, secret)
     except (ConfigError, OutboundBlocked) as exc:
-        result["message"] = str(exc)
-        return result
+        return _unavailable(result, "configuration", str(exc))
     result["request_url"] = req["display_url"]
     started = time.monotonic()
     try:
         resp = await guarded_get(req["origin"], req["host"], req["port"], req["target"], req["headers"])
     except OutboundBlocked as exc:
-        result.update(status="blocked", message=str(exc))
-        return result
+        return _unavailable(result, "blocked", str(exc))
     except OutboundError as exc:
-        result.update(status="api_error", message=str(exc))
-        return result
+        return _unavailable(result, "network", str(exc))
     finally:
         result["duration_ms"] = int((time.monotonic() - started) * 1000)
     status = resp["status"]
     result["http_status"] = status
     if resp["truncated"]:
-        result.update(status="api_error", message=f"The response was larger than {MAX_RESPONSE_SIZE:,} bytes.")
-        return result
+        return _unavailable(result, "too_large", f"The response was larger than {MAX_RESPONSE_SIZE:,} bytes.")
     if 300 <= status < 400:
-        result.update(status="api_error", message=f"The API redirected (HTTP {status}); redirects are not followed.")
+        return _unavailable(result, "redirect", f"The API redirected (HTTP {status}); redirects are not followed.")
+    if status == 404 and lookup.get("not_found_on") == "empty_or_404":
+        result.update(status="not_found", reason="http_404",
+                      message="The API reported that this transaction was not found (HTTP 404).")
         return result
     if status == 404:
-        result.update(status="not_found", message="The API found no data for this transaction (HTTP 404).")
-        return result
+        return _unavailable(result, "endpoint", "The API endpoint was not found (HTTP 404). Check the base URL and endpoint path.")
+    if status in (401, 403):
+        return _unavailable(result, "auth", f"The API refused the request (HTTP {status}). Check the API key.")
+    if status == 429:
+        return _unavailable(result, "rate_limited", "The API is rate limiting requests (HTTP 429).")
+    if status >= 500:
+        return _unavailable(result, "server", f"The API had a server error (HTTP {status}).")
     if status >= 400:
-        result.update(status="api_error", message=f"The API returned an error (HTTP {status}).")
-        return result
+        return _unavailable(result, "request", f"The API rejected the request (HTTP {status}). Check the input template.")
     try:
         data = json.loads(resp["content"].decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        result.update(status="api_error", message="The API did not return JSON.")
-        return result
+        return _unavailable(result, "not_json", "The API did not return JSON.")
     if include_raw:
         raw_text = json.dumps(data, ensure_ascii=False, indent=2)
         result["raw"] = raw_text[:RAW_PREVIEW_CHARS]
         result["raw_truncated"] = len(raw_text) > RAW_PREVIEW_CHARS
         result["paths"] = leaf_paths(data)
+    if data in ([], {}, None):
+        result.update(status="not_found", reason="empty",
+                      message="The API returned no data for this transaction hash.")
+        return result
     rows = format_fields(data, lookup.get("fields") or [])
     result["fields"] = rows
-    if data in ([], {}, None) or (rows and not any(r["found"] for r in rows)):
-        result.update(status="not_found", message="The API returned no data for this transaction.")
-        return result
-    result.update(status="ok", message="", text=fields_text(rows))
+    if rows and not any(r["found"] for r in rows):
+        return _unavailable(result, "fields", "The response doesn't contain any of the configured fields. Check the field paths.")
+    result.update(status="ok", text=fields_text(rows))
     return result
 
 
@@ -640,9 +663,11 @@ def bot_block(lookup_name: str, result: Mapping[str, Any]) -> str:
     if result.get("status") == "ok":
         body = f"Transaction {h}\n{result['text']}"
     elif result.get("status") == "not_found":
-        body = f"Transaction {h}\nStatus: not found — {result.get('message')}"
+        body = f"Transaction {h}\nStatus: not found — the API answered and has no transaction with this hash."
     else:
-        body = f"Transaction {h}\nStatus: lookup failed — {result.get('message') or 'the API could not be reached'}"
+        body = (f"Transaction {h}\nStatus: lookup unavailable — the transaction could not be checked "
+                "(a problem with the lookup service or its setup). This says nothing about whether the "
+                "transaction exists.")
     return f"Lookup: {lookup_name}\n{body}"
 
 

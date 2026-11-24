@@ -213,28 +213,58 @@ def test_run_lookup_ok_sends_only_to_checked_address():
     assert "total_output" not in block and "koios" not in block and "Fee: 0.667335 ADA" in block
 
 
-@pytest.mark.parametrize("route,status,needle", [
-    ((200, "[]", {}), "not_found", "no data"),
-    ((404, "missing", {}), "not_found", "404"),
-    ((500, "secret upstream stack trace", {}), "api_error", "HTTP 500"),
-    ((302, "", {"location": "http://169.254.169.254/"}), "api_error", "redirects are not followed"),
-    ((200, "<html>not json</html>", {}), "api_error", "did not return JSON"),
-    ((200, b"x" * (ai.MAX_RESPONSE_SIZE + 10), {}), "api_error", "larger than"),
-    ((200, httpx.ReadTimeout("slow"), {}), "api_error", "did not respond in time"),
-    ((200, httpx.ConnectError("refused"), {}), "api_error", "Could not connect"),
+@pytest.mark.parametrize("route,status,reason,needle", [
+    ((200, "[]", {}), "not_found", "empty", "no data for this transaction"),
+    ((200, "{}", {}), "not_found", "empty", "no data for this transaction"),
+    ((404, "missing", {}), "unavailable", "endpoint", "endpoint was not found"),       # broken setup, not "no such tx"
+    ((400, "bad filter", {}), "unavailable", "request", "rejected the request"),
+    ((401, "no key", {}), "unavailable", "auth", "Check the API key"),
+    ((403, "forbidden", {}), "unavailable", "auth", "Check the API key"),
+    ((429, "slow down", {}), "unavailable", "rate_limited", "rate limiting"),
+    ((500, "secret upstream stack trace", {}), "unavailable", "server", "HTTP 500"),
+    ((302, "", {"location": "http://169.254.169.254/"}), "unavailable", "redirect", "redirects are not followed"),
+    ((200, "<html>not json</html>", {}), "unavailable", "not_json", "did not return JSON"),
+    ((200, json.dumps([{"other": 1}]), {}), "unavailable", "fields", "configured fields"),   # wrong field paths
+    ((200, b"x" * (ai.MAX_RESPONSE_SIZE + 10), {}), "unavailable", "too_large", "larger than"),
+    ((200, httpx.ReadTimeout("slow"), {}), "unavailable", "network", "did not respond in time"),
+    ((200, httpx.ConnectError("refused"), {}), "unavailable", "network", "Could not connect"),
 ])
-def test_run_lookup_errors(route, status, needle):
+def test_run_lookup_errors(route, status, reason, needle):
     with FakeNet() as net:
         net.routes["/api/v1/tx_info"] = route
         r = run(ai.run_lookup(INTEGRATION, LOOKUP, TX, None))
-    assert r["status"] == status and needle in r["message"], r
+    assert (r["status"], r["reason"]) == (status, reason) and needle in r["message"], r
     assert "upstream" not in r["message"] and r["text"] == ""
     assert len(net.requests) == 1                     # redirects are never followed
+
+
+def test_404_is_not_found_only_when_the_lookup_says_so():
+    lookup = ai.validate_lookup({**LOOKUP, "not_found_on": "empty_or_404"}, ENDPOINTS)
+    with FakeNet() as net:
+        net.routes["/api/v1/tx_info"] = (404, "missing", {})
+        r = run(ai.run_lookup(INTEGRATION, lookup, TX, None))
+    assert (r["status"], r["reason"]) == ("not_found", "http_404")
+    with pytest.raises(ai.ConfigError):
+        ai.validate_lookup({**LOOKUP, "not_found_on": "always"}, ENDPOINTS)
+    assert LOOKUP["not_found_on"] == "empty"            # default: only an empty result means "not found"
+
+
+def test_bot_block_wording_never_implies_missing_when_unavailable():
+    nf = ai.bot_block("Tx", {"status": "not_found", "tx_hash": TX})
+    un = ai.bot_block("Tx", {"status": "unavailable", "tx_hash": TX, "message": "The API endpoint was not found (HTTP 404)."})
+    assert "Status: not found" in nf and "no transaction with this hash" in nf
+    assert "Status: lookup unavailable" in un and "says nothing about whether the transaction exists" in un
+    assert "not found" not in un.lower() and "404" not in un
+
+
+def test_configuration_errors_are_unavailable():
+    r = run(ai.run_lookup({**INTEGRATION, "base_url": "http://api.koios.rest"}, LOOKUP, TX, None))
+    assert (r["status"], r["reason"]) == ("unavailable", "configuration")
 
 
 @pytest.mark.parametrize("answers", [["10.0.0.7"], ["104.21.1.1", "127.0.0.1"], ["169.254.169.254"], ["::ffff:10.1.1.1"], []])
 def test_private_dns_answers_block_before_any_request(answers):
     with FakeNet(answers) as net:
         r = run(ai.run_lookup(INTEGRATION, LOOKUP, TX, "s3cret"))
-    assert r["status"] in ("blocked", "api_error") and not net.requests
+    assert r["status"] == "unavailable" and r["reason"] in ("blocked", "network") and not net.requests
     assert "s3cret" not in json.dumps(r)

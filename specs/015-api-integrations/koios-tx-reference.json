@@ -1,14 +1,15 @@
 {
+  "_note": "EXPERIMENTAL example. Koios documents tx_info only as POST with a JSON body (koiosapi.yaml v1.4.2). The GET form below works because Koios runs on PostgREST, but it is undocumented and may change. Prefer a provider with a documented GET transaction endpoint for production use (e.g. Blockfrost GET /txs/{hash}, which needs a project key).",
   "endpoints": [
     {
       "path": "/tx_info",
       "method": "GET",
-      "summary": "Transaction details by hash (Koios tx_info, GET form)",
+      "summary": "EXPERIMENTAL: transaction details by hash (undocumented GET form of Koios tx_info)",
       "parameters": [
         {"name": "_tx_hashes", "in": "query", "required": true,
          "description": "PostgREST array of transaction hashes, e.g. {hash}"}
       ]
     },
-    {"path": "/tip", "method": "GET", "summary": "Current chain tip"}
+    {"path": "/tip", "method": "GET", "summary": "Current chain tip (documented GET)"}
   ]
 }
