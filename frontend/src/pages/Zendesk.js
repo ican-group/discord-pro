@@ -182,6 +182,113 @@ const SPAM_CHECK_MODES = ["new", "open", "pending"];
 const tagStyle = { display: "inline-block", marginTop: 4, marginRight: 6, padding: "1px 6px", fontSize: 11, borderRadius: 4 };
 const spamTagStyle = { ...tagStyle, color: "#fde68a", border: "1px solid #f59e0b" };
 
+const KB_KIND_LABELS = { faq: "FAQ", tech_note: "Tech Note", ticket_solution: "Ticket solution" };
+const kbKindStyle = { ...tagStyle, marginTop: 0, color: "#c4b5fd", border: "1px solid #8b5cf6" };
+
+function KbKind({ entry }) {
+  const label = KB_KIND_LABELS[entry.kind] || entry.kind;
+  return <span style={kbKindStyle}>{entry.solution_ticket ? `${label} #${entry.solution_ticket}` : label}</span>;
+}
+
+// Links are stored in BridgeBot only; they never change the ticket in Zendesk.
+function LinkedKbEntries({ instanceId, ticketId }) {
+  const [links, setLinks] = useState(null);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const options = { headers: { "X-Instance-ID": instanceId } };
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get(`/zendesk/tickets/${ticketId}/kb-links`, {
+      headers: { "X-Instance-ID": instanceId }, signal: controller.signal,
+    }).then(({ data }) => setLinks(data.links)).catch(() => {
+      if (!controller.signal.aborted) setError("Couldn’t load linked entries.");
+    });
+    return () => controller.abort();
+  }, [instanceId, ticketId]);
+
+  async function run(action) {
+    setBusy(true);
+    setError("");
+    try {
+      await action();
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : "Knowledge Base link request failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function search(event) {
+    event.preventDefault();
+    run(async () => {
+      const { data } = await api.get("/zendesk/kb-entries", { ...options, params: { q: query.trim() } });
+      setResults(data.entries);
+    });
+  }
+
+  function link(entry) {
+    run(async () => {
+      const { data } = await api.post(`/zendesk/tickets/${ticketId}/kb-links`, { source_id: entry.source_id }, options);
+      setLinks((current) => [...(current || []), data]);
+    });
+  }
+
+  function unlink(entry) {
+    run(async () => {
+      await api.delete(`/zendesk/tickets/${ticketId}/kb-links/${encodeURIComponent(entry.source_id)}`, options);
+      setLinks((current) => current.filter((item) => item.source_id !== entry.source_id));
+    });
+  }
+
+  const linkedIds = new Set((links || []).map((item) => item.source_id));
+  return (
+    <section aria-label="Linked KB entries" style={{ ...T.card, marginTop: 16, marginBottom: 16, padding: 12 }}>
+      <h4 style={T.sectionTitle}>Linked KB entries</h4>
+      <p style={T.sectionSub}>Suggested replies give linked entries extra weight. Links are kept in BridgeBot, not Zendesk.</p>
+      {links === null && !error && <p role="status">Loading linked entries…</p>}
+      {links?.length === 0 && <p style={T.sectionSub}>No entries linked to this ticket.</p>}
+      {links?.length > 0 && (
+        <ul style={{ display: "grid", gap: 6, paddingLeft: 0, listStyle: "none" }}>
+          {links.map((entry) => (
+            <li key={entry.source_id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <KbKind entry={entry} />
+              <span style={{ overflowWrap: "anywhere" }}>{entry.title || "Untitled entry"}</span>
+              {!entry.is_active && <span style={T.sectionSub}>(inactive)</span>}
+              <button type="button" style={T.btnSecondary} disabled={busy} onClick={() => unlink(entry)}>Unlink</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form onSubmit={search} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+        <input style={{ ...T.input, flex: "1 1 200px" }} value={query} maxLength={300}
+          aria-label="Search FAQs and Tech Notes" placeholder="Search FAQs and Tech Notes"
+          onChange={(e) => setQuery(e.target.value)} disabled={busy} />
+        <button type="submit" style={T.btnSecondary} disabled={busy}>Search</button>
+      </form>
+      {results?.length === 0 && <p style={T.sectionSub}>No matching FAQs or Tech Notes.</p>}
+      {results?.length > 0 && (
+        <ul style={{ display: "grid", gap: 6, paddingLeft: 0, listStyle: "none", marginTop: 8 }}>
+          {results.map((entry) => (
+            <li key={entry.source_id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <KbKind entry={entry} />
+              <span style={{ overflowWrap: "anywhere" }}>{entry.title || "Untitled entry"}</span>
+              <button type="button" style={T.btnSecondary} disabled={busy || linkedIds.has(entry.source_id)}
+                onClick={() => link(entry)}>
+                {linkedIds.has(entry.source_id) ? "Linked" : "Link"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}
+
 // Spam review is stored in BridgeBot only; these buttons never change the ticket in Zendesk.
 function SpamReview({ instanceId, ticketId, spam, onChange }) {
   const [busy, setBusy] = useState(false);
@@ -325,6 +432,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   const [ticketId, setTicketId] = useState("");
   const [ticket, setTicket] = useState(null);
   const [note, setNote] = useState("");
+  const [evidence, setEvidence] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -436,6 +544,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
     setTicketId(String(id));
     setTicket(null);
     setNote("");
+    setEvidence(null);
     run(async () => {
       const { data } = await api.get(`/zendesk/tickets/${id}`, options);
       setTicket(data);
@@ -453,6 +562,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
     run(async () => {
       const { data } = await api.post(`/zendesk/tickets/${ticket.id}/draft`, null, options);
       setNote(data.draft);
+      setEvidence(data.evidence || null);
     });
   }
 
@@ -553,6 +663,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
           <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{ticket.description}</p>
           <SpamReview key={`spam-${ticket.id}`} instanceId={instanceId} ticketId={ticket.id}
             spam={spamStates[ticket.id]} onChange={updateSpam} />
+          <LinkedKbEntries key={`links-${ticket.id}`} instanceId={instanceId} ticketId={ticket.id} />
           <ZendeskTicketHistory key={ticket.id} instanceId={instanceId} ticket={ticket}
             canPostNotes={canPostNotes}
             onSummaryPosted={(id, state) => setReviewStates((current) => ({ ...current, [id]: state }))}
@@ -565,6 +676,16 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
             <button type="button" style={T.btnPrimary} onClick={draftNote} disabled={busy}>
               Suggest solution or follow-up questions
             </button>
+            {evidence && (
+              <div style={T.sectionSub} aria-label="Evidence used">
+                {[["knowledge", "FAQs and Tech Notes"], ["ticket_solutions", "Past ticket solutions"]].map(([group, label]) => (
+                  <p key={group}>
+                    {label}: {evidence[group].length === 0 ? "none found" : evidence[group].map((entry) =>
+                      `${entry.title || "Untitled"}${entry.linked ? " (linked)" : ""}`).join("; ")}
+                  </p>
+                ))}
+              </div>
+            )}
             <label style={T.label}>Internal note
               <textarea style={T.textarea} rows={7} value={note}
                 onChange={(e) => setNote(e.target.value)} disabled={busy} required />
