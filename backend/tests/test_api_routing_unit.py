@@ -623,6 +623,8 @@ UTXO_REQUEST_PROD = (f"Run a fresh UTxO lookup for {UTXO_ADDR}. Reply with one J
 
 
 @pytest.mark.parametrize("question,endpoint", [
+    (f"Show the current UTxOs for {UTXO_ADDR}", "GET /api/addresses/{address}/utxos"),
+    (f"Show the current UTxOs for {UTXO_ADDR} utxos", "GET /api/addresses/{address}/utxos"),
     (UTXO_REQUEST, "GET /api/addresses/{address}/utxos"),           # the request as reported, JSON instructions included
     (UTXO_REQUEST_PROD, "GET /api/addresses/{address}/utxos"),      # as sent on Discord (it called Tx Count)
     (f"What is the UTXO at this address? {UTXO_ADDR}", "GET /api/addresses/{address}/utxos"),
@@ -636,7 +638,8 @@ def test_utxo_requests_call_address_utxos_and_counts_call_tx_count(question, end
 
 
 def test_this_address_follow_up_still_reaches_utxos():
-    for q in ("What is the UTXO at this address?", "What is the UTXO at this address? Reply as JSON."):
+    for q in ("What is the UTXO at this address?", "What is the UTXO at this address? Reply as JSON.",
+              "Show the current UTxOs for this address."):
         assert r.about_subject(q), q
         assert decide(f"{q} {UTXO_ADDR}") == ("call", "GET /api/addresses/{address}/utxos")
 

@@ -580,6 +580,11 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
                 # belongs to the proposal endpoints.
                 sc = score + 1.5 * (len(used) - 1) - sum(2.0 for i in used if i.get("role") == "proposal"
                                                          and "/proposals/" not in (ep.get("path") or "").lower())
+                # An explicit address UTxO request matches the collection itself even when a
+                # general address summary also describes UTxOs.
+                if "utxo" in q and any(i["kind"] == "payment_address" for i in used) \
+                        and "utxo" in _concepts(" ".join(_literals(ep.get("path") or ""))):
+                    sc += 2.0
                 entry = {"integration": integ, "endpoint": ep, "values": values, "input": used[0], "score": sc}
                 if missing:
                     partial.append({**entry, "missing": missing[0]})
