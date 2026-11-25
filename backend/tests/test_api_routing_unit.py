@@ -387,3 +387,21 @@ def test_bot_usability_explains_endpoints_the_bot_cannot_fill():
         {"name": "hash", "in": "path", "required": True, "description": "Transaction hash"},
         {"name": "address", "in": "path", "required": True, "description": "Payment address"}]}
     assert r.bot_usability(two)["reason"]["category"] == "multiple"
+
+
+# ── what the bot can look up, for its prompt ──
+
+def test_capability_note_lists_inputs_and_live_data():
+    note = r.capability_note([GS])
+    assert note.startswith("You can look up live data from GridScan (Cardano mainnet).")
+    for part in ("a stake address (stake1…)", "a Cardano address (addr1…)", "a transaction hash", "a block hash",
+                 "the network status", '"What\'s the network status?"'):
+        assert part in note, part
+    off = {**GS, "endpoints": [e for e in GS_EPS if r.bot_usability(e)["accepts"]]}       # no no-input endpoints
+    assert "network status" not in r.capability_note([off])
+
+
+def test_capability_note_saved_lookup_only_and_nothing():
+    assert r.capability_note([]) == ""
+    note = r.capability_note([], saved_tx_lookup=True)
+    assert "saved lookup" in note and "a transaction hash" in note and "stake address" not in note

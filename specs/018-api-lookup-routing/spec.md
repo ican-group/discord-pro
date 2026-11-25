@@ -111,6 +111,12 @@ One formatter (`format_result`) serves the tester and all bot channels.
 
 - **The bot's prompt** gets the provider, endpoint, input, status and the formatted RESULT, which it
   must include exactly as written. It never gets the raw response, URL or key.
+- **What the bot can look up.** Whenever the workspace has lookups available, the prompt also says
+  what the bot can look up: providers, networks, the inputs that trigger a lookup, and example
+  questions. This applies even when no lookup ran for the message, so "Can you query the API?"
+  gets "yes, send a stake address, address or transaction hash…" instead of "I can't". The bot
+  must never claim it looked something up without a result. Passive Discord messages get no note,
+  as before.
 - **The tester** ("Test a question") runs the same code and shows:
   - the detected input (type, network, address type) and the selected endpoint with its score,
     values and next-best alternatives;
