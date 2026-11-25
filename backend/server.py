@@ -27,6 +27,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlparse, urlencode, parse_qsl
 import httpx
+import embed_loader
 import api_integrations as apiint
 from collections import deque
 
@@ -1835,6 +1836,7 @@ async def startup_event():
         await db.api_integrations.create_index([("instance_id", 1), ("id", 1)], unique=True)
         await db.api_lookups.create_index([("instance_id", 1), ("id", 1)], unique=True)
         await db.api_lookup_log.create_index([("instance_id", 1), ("at", -1)])
+        await db.embed_configs.create_index([("instance_id", 1)], unique=True)
     except Exception as e:
         logger.warning(f"Index creation: {e}")
     try:
@@ -2213,7 +2215,7 @@ async def delete_instance(instance_id: str, current_user: dict = Depends(require
     await db.zendesk_oauth_requests.delete_many({"instance_id": instance_id})
     await db.zendesk_spam.delete_many({"instance_id": instance_id})
     await db.zendesk_kb_links.delete_many({"instance_id": instance_id})
-    for col in (db.api_integrations, db.api_lookups, db.api_lookup_log):
+    for col in (db.api_integrations, db.api_lookups, db.api_lookup_log, db.embed_configs):
         await col.delete_many({"instance_id": instance_id})
     if _paradedb_pool:
         async with _paradedb_pool.acquire() as conn:
@@ -2555,6 +2557,86 @@ async def send_chat_message(body: ChatMessage):
 async def get_chat_history(session_id: str):
     conv = await db.conversations.find_one({"session_id": session_id}, {"_id": 0})
     return conv or {"messages": [], "session_id": session_id}
+
+
+# ==================== EMBED CODE AND WIDGET (spec 016) ====================
+# Ported from BitBotPro 5509ca6/1b8e0a3 (last at aa55976^) with the Spec 012 loader hardening.
+
+EMBED_WELCOME_CHARS = 2000
+EMBED_CSS_URL_CHARS = 2048
+
+
+def _embed_css_url(value: Any) -> str:
+    """An https stylesheet URL (it is loaded into the widget page), or ""."""
+    if not isinstance(value, str):
+        return ""
+    url = value.strip()
+    if not url:
+        return ""
+    if len(url) > EMBED_CSS_URL_CHARS or not url.startswith("https://") or any(c in url for c in "\"<> \t\r\n"):
+        raise ValueError("The custom stylesheet must be an https:// URL")
+    if not urlparse(url).hostname:
+        raise ValueError("The custom stylesheet must be an https:// URL")
+    return url
+
+
+class EmbedConfigUpdate(BaseModel):
+    custom_css_url: Optional[str] = Field(None, max_length=EMBED_CSS_URL_CHARS)
+    welcome_message: Optional[str] = Field(None, max_length=EMBED_WELCOME_CHARS)
+    default_open: Optional[bool] = None
+
+
+@api_router.get("/embed/config/{instance_id}")
+async def get_embed_config(instance_id: str):
+    """Public: what the widget and embed.js need. Served to any site (CORS *, no credentials)
+    and limited to these fields; an unknown workspace gets the defaults."""
+    config, name = {}, ""
+    if len(instance_id) <= 128:
+        config = await db.embed_configs.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
+        bot = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0, "name": 1}) or {}
+        name = str(bot.get("name") or "")[:80]
+    try:
+        css_url = _embed_css_url(config.get("custom_css_url"))
+    except ValueError:
+        css_url = ""
+    body = {
+        "instance_id": instance_id[:128], "name": name, "custom_css_url": css_url,
+        "welcome_message": str(config.get("welcome_message") or "")[:EMBED_WELCOME_CHARS],
+        "default_open": bool(config.get("default_open", False)),
+    }
+    return Response(content=json.dumps(body), media_type="application/json",
+                    headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+
+
+@api_router.get("/admin/embed-config")
+async def read_embed_config(instance_id: str = Depends(get_instance_access)):
+    config = await db.embed_configs.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
+    return {"custom_css_url": config.get("custom_css_url") or "", "welcome_message": config.get("welcome_message") or "",
+            "default_open": bool(config.get("default_open", False))}
+
+
+@api_router.put("/admin/embed-config")
+async def update_embed_config(body: EmbedConfigUpdate, instance_id: str = Depends(get_instance_access)):
+    update: Dict[str, Any] = {"instance_id": instance_id, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.custom_css_url is not None:
+        try:
+            update["custom_css_url"] = _embed_css_url(body.custom_css_url)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+    if body.welcome_message is not None:
+        update["welcome_message"] = body.welcome_message.strip()
+    if body.default_open is not None:
+        update["default_open"] = body.default_open
+    await db.embed_configs.update_one({"instance_id": instance_id}, {"$set": update}, upsert=True)
+    return await read_embed_config(instance_id)
+
+
+@api_router.get("/embed.js")
+async def serve_embed_script():
+    """Static loader; nothing from the request is reflected into it."""
+    return Response(content=embed_loader.EMBED_JS, media_type="application/javascript",
+                    headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff",
+                             "Access-Control-Allow-Origin": "*"})
 
 
 # ==================== BOT CONFIG (PROTECTED) ====================
