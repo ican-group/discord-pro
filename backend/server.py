@@ -1836,6 +1836,7 @@ async def startup_event():
         await db.api_integrations.create_index([("instance_id", 1), ("id", 1)], unique=True)
         await db.api_lookups.create_index([("instance_id", 1), ("id", 1)], unique=True)
         await db.api_lookup_log.create_index([("instance_id", 1), ("at", -1)])
+        await db.api_endpoint_status.create_index([("instance_id", 1), ("integration_id", 1), ("endpoint_id", 1)], unique=True)
         await db.embed_configs.create_index([("instance_id", 1)], unique=True)
     except Exception as e:
         logger.warning(f"Index creation: {e}")
@@ -2215,7 +2216,7 @@ async def delete_instance(instance_id: str, current_user: dict = Depends(require
     await db.zendesk_oauth_requests.delete_many({"instance_id": instance_id})
     await db.zendesk_spam.delete_many({"instance_id": instance_id})
     await db.zendesk_kb_links.delete_many({"instance_id": instance_id})
-    for col in (db.api_integrations, db.api_lookups, db.api_lookup_log, db.embed_configs):
+    for col in (db.api_integrations, db.api_lookups, db.api_lookup_log, db.api_endpoint_status, db.embed_configs):
         await col.delete_many({"instance_id": instance_id})
     if _paradedb_pool:
         async with _paradedb_pool.acquire() as conn:
@@ -2275,22 +2276,44 @@ def _apiint_secret(doc: dict) -> Optional[str]:
         return None
 
 
-def _apiint_view(doc: dict) -> dict:
+def _apiint_view(doc: dict, *, lookups: Optional[List[dict]] = None, tested: int = 0) -> dict:
     """Integration as shown to admins: never the secret, endpoints only as counts."""
     eps = doc.get("endpoints") or []
+    ids = {e["id"] for e in eps}
+    used = {l.get("endpoint_id") for l in (lookups or []) if l.get("integration_id") == doc["id"]} & ids
     return {
         "id": doc["id"], "name": doc["name"], "base_url": doc["base_url"],
         "auth_type": doc.get("auth_type") or "none", "auth_name": doc.get("auth_name") or "",
-        "has_secret": bool(doc.get("secret_enc")), "import": doc.get("import"),
+        "has_secret": bool(doc.get("secret_enc")), "import": doc.get("import"), "doc_url": doc.get("doc_url") or "",
         "endpoint_count": len(eps), "get_endpoint_count": sum(e["method"] == "GET" for e in eps),
+        "used_endpoint_count": len(used), "tested_endpoint_count": tested,
+        "path_warning": apiint.base_path_warning(doc.get("base_url"), eps),
+        "connection": doc.get("connection") or {}, "connection_check": doc.get("connection_check"),
         "created_at": doc.get("created_at"), "updated_at": doc.get("updated_at"),
     }
 
 
-def _apiint_lookup_view(doc: dict) -> dict:
-    return {**{k: doc.get(k) for k in ("id", "integration_id", "name", "kind", "endpoint_id", "method", "path",
+def _apiint_lookup_view(doc: dict, endpoint_ids: Optional[set] = None) -> dict:
+    view = {**{k: doc.get(k) for k in ("id", "integration_id", "name", "kind", "endpoint_id", "method", "path",
                                         "inputs", "fields", "enabled", "created_at", "updated_at")},
             "not_found_on": doc.get("not_found_on") or "empty"}
+    if endpoint_ids is not None:
+        view["endpoint_missing"] = doc.get("endpoint_id") not in endpoint_ids
+    return view
+
+
+async def _apiint_record_status(instance_id: str, integration_id: str, endpoint_id: str, source: str,
+                                result: dict) -> None:
+    """Latest observed result for an endpoint, from a tester or bot call (spec 017)."""
+    observed = apiint.observed_outcome(result)
+    if not observed or not endpoint_id:
+        return
+    try:
+        await db.api_endpoint_status.update_one(
+            {"instance_id": instance_id, "integration_id": integration_id, "endpoint_id": endpoint_id},
+            {"$set": {**observed, "source": source, "at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    except Exception as e:
+        logger.warning(f"API endpoint status update failed: {type(e).__name__}")
 
 
 async def _apiint_get(instance_id: str, integration_id: str) -> dict:
@@ -2326,7 +2349,15 @@ class ApiIntegrationBody(BaseModel):
 
 
 class ApiIntegrationImport(BaseModel):
-    document: Any
+    document: Any = None
+    url: Optional[str] = Field(None, max_length=2000)
+    filename: Optional[str] = Field(None, max_length=200)
+
+
+class ApiConnectionSettings(BaseModel):
+    health_endpoint_id: str = Field("", max_length=600)
+    credential_endpoint_id: str = Field("", max_length=600)
+    credential_params: Dict[str, str] = {}
 
 
 class ApiLookupBody(BaseModel):
@@ -2362,9 +2393,14 @@ async def list_api_integrations(instance_id: str = Depends(get_instance_access))
     config = await db.bot_config.find_one({"instance_id": instance_id}, {"api_lookups_enabled": 1}) or {}
     integrations = await db.api_integrations.find({"instance_id": instance_id}, {"_id": 0}).sort("created_at", 1).to_list(50)
     lookups = await db.api_lookups.find({"instance_id": instance_id}, {"_id": 0}).sort("created_at", 1).to_list(100)
+    tested: Dict[str, int] = {}
+    async for row in db.api_endpoint_status.aggregate([
+            {"$match": {"instance_id": instance_id}}, {"$group": {"_id": "$integration_id", "n": {"$sum": 1}}}]):
+        tested[row["_id"]] = row["n"]
+    ids_by_integration = {d["id"]: {e["id"] for e in d.get("endpoints") or []} for d in integrations}
     return {"bot_access": bool(config.get("api_lookups_enabled")),
-            "integrations": [_apiint_view(d) for d in integrations],
-            "lookups": [_apiint_lookup_view(d) for d in lookups]}
+            "integrations": [_apiint_view(d, lookups=lookups, tested=tested.get(d["id"], 0)) for d in integrations],
+            "lookups": [_apiint_lookup_view(d, ids_by_integration.get(d["integration_id"], set())) for d in lookups]}
 
 
 @api_router.put("/api-integrations/settings")
@@ -2403,6 +2439,7 @@ async def update_api_integration(integration_id: str, body: ApiIntegrationBody,
 async def delete_api_integration(integration_id: str, instance_id: str = Depends(get_instance_access)):
     await _apiint_get(instance_id, integration_id)
     await db.api_lookups.delete_many({"instance_id": instance_id, "integration_id": integration_id})
+    await db.api_endpoint_status.delete_many({"instance_id": instance_id, "integration_id": integration_id})
     await db.api_integrations.delete_one({"instance_id": instance_id, "id": integration_id})
     return {"success": True}
 
@@ -2410,22 +2447,121 @@ async def delete_api_integration(integration_id: str, instance_id: str = Depends
 @api_router.post("/api-integrations/{integration_id}/import")
 async def import_api_document(integration_id: str, body: ApiIntegrationImport,
                               instance_id: str = Depends(get_instance_access)):
-    await _apiint_get(instance_id, integration_id)
+    """Import from a documentation URL or an uploaded document (spec 017). Re-importing merges:
+    endpoints are matched by method + path; lookups, their formatters and the saved key are never
+    changed; a lookup whose endpoint disappeared is reported (it keeps its saved path)."""
+    doc = await _apiint_get(instance_id, integration_id)
+    has_url, has_doc = bool((body.url or "").strip()), body.document is not None
+    if has_url == has_doc:
+        raise HTTPException(422, "Provide either a documentation URL or a file.")
+    if has_url:
+        try:
+            target = apiint.parse_doc_url(body.url)
+            document = await apiint.fetch_document(doc, target, _apiint_secret(doc))
+        except (apiint.ConfigError, apiint.OutboundBlocked, apiint.OutboundError) as exc:
+            raise _apiint_http_error(exc)
+        source = {"source": "url", "url": target["url"]}
+    else:
+        if len(json.dumps(body.document, default=str)) > apiint.MAX_DOC_SIZE:
+            raise HTTPException(413, "The file is larger than 2 MB.")
+        document = body.document
+        source = {"source": "file", "filename": (body.filename or "").strip()[:200]}
     try:
-        kind, endpoints = apiint.parse_document(body.document)
+        kind, endpoints = apiint.parse_document(document)
     except apiint.ConfigError as exc:
         raise _apiint_http_error(exc)
-    info = {"kind": kind, "endpoints": len(endpoints), "get_endpoints": sum(e["method"] == "GET" for e in endpoints),
-            "imported_at": datetime.now(timezone.utc).isoformat()}
-    await db.api_integrations.update_one({"instance_id": instance_id, "id": integration_id},
-                                         {"$set": {"endpoints": endpoints, "import": info, "updated_at": info["imported_at"]}})
+    changes = apiint.diff_endpoints(doc.get("endpoints") or [], endpoints)
+    ids = {e["id"] for e in endpoints}
+    lookups = await db.api_lookups.find({"instance_id": instance_id, "integration_id": integration_id},
+                                        {"_id": 0, "id": 1, "name": 1, "endpoint_id": 1}).to_list(100)
+    now = datetime.now(timezone.utc).isoformat()
+    info = {"kind": kind, **source, "endpoints": len(endpoints),
+            "get_endpoints": sum(e["method"] == "GET" for e in endpoints), "imported_at": now,
+            "first_import": not doc.get("import"),
+            "changes": {"new": len(changes["new"]), "updated": len(changes["updated"]),
+                        "removed": len(changes["removed"]), "unchanged": changes["unchanged"],
+                        "new_ids": changes["new"][:50], "updated_ids": changes["updated"][:50],
+                        "removed_ids": changes["removed"][:50]},
+            "coverage": apiint.doc_coverage(endpoints),
+            "path_warning": apiint.base_path_warning(doc.get("base_url"), endpoints),
+            "lookups_missing_endpoint": [l for l in lookups if l.get("endpoint_id") not in ids]}
+    fields = {"endpoints": endpoints, "import": info, "updated_at": now}
+    if has_url:
+        fields["doc_url"] = source["url"]
+    await db.api_integrations.update_one({"instance_id": instance_id, "id": integration_id}, {"$set": fields})
+    if changes["removed"]:
+        await db.api_endpoint_status.delete_many({"instance_id": instance_id, "integration_id": integration_id,
+                                                  "endpoint_id": {"$in": changes["removed"]}})
     return info
 
 
 @api_router.get("/api-integrations/{integration_id}/endpoints")
 async def list_api_endpoints(integration_id: str, instance_id: str = Depends(get_instance_access)):
+    """Imported endpoints with what is documented and what was actually observed. The response
+    schema itself stays on the server (the tester uses it); only its field count is returned."""
     doc = await _apiint_get(instance_id, integration_id)
-    return {"endpoints": doc.get("endpoints") or []}
+    status = {s["endpoint_id"]: s async for s in db.api_endpoint_status.find(
+        {"instance_id": instance_id, "integration_id": integration_id}, {"_id": 0, "instance_id": 0, "integration_id": 0})}
+    used: Dict[str, List[str]] = {}
+    async for l in db.api_lookups.find({"instance_id": instance_id, "integration_id": integration_id}, {"_id": 0, "endpoint_id": 1, "name": 1}):
+        used.setdefault(l.get("endpoint_id"), []).append(l.get("name") or "")
+    out = []
+    for e in doc.get("endpoints") or []:
+        view = {k: v for k, v in e.items() if k != "response_schema"}
+        view.update(has_response_schema=bool(e.get("response_schema")),
+                    response_field_count=apiint.schema_field_count(e.get("response_schema")),
+                    used_by=used.get(e["id"], []), last_result=status.get(e["id"]))
+        out.append(view)
+    return {"endpoints": out}
+
+
+@api_router.put("/api-integrations/{integration_id}/connection")
+async def update_api_connection_settings(integration_id: str, body: ApiConnectionSettings,
+                                         instance_id: str = Depends(get_instance_access)):
+    """Which endpoints the connection check uses: a public health endpoint (no parameters, called
+    without the key) and a protected GET endpoint with a valid sample input for the key."""
+    doc = await _apiint_get(instance_id, integration_id)
+    eps = {e["id"]: e for e in doc.get("endpoints") or []}
+    health = eps.get(body.health_endpoint_id) if body.health_endpoint_id else None
+    if body.health_endpoint_id and not health:
+        raise HTTPException(422, "Choose an imported endpoint for the health check.")
+    if health and (health["method"] != "GET" or "{" in health["path"]
+                   or any(p.get("required") for p in health.get("parameters") or [])):
+        raise HTTPException(422, "The health check must be a GET endpoint without required parameters.")
+    cred = eps.get(body.credential_endpoint_id) if body.credential_endpoint_id else None
+    if body.credential_endpoint_id and not cred:
+        raise HTTPException(422, "Choose an imported endpoint for the credential check.")
+    if cred and cred["method"] != "GET":
+        raise HTTPException(422, "Only GET endpoints can be used to verify the key.")
+    if cred and cred.get("requires_auth") is False:
+        raise HTTPException(422, "The documentation marks this endpoint as public, so it can't verify a key. "
+                                 "Choose an endpoint that requires a key.")
+    names = {p["name"] for p in (cred or {}).get("parameters") or []}
+    params = {k[:80]: str(v).strip()[:500] for k, v in body.credential_params.items() if k in names and str(v).strip()}
+    if cred:
+        try:
+            apiint.build_endpoint_request(doc, cred, params, None)
+        except (apiint.ConfigError, apiint.OutboundBlocked) as exc:
+            raise _apiint_http_error(exc)
+    settings = {"health_endpoint_id": body.health_endpoint_id if health else "",
+                "credential_endpoint_id": body.credential_endpoint_id if cred else "",
+                "credential_params": params if cred else {}}
+    await db.api_integrations.update_one({"instance_id": instance_id, "id": integration_id},
+                                         {"$set": {"connection": settings}})
+    return settings
+
+
+@api_router.post("/api-integrations/{integration_id}/connection-test")
+async def test_api_connection(integration_id: str, instance_id: str = Depends(get_instance_access)):
+    """Host reachability and credential verification, reported separately; the last check is saved."""
+    doc = await _apiint_get(instance_id, integration_id)
+    if not _api_lookup_allowed(instance_id):
+        raise HTTPException(429, "Too many API calls right now; try again in a minute.")
+    result = await apiint.connection_check(doc, {e["id"]: e for e in doc.get("endpoints") or []}, _apiint_secret(doc))
+    result["checked_at"] = datetime.now(timezone.utc).isoformat()
+    await db.api_integrations.update_one({"instance_id": instance_id, "id": integration_id},
+                                         {"$set": {"connection_check": result}})
+    return result
 
 
 def _apiint_validated(doc: dict, body: ApiLookupBody, *, require_fields: bool = True) -> dict:
@@ -2445,8 +2581,12 @@ async def test_api_lookup(integration_id: str, body: ApiLookupTest, instance_id:
         tx_hash = apiint.tester_input(body.input)
     except apiint.ConfigError as exc:
         raise _apiint_http_error(exc)
-    result = await apiint.run_lookup(doc, lookup, tx_hash, _apiint_secret(doc), include_raw=True)
+    endpoint = next((e for e in doc.get("endpoints") or [] if e["id"] == lookup["endpoint_id"]), {})
+    result = await apiint.run_lookup(doc, lookup, tx_hash, _apiint_secret(doc), include_raw=True,
+                                     schema=endpoint.get("response_schema"))
     await _apiint_log(instance_id, {"integration_id": integration_id}, "tester", result)
+    await _apiint_record_status(instance_id, integration_id, lookup["endpoint_id"], "tester", result)
+    result["endpoint_result"] = apiint.observed_outcome(result)
     result["bot_text"] = apiint.bot_block(lookup["name"] or "Lookup", result)
     return result
 
@@ -2522,6 +2662,7 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
         else:
             result = await apiint.run_lookup(integration, lookup, hashes[0], _apiint_secret(integration))
             await _apiint_log(instance_id, lookup, source, result)
+            await _apiint_record_status(instance_id, lookup["integration_id"], lookup.get("endpoint_id"), source, result)
         logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} status={result['status']} "
                     f"reason={result.get('reason') or '-'} "
                     f"http={result.get('http_status')} ms={result.get('duration_ms')}")
