@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plug, Upload, Play, Save, Trash2, Plus, Loader2, X, Link2, Activity, AlertTriangle } from "lucide-react";
+import { Plug, Upload, Play, Save, Trash2, Plus, Loader2, X, Link2, Activity, AlertTriangle, Bot } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/utils/api";
 import { colors, fonts, T, onFocus, onBlur } from "@/theme";
@@ -628,8 +628,95 @@ const FORMATTED_KIND = {
   not_found: ["No match", colors.brand.warning], unavailable: ["API unavailable", colors.brand.error],
 };
 
+// Spec 024: GridScan Agent, a service on this server that sees every Gridscan endpoint as a tool.
+const AGENT_KIND = "gridscan_agent";
+function AgentPanel({ integration, others, onChanged }) {
+  const [testing, setTesting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(integration.connection_check || null);
+  useEffect(() => { setResult(integration.connection_check || null); }, [integration.id, integration.connection_check]);
+  const test = async () => {
+    setTesting(true);
+    try { const { data } = await api.post(`/api-integrations/${integration.id}/connection-test`); setResult(data); await onChanged(); }
+    catch (e) { toast.error(detail(e, "Connection test failed")); }
+    finally { setTesting(false); }
+  };
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      const enabled = !integration.bot_enabled;
+      await api.put(`/api-integrations/${integration.id}/bot`, { enabled, network: "mainnet" });
+      toast.success(enabled ? "The bot now looks up GridScan data through GridScan Agent" : "The bot no longer uses GridScan Agent");
+      await onChanged();
+    } catch (e) { toast.error(detail(e, "Couldn't change bot access")); }
+    finally { setBusy(false); }
+  };
+  const reach = result?.reachability;
+  const [reachText, reachColor] = reach ? (REACH[reach.state] || [reach.state, colors.text.primary]) : [];
+  const directOn = others.filter((i) => i.bot_enabled).map((i) => i.name);
+  return (
+    <div data-testid="agent-panel">
+      <p style={{ ...T.hint, margin: "0 0 14px", maxWidth: "760px" }}>
+        The agent sees every Gridscan endpoint as a tool, picks and chains the calls for each message, and remembers the
+        addresses and hashes from earlier in the conversation (one memory per bot, channel and user). The bot still answers
+        with its knowledge base and Knowledge Base Focus. When someone asks for the raw JSON, the API response is posted
+        as it came back, without the model rewriting it.
+      </p>
+      <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${colors.border.subtle}`, marginBottom: "16px" }} data-testid="agent-connection">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+          <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Connection</p>
+          <button style={{ ...T.btnPrimary, opacity: testing ? 0.6 : 1 }} onClick={test} disabled={testing} data-testid="agent-test">
+            {testing ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />} Test connection
+          </button>
+        </div>
+        {!result && <p style={T.hint}>Not tested yet.</p>}
+        {result && (
+          <div data-testid="agent-test-result" data-ok={String(result.ok)}>
+            <div style={{ display: "grid", gridTemplateColumns: "150px 210px 1fr", gap: "10px", alignItems: "baseline", padding: "6px 0" }} data-testid="agent-reach" data-state={reach?.state}>
+              <span style={T.monoLabel}>Agent</span>
+              <span style={{ color: reachColor, fontWeight: 600, fontSize: "13px" }}>{reachText}</span>
+              <span style={{ color: colors.text.secondary, fontSize: "12px" }}>{reach?.message}</span>
+            </div>
+            {result.probes?.length > 0 && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", marginTop: "8px" }} data-testid="agent-probes">
+                <thead><tr>{["Probe", "Request", "Result", "Time"].map((h) => <th key={h} style={T.th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {result.probes.map((p, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${colors.border.faint}` }}>
+                      <td style={{ ...cell, color: colors.text.primary }}>{p.label}</td>
+                      <td style={{ ...cell, fontFamily: fonts.mono, color: colors.text.muted, wordBreak: "break-all" }}>{p.url}</td>
+                      <td style={{ ...cell, fontFamily: fonts.mono, color: colors.text.secondary }}>{p.http_status != null ? `HTTP ${p.http_status} · ${p.message}` : p.message}</td>
+                      <td style={{ ...cell, color: colors.text.muted }}>{p.duration_ms} ms</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {result.checked_at && <p style={{ ...T.hint, marginTop: "6px" }}>Last checked {when(result.checked_at)}</p>}
+          </div>
+        )}
+      </div>
+      <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${colors.border.subtle}` }} data-testid="agent-bot-panel">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <div>
+            <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Use GridScan Agent for this bot</p>
+            <p style={{ ...T.hint, margin: "4px 0 0", maxWidth: "640px" }} data-testid="agent-bot-summary">
+              {integration.bot_enabled
+                ? "On: every lookup goes through the agent. Saved lookups and direct integrations aren't used while this is on; their settings are kept."
+                : "Off. When on, it's the bot's only GridScan lookup path: saved lookups and direct integrations aren't used, but their settings are kept."}
+              {directOn.length > 0 && ` Direct integrations with bot access still on: ${directOn.join(", ")} (turn them off on their own page if you no longer want them).`}
+            </p>
+          </div>
+          <button onClick={toggle} disabled={busy} aria-pressed={integration.bot_enabled}
+            style={integration.bot_enabled ? T.btnPrimary : T.btnSecondary} data-testid="agent-bot-toggle">{integration.bot_enabled ? "On" : "Off"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Spec 018: let the bot use this integration's imported GET endpoints, all on by default.
-function BotPanel({ integration, onChanged }) {
+function BotPanel({ integration, onChanged, agentActive }) {
   const [busy, setBusy] = useState(false);
   const save = async (enabled, network) => {
     setBusy(true);
@@ -642,6 +729,11 @@ function BotPanel({ integration, onChanged }) {
   };
   return (
     <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${colors.border.subtle}`, marginBottom: "16px" }} data-testid="integ-bot-panel">
+      {agentActive && (
+        <p style={{ ...T.hint, margin: "0 0 10px", color: colors.brand.warning }} data-testid="integ-agent-active">
+          GridScan Agent is on for this bot, so the bot doesn't use this integration while it is, whatever the setting below.
+        </p>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
         <div>
           <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Bot answers from {integration.name}</p>
@@ -742,7 +834,7 @@ function FormatEditor({ integration, endpoint, onClose, onSaved }) {
   );
 }
 
-function AskTester({ integrations }) {
+function AskTester({ integrations, agentActive }) {
   const [question, setQuestion] = useState("");
   const [channel, setChannel] = useState("web");
   const [scope, setScope] = useState("");
@@ -761,13 +853,14 @@ function AskTester({ integrations }) {
     <div style={{ ...T.card, marginBottom: "20px" }} data-testid="ask-tester">
       <p style={{ ...T.sectionTitle, margin: 0 }}>Test a question</p>
       <p style={{ ...T.hint, margin: "4px 0 10px" }}>Runs the same input detection, endpoint choice, call and formatter as the bot, and shows each step.</p>
+      {agentActive && <p style={{ ...T.hint, margin: "0 0 10px", color: colors.brand.warning }} data-testid="ask-agent-active">GridScan Agent is on for this bot, so the bot isn't using this direct routing right now.</p>}
       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
         <input style={{ ...T.input, flex: "1 1 420px" }} value={question} onChange={(e) => setQuestion(e.target.value)} onFocus={onFocus} onBlur={onBlur}
           onKeyDown={(e) => { if (e.key === "Enter" && question.trim()) ask(); }}
           placeholder="e.g. What are the staking rewards for stake1…?" data-testid="ask-input" />
         <select style={{ ...small, width: "auto" }} value={scope} onChange={(e) => setScope(e.target.value)} data-testid="ask-scope">
           <option value="">Integrations the bot uses</option>
-          {integrations.map((i) => <option key={i.id} value={i.id}>Only {i.name}</option>)}
+          {integrations.filter((i) => i.kind !== AGENT_KIND).map((i) => <option key={i.id} value={i.id}>Only {i.name}</option>)}
         </select>
         <select style={{ ...small, width: "auto" }} value={channel} onChange={(e) => setChannel(e.target.value)} data-testid="ask-channel">
           {CHANNELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -955,6 +1048,15 @@ export default function ApiIntegrations() {
       toast.success(data.bot_access ? "Bot lookups turned on for this workspace" : "Bot lookups turned off");
     } catch (e) { toast.error(detail(e, "Couldn't change bot access")); }
   };
+  const addAgent = async () => {
+    try {
+      const { data } = await api.post("/api-integrations/agent", {});
+      toast.success("GridScan Agent added. Test the connection, then turn it on for the bot.");
+      setAdding(false); await load(); setSelectedId(data.id);
+    } catch (e) { toast.error(detail(e, "Couldn't add GridScan Agent")); }
+  };
+  const isAgent = integration?.kind === AGENT_KIND;
+  const hasAgent = (state?.integrations || []).some((i) => i.kind === AGENT_KIND);
   const removeIntegration = async () => {
     if (!window.confirm(`Delete ${integration.name} and its lookups?`)) return;
     try { await api.delete(`/api-integrations/${integration.id}`); toast.success("Integration deleted"); setLookupId(null); await load(); }
@@ -983,12 +1085,17 @@ export default function ApiIntegrations() {
             style={state.bot_access ? T.btnPrimary : T.btnSecondary}>{state.bot_access ? "On" : "Off"}</button>
         </div>
 
-        <AskTester integrations={state.integrations} />
+        <AskTester integrations={state.integrations} agentActive={state.agent_active} />
 
         <div style={{ ...T.card, marginBottom: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
             <p style={{ ...T.sectionTitle, margin: 0 }}>Integrations</p>
-            {!adding && <button style={T.btnSecondary} onClick={() => setAdding(true)} data-testid="integration-add"><Plus size={14} /> Add integration</button>}
+            {!adding && (
+              <div style={{ display: "flex", gap: "8px" }}>
+                {state.agent_available && !hasAgent && <button style={{ ...T.btnSecondary, whiteSpace: "nowrap" }} onClick={addAgent} data-testid="agent-add"><Bot size={14} /> Add GridScan Agent</button>}
+                <button style={{ ...T.btnSecondary, whiteSpace: "nowrap" }} onClick={() => setAdding(true)} data-testid="integration-add"><Plus size={14} /> Add integration</button>
+              </div>
+            )}
           </div>
           {adding && <IntegrationForm onCancel={() => setAdding(false)} onSaved={async (d) => { setAdding(false); await load(); setSelectedId(d.id); }} />}
           {!adding && state.integrations.length === 0 && <p style={T.sectionSub}>No integrations yet.</p>}
@@ -996,7 +1103,8 @@ export default function ApiIntegrations() {
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               {state.integrations.map((i) => (
                 <button key={i.id} onClick={() => { setSelectedId(i.id); setLookupId(null); setEditing(false); }} aria-pressed={i.id === selectedId}
-                  style={i.id === selectedId ? T.btnPrimary : T.btnSecondary}><Plug size={13} /> {i.name}</button>
+                  style={i.id === selectedId ? T.btnPrimary : T.btnSecondary} data-testid={`integ-tab-${i.kind}`}>
+                  {i.kind === AGENT_KIND ? <Bot size={13} /> : <Plug size={13} />} {i.name}{i.kind === AGENT_KIND && i.bot_enabled ? " · in use" : ""}</button>
               ))}
             </div>
           )}
@@ -1007,21 +1115,24 @@ export default function ApiIntegrations() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "14px" }}>
               <div>
                 <p style={{ ...T.sectionTitle, margin: 0 }}>{integration.name}</p>
-                <p style={{ ...T.hint, fontFamily: fonts.mono, margin: "4px 0 0" }}>{integration.base_url} · {AUTH_TYPES.find(([v]) => v === integration.auth_type)?.[1]}{integration.has_secret ? " · key saved" : ""}</p>
+                <p style={{ ...T.hint, fontFamily: fonts.mono, margin: "4px 0 0" }}>{isAgent
+                  ? `GridScan Agent · ${integration.base_url} (set on the server)`
+                  : <>{integration.base_url} · {AUTH_TYPES.find(([v]) => v === integration.auth_type)?.[1]}{integration.has_secret ? " · key saved" : ""}</>}</p>
               </div>
               <div style={{ display: "flex", gap: "8px" }}>
-                <button style={T.btnGhost} onClick={() => setEditing((v) => !v)}>{editing ? "Close settings" : "Settings"}</button>
+                {!isAgent && <button style={T.btnGhost} onClick={() => setEditing((v) => !v)}>{editing ? "Close settings" : "Settings"}</button>}
                 <button style={T.btnGhost} onClick={removeIntegration}><Trash2 size={14} /> Delete</button>
               </div>
             </div>
-            {editing && <div style={{ marginBottom: "16px" }}><IntegrationForm initial={integration} onCancel={() => setEditing(false)} onSaved={async () => { setEditing(false); await load(); }} /></div>}
+            {isAgent && <AgentPanel integration={integration} others={state.integrations.filter((i) => i.kind !== AGENT_KIND)} onChanged={load} />}
+            {!isAgent && editing && <div style={{ marginBottom: "16px" }}><IntegrationForm initial={integration} onCancel={() => setEditing(false)} onSaved={async () => { setEditing(false); await load(); }} /></div>}
 
-            <ImportPanel integration={integration} onImported={refreshResults} />
-            <Counts integration={integration} />
+            {!isAgent && <ImportPanel integration={integration} onImported={refreshResults} />}
+            {!isAgent && <Counts integration={integration} />}
 
-            {integration.endpoint_count > 0 && (<>
+            {!isAgent && integration.endpoint_count > 0 && (<>
               <ConnectionPanel integration={integration} endpoints={endpoints} onChanged={load} />
-              <BotPanel integration={integration} onChanged={load} />
+              <BotPanel integration={integration} onChanged={load} agentActive={state.agent_active} />
               <EndpointTable integration={integration} endpoints={endpoints} onChanged={refreshResults} />
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "14px" }}>
                 <span style={T.monoLabel}>Lookups</span>
