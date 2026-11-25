@@ -12,7 +12,7 @@ const EFFORT_LABEL = { low: "Low", medium: "Medium", high: "High" };
 export default function BotSettings() {
   const { selectedInstance } = useAuth();
   const instanceId = selectedInstance?.id;
-  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-5-5", effort: null });
+  const [config, setConfig] = useState({ name: "", persona: "", custom_instructions: "", zendesk_summary_instructions: "", tone_instructions: "", manual_tone_examples: [], model: "claude-sonnet-5-5", effort: null, kb_focus: null });
   const [effortRec, setEffortRec] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -26,7 +26,7 @@ export default function BotSettings() {
   useEffect(() => {
     api.get(`/admin/bot-config`).then(r => {
       if (r.data) {
-        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-5-5", effort: r.data.effort || null });
+        setConfig({ name: r.data.name || "", persona: r.data.persona || "", custom_instructions: r.data.custom_instructions || "", zendesk_summary_instructions: r.data.zendesk_summary_instructions || "", tone_instructions: r.data.tone_instructions || "", manual_tone_examples: r.data.manual_tone_examples || [], model: r.data.model || "claude-sonnet-5-5", effort: r.data.effort || null, kb_focus: Number.isInteger(r.data.kb_focus) ? r.data.kb_focus : null });
         setApiKeySet(r.data.api_key_set || false);
         setApiKeyInput("");
       }
@@ -42,7 +42,8 @@ export default function BotSettings() {
     setSaving(true);
     try {
       // "default" clears a saved effort so the model's own default applies.
-      const payload = { ...config, effort: config.effort || "default" };
+      // "default" clears a saved Knowledge Base Focus so the current behaviour applies.
+      const payload = { ...config, effort: config.effort || "default", kb_focus: Number.isInteger(config.kb_focus) ? config.kb_focus : "default" };
       if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
       await api.put(`/admin/bot-config`, payload);
       if (apiKeyInput.trim()) { setApiKeySet(true); setApiKeyInput(""); }
@@ -173,6 +174,43 @@ export default function BotSettings() {
                 </div>
               )}
               {effortRec?.error && <p style={T.hint}>Couldn’t load an effort recommendation.</p>}
+            </div>
+
+            <div style={{ marginBottom: "18px" }} data-testid="kb-focus">
+              <label style={T.label}>Knowledge Base Focus</label>
+              <div role="group" aria-label="Knowledge Base Focus" style={{ display: "flex", gap: "8px", marginBottom: "10px" }}>
+                {[{ set: false, label: "Not set", sub: "Current behaviour" }, { set: true, label: "Set", sub: "Choose a percentage" }].map(({ set, label, sub }) => {
+                  const active = Number.isInteger(config.kb_focus) === set;
+                  return (
+                    <button key={label} type="button" aria-pressed={active} data-testid={`kb-focus-${set ? "set" : "unset"}`}
+                      onClick={() => setConfig(p => ({ ...p, kb_focus: set ? (Number.isInteger(p.kb_focus) ? p.kb_focus : 50) : null }))}
+                      style={{ flex: 1, padding: "8px", borderRadius: "8px", border: `1px solid ${active ? colors.brand.light : colors.border.default}`,
+                        backgroundColor: active ? "rgba(59,130,246,0.1)" : colors.bg.panel, cursor: "pointer", textAlign: "center" }}>
+                      <p style={{ fontFamily: fonts.body, fontSize: "12px", fontWeight: "600", color: active ? colors.brand.light : colors.text.primary, margin: 0 }}>{label}</p>
+                      <p style={{ fontFamily: fonts.mono, fontSize: "9px", color: colors.text.muted, margin: "2px 0 0", textTransform: "uppercase", letterSpacing: "0.08em" }}>{sub}</p>
+                    </button>
+                  );
+                })}
+              </div>
+              {Number.isInteger(config.kb_focus) && (
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <input type="range" min="0" max="100" step="1" value={config.kb_focus} aria-label="Knowledge Base Focus percentage"
+                      onChange={e => setConfig(p => ({ ...p, kb_focus: Number(e.target.value) }))} data-testid="kb-focus-slider" style={{ flex: 1 }} />
+                    <input type="number" min="0" max="100" value={config.kb_focus} aria-label="Knowledge Base Focus percentage value"
+                      onChange={e => { const n = Math.round(Number(e.target.value)); if (!Number.isNaN(n)) setConfig(p => ({ ...p, kb_focus: Math.min(100, Math.max(0, n)) })); }}
+                      data-testid="kb-focus-value" style={{ ...T.input, width: "72px" }} onFocus={onFocus} onBlur={onBlur} />
+                    <span style={{ fontFamily: fonts.mono, fontSize: "12px", color: colors.text.secondary }}>%</span>
+                  </div>
+                  <p style={T.hint} data-testid="kb-focus-explainer">
+                    {config.kb_focus === 0 ? "0%: answers from general knowledge; knowledge base entries are optional reference."
+                      : config.kb_focus === 100 ? "100%: factual answers must come from the knowledge base or live API results. If neither covers part of a question, the bot says so briefly."
+                      : `${config.kb_focus}%: favours relevant knowledge base content${config.kb_focus > 66 ? " strongly" : config.kb_focus <= 33 ? " lightly" : ""}; general knowledge fills the gaps.`}
+                  </p>
+                </div>
+              )}
+              {!Number.isInteger(config.kb_focus) && <p style={T.hint}>Not set: the bot answers from the knowledge base and asks before using general knowledge, as it does today.</p>}
+              <p style={T.hint}>Live API lookups (API Integrations) work the same at every setting.</p>
             </div>
 
             <div>
