@@ -1317,7 +1317,9 @@ def build_system_prompt(bot_config: dict, knowledge_context: str = "", tone_exam
         parts.append(
             "LIVE API LOOKUPS — WHAT YOU CAN DO:\n" + lookup_hint + "\n"
             + ("" if lookup_context else
-               "No lookup ran for this message because it contains none of these. ")
+               "No lookup ran for this message because it contains none of these. If the user asks for a "
+               "fresh or current lookup, say that none ran; if you repeat values from an earlier reply, "
+               "label them as earlier data, not fresh. ")
             + "If the user asks whether you can query the API, check live data or look something up, "
             "say yes and tell them what to send (for example a stake address or a transaction hash), "
             "or which question to ask. This applies even when the knowledge base has nothing on it. "
@@ -1345,6 +1347,9 @@ def build_system_prompt(bot_config: dict, knowledge_context: str = "", tone_exam
             "- Values you gave earlier in this conversation came from earlier lookups (see EARLIER LOOKUP "
             "when present) and are real. Never add corrections, retractions or disclaimers about your "
             "earlier answers because this lookup covers something else.\n"
+            "- Only this message's lookup is fresh. If it failed or didn't cover what was asked and you use "
+            "earlier data, say the fresh lookup failed or didn't run and label that data as earlier (with "
+            "its time). Never present earlier data as fresh.\n"
             "A value of 0 is a real zero. 'No records … empty list' "
             "means the API answered and has none. If the status is 'not found', say the provider has no "
             "record of it and suggest checking the value. If the status is 'lookup unavailable', say you "
@@ -1610,7 +1615,7 @@ async def _sync_guild_nickname(token: str, guild_id: str, name: str):
 
 async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, session_id: str, *,
                          is_mentioned: bool, is_dm: bool, channel_id: str, guild_id: Optional[str], author_id: str,
-                         author_name: str, typing=None) -> Optional[str]:
+                         author_name: str, typing=None, extras: Optional[dict] = None) -> Optional[str]:
     """The Discord bot's answer to one message, or None to stay silent (passive mode). Moved out of
     on_message unchanged (spec 018), except that a direct lookup reply — one short question or an
     input problem — is sent as is. Passive messages (not mentioned, not a DM) never trigger lookups."""
@@ -1622,6 +1627,8 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     lookup = looked["context"]
     if looked["reply"]:
         return looked["reply"]
+    if extras is not None and looked.get("attachments"):
+        extras.update(looked["attachments"])      # a UTxO card + utxos.json (spec 022), sent with the reply
     if knowledge == "__NO_KB__" and lookup:
         knowledge = ""
     if knowledge == "__NO_KB__":
@@ -1826,20 +1833,31 @@ async def start_shared_discord_bot(token: str):
                 return
             session_id = f"discord_{message.author.id}"
             try:
+                extras: dict = {}
                 response = await _discord_reply(
                     instance_id, live_cfg, user_text, session_id, is_mentioned=is_mentioned, is_dm=is_dm,
                     channel_id=channel_id, guild_id=guild_id, author_id=str(message.author.id),
-                    author_name=str(message.author.name), typing=message.channel.typing)
+                    author_name=str(message.author.name), typing=message.channel.typing, extras=extras)
                 if response is None:
                     return
                 await save_conversation(session_id=session_id, user_message=user_text, bot_response=response, platform="discord", instance_id=instance_id, metadata={"username": str(message.author.name), "user_id": str(message.author.id)})
                 if reply_style == "with_mention" and not is_dm:
                     response = f"{message.author.mention} {response}"
-                if len(response) > 1990:
-                    for i in range(0, len(response), 1990):
-                        await message.channel.send(response[i:i+1990])
-                else:
-                    await message.channel.send(response)
+                chunks = [response[i:i + 1990] for i in range(0, len(response), 1990)] or [""]
+                for chunk in chunks[:-1]:
+                    await message.channel.send(chunk)
+                attach = {}
+                if extras.get("card") or extras.get("files"):
+                    import io as _io
+                    card = extras.get("card") or {}
+                    embed = discord.Embed(title=card.get("title"), description=card.get("description"))
+                    for f in card.get("fields") or []:
+                        embed.add_field(name=f["name"], value=f["value"], inline=False)
+                    if card.get("footer"):
+                        embed.set_footer(text=card["footer"])
+                    attach = {"embed": embed, "files": [discord.File(_io.BytesIO(body.encode()), filename=name)
+                                                        for name, body in extras.get("files") or []]}
+                await message.channel.send(chunks[-1], **attach)
             except Exception as e:
                 logger.error(f"Discord message error (instance={instance_id}): {type(e).__name__}: {e}", exc_info=True)
                 err_kind = type(e).__name__
@@ -2859,7 +2877,8 @@ _REPLY_FORMAT = {
 
 
 def _apiint_routed_block(decision: dict, integ: dict, ep: dict, formatted: dict, *, related: Optional[dict] = None,
-                         channel: str = "web") -> str:
+                         channel: str = "web", records: Optional[dict] = None, looked_at: str = "",
+                         attached: bool = False) -> str:
     """What the bot's prompt receives for a routed lookup: provider, endpoint, input, status and the
     looked-up values as plain text (spec 021: the bot writes the answer). Never the raw response,
     URL or key."""
@@ -2871,14 +2890,27 @@ def _apiint_routed_block(decision: dict, integ: dict, ep: dict, formatted: dict,
         lines.append("Asked about: " + ", ".join(f"{k} {v}" for k, v in decision["values"].items()))
     elif inp:
         lines.append(f"Asked about: {apiroute.KIND_LABELS.get(inp['kind'], inp['kind'])} {inp['value']}")
-    lines += [f"Status: {status}", f"Reply format: {_REPLY_FORMAT.get(channel, _REPLY_FORMAT['web'])}",
-              "DATA (values with their units):", formatted["text"]]
+    reply_format = _REPLY_FORMAT.get(channel, _REPLY_FORMAT["web"])
+    if attached:
+        reply_format += (" A card and a utxos.json file with every UTxO (exact values) are attached to your message "
+                         "automatically: summarise, and only write out the full list or JSON if the user asks for it.")
+    lines += [f"Status: {status}" + (f" (fresh lookup at {looked_at})" if looked_at and status != "lookup unavailable" else ""),
+              f"Reply format: {reply_format}", "DATA (values with their units):", formatted["text"]]
     if formatted.get("details"):
         lines += [formatted["details"]]
     if related:
         lines += ["INPUTS AND OUTPUTS (same transaction):", related["text"]]
         if related.get("details"):
             lines += [related["details"]]
+    if records:
+        text = json.dumps(records, separators=(",", ":"))
+        if len(text) > 12000:
+            key = "utxos" if records["kind"] == "utxos" else "outputs"
+            keep = dict(records, **{key: records.get(key, [])[:20]}, truncated=f"first 20 of {len(records.get(key) or [])}")
+            text = json.dumps(keep, separators=(",", ":"))
+        lines += ["RECORDS (exact values from the API, as JSON: full addresses and hashes, lovelace as an exact "
+                  "integer string, each asset's policyId, assetNameHex and quantity; use these for exact figures, "
+                  "identifiers and any JSON the user asks for):", text]
     return "\n".join(lines)
 
 
@@ -2908,12 +2940,19 @@ async def _apiint_subject(instance_id: str, conversation: Optional[str]) -> dict
     return {}
 
 
-async def _apiint_remember_subject(instance_id: str, conversation: str, subject: str, context: str = "") -> None:
+async def _apiint_remember_subject(instance_id: str, conversation: str, subject: str, context: str = "",
+                                   operation: str = "", earlier: Optional[dict] = None) -> None:
+    """Remember the subject and the data the bot was given. ``history`` keeps the latest lookup per
+    operation (up to 3), each with its own time, so earlier data is labelled with the right time."""
     if not subject:
         return
     now = datetime.now(timezone.utc)
+    history = [h for h in (earlier or {}).get("history") or [] if h.get("operation") != operation][:2]
+    if context:
+        history = [{"operation": operation, "at": now, "context": context[:16000]}] + history
     await db.api_subject.update_one({"instance_id": instance_id, "conversation": conversation},
                                     {"$set": {"subject": subject[:600], "context": context[:6000], "created_at": now,
+                                              "history": history,
                                               "expires_at": now + timedelta(seconds=apiroute.SUBJECT_SECONDS)}}, upsert=True)
 
 
@@ -3006,7 +3045,9 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
         formatted = apiroute.format_result(result, provider=integ["name"], endpoint=ep, channel="web",
                                            fields=_apiint_format_fields(integ, ep["id"]), target=decision.get("input"),
                                            question=asked)
-        related = None
+        looked_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        records = apiroute.structured_result(result.get("data")) if result["status"] == "ok" else None
+        related = rel_records = None
         if result["status"] == "ok" and apiroute.general_question(asked):
             prov_eps = next((p["endpoints"] for p in providers if p["integration"]["id"] == integ["id"]), [])
             rel = apiroute.related_endpoint(ep, prov_eps)
@@ -3015,16 +3056,43 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
                 if rel_result["status"] == "ok":
                     related = apiroute.format_result(rel_result, provider=integ["name"], endpoint=rel, channel="web",
                                                      target=decision.get("input"), question="inputs and outputs")
-        block = _apiint_routed_block(decision, integ, ep, formatted, related=related, channel=source)
+                    rel_records = apiroute.structured_result(rel_result.get("data"))
+        attached = False
+        if records and records["kind"] == "utxos" and source == "discord":
+            address = next(iter(decision["values"].values()), "")
+            out["attachments"] = {
+                "card": apiroute.utxo_card(records, provider=integ["name"], address=address, at=looked_at),
+                "files": [("utxos.json", apiroute.utxos_json(records, provider=integ["name"], operation=ep["id"],
+                                                             address=address, at=looked_at))]}
+            attached = True
+        block = _apiint_routed_block(decision, integ, ep, formatted, related=related, channel=source,
+                                     records=records or rel_records, looked_at=looked_at, attached=attached)
         if conversation and result["status"] in ("ok", "not_found"):
             await _apiint_remember_subject(instance_id, conversation,
-                                           apiroute.subject_text(decision.get("inputs") or [], decision["values"]), block)
+                                           apiroute.subject_text(decision.get("inputs") or [], decision["values"]), block,
+                                           operation=ep["id"], earlier=earlier)
         logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} routed={ep['id']} status={result['status']} "
                     f"reason={result.get('reason') or '-'} http={result.get('http_status')} ms={result.get('duration_ms')}")
-        if earlier.get("context"):
-            # What the bot was shown last time is still valid: without it, the bot "corrects" its earlier answer.
-            block += ("\n\nEARLIER LOOKUP IN THIS CONVERSATION (still valid; you already used it in an earlier reply):\n"
-                      + re.sub(r"(?m)^Reply format:.*\n?", "", earlier["context"])[:4000])
+        # What the bot was shown before, per operation and with its own time: real, but not fresh. Without
+        # it the bot "corrects" earlier answers; with the time, it labels earlier data instead of passing
+        # it off as fresh. A fresh result for the same operation replaces that operation's earlier entry.
+        history = earlier.get("history") or ([{"operation": "", "at": earlier.get("created_at"), "context": earlier["context"]}]
+                                             if earlier.get("context") else [])
+        budget = 16000
+        for h in history:
+            if h.get("operation") == ep["id"] and result["status"] == "ok":
+                continue
+            when = h.get("at")
+            when = when.strftime("%Y-%m-%d %H:%M:%S UTC") if hasattr(when, "strftime") else "earlier"
+            text = h.get("context") or ""
+            text = re.sub(r"(?m)^Reply format.*\n?", "", text).replace("(fresh lookup at", "(looked up at")[:budget]
+            if not text:
+                continue
+            budget -= len(text)
+            block += (f"\n\nEARLIER LOOKUP IN THIS CONVERSATION (from {when}; real but not refreshed by this "
+                      "message — label any value you take from it as earlier data with that time):\n" + text)
+            if budget <= 0:
+                break
         out["context"] = block
         return out
     except Exception as e:
