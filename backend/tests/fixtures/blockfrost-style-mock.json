@@ -1,0 +1,682 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "title": "Blockfrost-style mock (Cardano preprod)",
+  "version": "0.1.0",
+  "description": "Test fixture written for BridgeBot routing tests. Serves the Cardano preprod testnet; addresses are addr_test1\u2026 and stake_test1\u2026."
+ },
+ "servers": [
+  {
+   "url": "https://cardano-mock.test/api/v0"
+  }
+ ],
+ "components": {
+  "securitySchemes": {
+   "ApiKeyAuth": {
+    "type": "apiKey",
+    "in": "header",
+    "name": "project_id"
+   }
+  }
+ },
+ "paths": {
+  "/txs/{hash}": {
+   "get": {
+    "summary": "Specific transaction",
+    "description": "Return content of the requested transaction.",
+    "tags": [
+     "Cardano \u00bb Transactions"
+    ],
+    "parameters": [
+     {
+      "name": "hash",
+      "in": "path",
+      "required": true,
+      "description": "Hash of the requested transaction",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "hash",
+          "block",
+          "fees"
+         ],
+         "properties": {
+          "hash": {
+           "type": "string",
+           "description": "Transaction hash"
+          },
+          "block": {
+           "type": "string",
+           "description": "Block hash"
+          },
+          "block_height": {
+           "type": "integer",
+           "description": "Block number"
+          },
+          "block_time": {
+           "type": "integer",
+           "description": "Block creation time in UNIX time"
+          },
+          "fees": {
+           "type": "string",
+           "description": "Fees of the transaction in Lovelaces"
+          },
+          "size": {
+           "type": "integer",
+           "description": "Size of the transaction in Bytes"
+          },
+          "output_amount": {
+           "type": "array",
+           "description": "Lovelace and native assets held",
+           "items": {
+            "type": "object",
+            "required": [
+             "unit",
+             "quantity"
+            ],
+            "properties": {
+             "unit": {
+              "type": "string",
+              "description": "lovelace or the asset id"
+             },
+             "quantity": {
+              "type": "string",
+              "description": "Amount in the smallest unit"
+             }
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+         "block": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "block_height": 2112345,
+         "block_time": 1795560000,
+         "fees": "168317",
+         "size": 297,
+         "output_amount": [
+          {
+           "unit": "lovelace",
+           "quantity": "42000000"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  },
+  "/blocks/{hash_or_number}": {
+   "get": {
+    "summary": "Specific block",
+    "description": "Return the content of a requested block.",
+    "tags": [
+     "Cardano \u00bb Blocks"
+    ],
+    "parameters": [
+     {
+      "name": "hash_or_number",
+      "in": "path",
+      "required": true,
+      "description": "Hash or number of the requested block.",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "hash": {
+           "type": "string",
+           "description": "Hash of the block"
+          },
+          "height": {
+           "type": "integer",
+           "description": "Block number"
+          },
+          "time": {
+           "type": "integer",
+           "description": "Block creation time in UNIX time"
+          },
+          "tx_count": {
+           "type": "integer",
+           "description": "Number of transactions in the block"
+          },
+          "fees": {
+           "type": "string",
+           "description": "Total fees within the block in Lovelaces"
+          }
+         }
+        },
+        "example": {
+         "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "height": 2112345,
+         "time": 1795560000,
+         "tx_count": 4,
+         "fees": "712345"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  },
+  "/blocks/latest": {
+   "get": {
+    "summary": "Latest block",
+    "description": "Return the latest block available to the backends, also known as the tip of the blockchain.",
+    "tags": [
+     "Cardano \u00bb Blocks"
+    ],
+    "parameters": [],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "hash": {
+           "type": "string",
+           "description": "Hash of the block"
+          },
+          "height": {
+           "type": "integer",
+           "description": "Block number"
+          },
+          "epoch": {
+           "type": "integer",
+           "description": "Epoch number"
+          },
+          "time": {
+           "type": "integer",
+           "description": "Block creation time in UNIX time"
+          }
+         }
+        },
+        "example": {
+         "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "height": 2112399,
+         "epoch": 210,
+         "time": 1795561000
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     }
+    }
+   }
+  },
+  "/addresses/{address}": {
+   "get": {
+    "summary": "Specific address",
+    "description": "Obtain information about a specific address.",
+    "tags": [
+     "Cardano \u00bb Addresses"
+    ],
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "description": "Bech32 address.",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "address": {
+           "type": "string",
+           "description": "Bech32 encoded addresses"
+          },
+          "amount": {
+           "type": "array",
+           "description": "Lovelace and native assets held",
+           "items": {
+            "type": "object",
+            "required": [
+             "unit",
+             "quantity"
+            ],
+            "properties": {
+             "unit": {
+              "type": "string",
+              "description": "lovelace or the asset id"
+             },
+             "quantity": {
+              "type": "string",
+              "description": "Amount in the smallest unit"
+             }
+            }
+           }
+          },
+          "stake_address": {
+           "type": "string",
+           "nullable": true,
+           "description": "Stake address that controls the key"
+          },
+          "type": {
+           "type": "string",
+           "enum": [
+            "byron",
+            "shelley"
+           ]
+          }
+         }
+        },
+        "example": {
+         "address": "addr_test1\u2026",
+         "amount": [
+          {
+           "unit": "lovelace",
+           "quantity": "0"
+          }
+         ],
+         "stake_address": null,
+         "type": "shelley"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  },
+  "/accounts/{stake_address}": {
+   "get": {
+    "summary": "Specific account address",
+    "description": "Obtain information about a specific stake account.",
+    "tags": [
+     "Cardano \u00bb Accounts"
+    ],
+    "parameters": [
+     {
+      "name": "stake_address",
+      "in": "path",
+      "required": true,
+      "description": "Bech32 stake address.",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "stake_address": {
+           "type": "string"
+          },
+          "active": {
+           "type": "boolean",
+           "description": "Registration state of an account"
+          },
+          "controlled_amount": {
+           "type": "string",
+           "description": "Balance of the account in Lovelaces"
+          },
+          "withdrawable_amount": {
+           "type": "string",
+           "description": "Withdrawable rewards in Lovelaces"
+          },
+          "pool_id": {
+           "type": "string",
+           "nullable": true,
+           "description": "Bech32 pool ID that owns the account"
+          }
+         }
+        },
+        "example": {
+         "stake_address": "stake_test1\u2026",
+         "active": true,
+         "controlled_amount": "1500000000",
+         "withdrawable_amount": "0",
+         "pool_id": "pool1mock"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  },
+  "/accounts/{stake_address}/rewards": {
+   "get": {
+    "summary": "Account reward history",
+    "description": "Obtain information about the reward history of a specific account.",
+    "tags": [
+     "Cardano \u00bb Accounts"
+    ],
+    "parameters": [
+     {
+      "name": "stake_address",
+      "in": "path",
+      "required": true,
+      "description": "Bech32 stake address.",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "order",
+      "in": "query",
+      "required": false,
+      "description": "The ordering of items from the point of view of the blockchain, not the page listing itself. By default, we return oldest first, newest last.",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "asc",
+        "desc"
+       ],
+       "default": "asc"
+      }
+     },
+     {
+      "name": "count",
+      "in": "query",
+      "required": false,
+      "description": "The number of results displayed on one page.",
+      "schema": {
+       "type": "integer",
+       "default": 100
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "required": [
+           "epoch",
+           "amount"
+          ],
+          "properties": {
+           "epoch": {
+            "type": "integer",
+            "description": "Epoch of the associated reward"
+           },
+           "amount": {
+            "type": "string",
+            "description": "Rewards for given epoch in Lovelaces"
+           },
+           "pool_id": {
+            "type": "string",
+            "description": "Bech32 pool ID being delegated to"
+           },
+           "type": {
+            "type": "string",
+            "enum": [
+             "leader",
+             "member",
+             "pool_deposit_refund"
+            ]
+           }
+          }
+         }
+        },
+        "example": [
+         {
+          "epoch": 209,
+          "amount": "1250000",
+          "pool_id": "pool1mock",
+          "type": "member"
+         },
+         {
+          "epoch": 210,
+          "amount": "0",
+          "pool_id": "pool1mock",
+          "type": "member"
+         }
+        ]
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  },
+  "/network": {
+   "get": {
+    "summary": "Network information",
+    "description": "Return detailed network information.",
+    "tags": [
+     "Cardano \u00bb Network"
+    ],
+    "parameters": [],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "supply": {
+           "type": "object",
+           "properties": {
+            "max": {
+             "type": "string",
+             "description": "Maximum supply in Lovelaces"
+            },
+            "total": {
+             "type": "string",
+             "description": "Current total (max supply - reserves) supply in Lovelaces"
+            },
+            "circulating": {
+             "type": "string",
+             "description": "Current circulating (UTXOs + withdrawables) supply in Lovelaces"
+            }
+           }
+          },
+          "stake": {
+           "type": "object",
+           "properties": {
+            "live": {
+             "type": "string",
+             "description": "Current live stake in Lovelaces"
+            },
+            "active": {
+             "type": "string",
+             "description": "Current active stake in Lovelaces"
+            }
+           }
+          }
+         }
+        },
+        "example": {
+         "supply": {
+          "max": "45000000000000000",
+          "total": "33000000000000000",
+          "circulating": "32000000000000000"
+         },
+         "stake": {
+          "live": "21000000000000000",
+          "active": "20900000000000000"
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     }
+    }
+   }
+  },
+  "/pools/{pool_id}": {
+   "get": {
+    "summary": "Specific stake pool",
+    "description": "Pool information.",
+    "tags": [
+     "Cardano \u00bb Pools"
+    ],
+    "parameters": [
+     {
+      "name": "pool_id",
+      "in": "path",
+      "required": true,
+      "description": "Bech32 or hexadecimal pool ID.",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "security": [
+     {
+      "ApiKeyAuth": []
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "pool_id": {
+           "type": "string"
+          }
+         }
+        },
+        "example": {
+         "pool_id": "pool1mock"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Invalid or missing project_id"
+     },
+     "429": {
+      "description": "Rate limited"
+     },
+     "404": {
+      "description": "The requested component has not been found."
+     }
+    }
+   }
+  }
+ }
+}
