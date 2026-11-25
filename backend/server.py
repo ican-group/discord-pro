@@ -1627,8 +1627,10 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     lookup = looked["context"]
     if looked["reply"]:
         return looked["reply"]
-    if extras is not None and looked.get("attachments"):
-        extras.update(looked["attachments"])      # a UTxO card + utxos.json (spec 022), sent with the reply
+    if messages := looked.get("discord_messages"):
+        if extras is not None:
+            extras["messages"] = messages
+        return "\n\n".join(messages)
     if knowledge == "__NO_KB__" and lookup:
         knowledge = ""
     if knowledge == "__NO_KB__":
@@ -1841,23 +1843,15 @@ async def start_shared_discord_bot(token: str):
                 if response is None:
                     return
                 await save_conversation(session_id=session_id, user_message=user_text, bot_response=response, platform="discord", instance_id=instance_id, metadata={"username": str(message.author.name), "user_id": str(message.author.id)})
+                chunks = extras.get("messages") or [response[i:i + 1990] for i in range(0, len(response), 1990)] or [""]
                 if reply_style == "with_mention" and not is_dm:
-                    response = f"{message.author.mention} {response}"
-                chunks = [response[i:i + 1990] for i in range(0, len(response), 1990)] or [""]
-                for chunk in chunks[:-1]:
+                    if extras.get("messages"):
+                        chunks = [f"{message.author.mention} {chunks[0]}", *chunks[1:]]
+                    else:
+                        response = f"{message.author.mention} {response}"
+                        chunks = [response[i:i + 1990] for i in range(0, len(response), 1990)]
+                for chunk in chunks:
                     await message.channel.send(chunk)
-                attach = {}
-                if extras.get("card") or extras.get("files"):
-                    import io as _io
-                    card = extras.get("card") or {}
-                    embed = discord.Embed(title=card.get("title"), description=card.get("description"))
-                    for f in card.get("fields") or []:
-                        embed.add_field(name=f["name"], value=f["value"], inline=False)
-                    if card.get("footer"):
-                        embed.set_footer(text=card["footer"])
-                    attach = {"embed": embed, "files": [discord.File(_io.BytesIO(body.encode()), filename=name)
-                                                        for name, body in extras.get("files") or []]}
-                await message.channel.send(chunks[-1], **attach)
             except Exception as e:
                 logger.error(f"Discord message error (instance={instance_id}): {type(e).__name__}: {e}", exc_info=True)
                 err_kind = type(e).__name__
@@ -2877,8 +2871,7 @@ _REPLY_FORMAT = {
 
 
 def _apiint_routed_block(decision: dict, integ: dict, ep: dict, formatted: dict, *, related: Optional[dict] = None,
-                         channel: str = "web", records: Optional[dict] = None, looked_at: str = "",
-                         attached: bool = False) -> str:
+                         channel: str = "web", records: Optional[dict] = None, looked_at: str = "") -> str:
     """What the bot's prompt receives for a routed lookup: provider, endpoint, input, status and the
     looked-up values as plain text (spec 021: the bot writes the answer). Never the raw response,
     URL or key."""
@@ -2891,9 +2884,6 @@ def _apiint_routed_block(decision: dict, integ: dict, ep: dict, formatted: dict,
     elif inp:
         lines.append(f"Asked about: {apiroute.KIND_LABELS.get(inp['kind'], inp['kind'])} {inp['value']}")
     reply_format = _REPLY_FORMAT.get(channel, _REPLY_FORMAT["web"])
-    if attached:
-        reply_format += (" A card and a utxos.json file with every UTxO (exact values) are attached to your message "
-                         "automatically: summarise, and only write out the full list or JSON if the user asks for it.")
     lines += [f"Status: {status}" + (f" (fresh lookup at {looked_at})" if looked_at and status != "lookup unavailable" else ""),
               f"Reply format: {reply_format}", "DATA (values with their units):", formatted["text"]]
     if formatted.get("details"):
@@ -3057,16 +3047,16 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
                     related = apiroute.format_result(rel_result, provider=integ["name"], endpoint=rel, channel="web",
                                                      target=decision.get("input"), question="inputs and outputs")
                     rel_records = apiroute.structured_result(rel_result.get("data"))
-        attached = False
-        if records and records["kind"] == "utxos" and source == "discord":
-            address = next(iter(decision["values"].values()), "")
-            out["attachments"] = {
-                "card": apiroute.utxo_card(records, provider=integ["name"], address=address, at=looked_at),
-                "files": [("utxos.json", apiroute.utxos_json(records, provider=integ["name"], operation=ep["id"],
-                                                             address=address, at=looked_at))]}
-            attached = True
+        if source == "discord" and result["status"] == "ok":
+            inp = decision.get("input") or {}
+            if inp.get("kind") == "payment_address" and result.get("data") == [] \
+                    and "utxos" in ep["path"].split("/"):
+                records = {"kind": "utxos", "count": 0, "utxos": []}
+            if inp.get("kind") == "payment_address" and records and records["kind"] == "utxos":
+                out["discord_messages"] = apiroute.discord_utxo_messages(
+                    records, provider=integ["name"], address=inp["value"], at=looked_at)
         block = _apiint_routed_block(decision, integ, ep, formatted, related=related, channel=source,
-                                     records=records or rel_records, looked_at=looked_at, attached=attached)
+                                     records=records or rel_records, looked_at=looked_at)
         if conversation and result["status"] in ("ok", "not_found"):
             await _apiint_remember_subject(instance_id, conversation,
                                            apiroute.subject_text(decision.get("inputs") or [], decision["values"]), block,
