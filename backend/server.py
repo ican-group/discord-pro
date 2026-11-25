@@ -1607,7 +1607,7 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     knowledge = await search_knowledge(user_text, instance_id)
     passive_msg = live_cfg.get("passive_mode", False) and not is_mentioned and not is_dm
     looked = {"context": "", "reply": None, "hint": ""} if passive_msg \
-        else await _api_lookup_context(instance_id, user_text, bot_config, "discord")
+        else await _api_lookup_context(instance_id, user_text, bot_config, "discord", conversation=f"discord:{author_id}:{channel_id}")
     lookup = looked["context"]
     if looked["reply"]:
         return looked["reply"]
@@ -1863,6 +1863,8 @@ async def startup_event():
         await db.users.create_index([("email", 1)], unique=True)
         await db.users.create_index([("id", 1)])
         await db.zendesk_oauth_requests.create_index("expires_at", expireAfterSeconds=0)
+        await db.api_pending.create_index("expires_at", expireAfterSeconds=0)
+        await db.api_pending.create_index([("instance_id", 1), ("conversation", 1)], unique=True)
         await db.zendesk_spam.create_index([("instance_id", 1), ("decision", 1), ("decided_at", -1)])
         await db.zendesk_kb_links.create_index([("instance_id", 1), ("ticket_id", 1), ("linked_at", 1)])
         await db.zendesk_kb_links.create_index([("instance_id", 1), ("source_id", 1)])
@@ -2607,7 +2609,7 @@ async def list_api_endpoints(integration_id: str, instance_id: str = Depends(get
                     response_field_count=apiint.schema_field_count(e.get("response_schema")),
                     used_by=used.get(e["id"], []), last_result=status.get(e["id"]),
                     bot_disabled=e["id"] in disabled, has_format=bool(_apiint_format_fields(doc, e["id"])),
-                    routable=usability["usable"], accepts=usability["accepts"],
+                    routable=usability["usable"], accepts=usability["accepts"], needs=usability.get("needs", []),
                     bot_reason=(usability["reason"] or {}).get("label"))
         out.append(view)
     return {"endpoints": out}
@@ -2824,7 +2826,7 @@ async def _apiint_providers(instance_id: str, only: Optional[str] = None) -> Lis
 
 
 def _apiint_decision_view(d: dict) -> dict:
-    view = {k: d.get(k) for k in ("action", "reason", "question", "message", "inputs", "invalid", "values", "alternatives")}
+    view = {k: d.get(k) for k in ("action", "reason", "question", "message", "inputs", "invalid", "values", "alternatives", "expect")}
     if d.get("score") is not None:
         view["score"] = round(d["score"], 2)
     if d.get("endpoint"):
@@ -2842,7 +2844,9 @@ def _apiint_routed_block(decision: dict, integ: dict, ep: dict, formatted: dict)
     status = {"single": "ok", "list": "ok", "empty": "ok (empty list)", "not_found": "not found",
               "unavailable": "lookup unavailable"}[formatted["kind"]]
     lines = [f"Source: {integ['name']} — {ep.get('summary') or ep['path']}"]
-    if inp:
+    if len(decision.get("values") or {}) > 1:
+        lines.append("Asked about: " + ", ".join(f"{k} {v}" for k, v in decision["values"].items()))
+    elif inp:
         lines.append(f"Asked about: {apiroute.KIND_LABELS.get(inp['kind'], inp['kind'])} {inp['value']}")
     lines += [f"Status: {status}", "RESULT (already formatted for this channel):", formatted["text"]]
     return "\n".join(lines)
@@ -2853,7 +2857,18 @@ async def _apiint_after_call(instance_id: str, integ: dict, ep: dict, source: st
     await _apiint_record_status(instance_id, integ["id"], ep["id"], source, result)
 
 
-async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, source: str) -> dict:
+async def _apiint_pending(instance_id: str, conversation: Optional[str]) -> Optional[dict]:
+    """The bot's unanswered lookup question in this conversation (spec 019), taken (deleted) on read."""
+    if not conversation:
+        return None
+    doc = await db.api_pending.find_one_and_delete({"instance_id": instance_id, "conversation": conversation})
+    if doc and doc.get("expires_at") and doc["expires_at"].replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+        return doc
+    return None
+
+
+async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, source: str,
+                              conversation: Optional[str] = None) -> dict:
     """Live API data for the bot (specs 015 + 018), or a direct reply. Only when the workspace opted in.
 
     Returns ``{"context": str, "reply": Optional[str]}``:
@@ -2861,7 +2876,10 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
     - otherwise the router picks an imported GET endpoint of a bot-enabled integration; ``context``
       is the formatted result for the prompt;
     - ``reply`` is one short question (ambiguous or missing value) or an input problem (invalid
-      address, wrong network); it is sent as the bot's answer without calling the model."""
+      address, wrong network); it is sent as the bot's answer without calling the model.
+
+    ``conversation`` (``web:<session>``, ``api:<session>``, ``discord:<user>:<channel>``) lets a short
+    reply answer the bot's last question (spec 019): the question is remembered for 10 minutes."""
     out = {"context": "", "reply": None, "hint": ""}
     try:
         if not bot_config.get("api_lookups_enabled"):
@@ -2892,7 +2910,22 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
         if not providers:
             return out
         decision = apiroute.route(text, providers)
+        asked = text
+        pending = await _apiint_pending(instance_id, conversation)
+        if pending:
+            combined = apiroute.follow_up_text(pending["question"], text, pending.get("expect"))
+            if combined and (decision["action"] in ("none", "ask") or apiroute.answers_expected(text, pending.get("expect"))):
+                again = apiroute.route(combined, providers)
+                if again["action"] != "none":
+                    decision, asked = again, combined
+                    logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} follow-up answered")
         action = decision["action"]
+        if action == "ask" and conversation:
+            now = datetime.now(timezone.utc)
+            await db.api_pending.update_one(
+                {"instance_id": instance_id, "conversation": conversation},
+                {"$set": {"question": asked[:2000], "expect": decision.get("expect"), "created_at": now,
+                          "expires_at": now + timedelta(seconds=apiroute.PENDING_SECONDS)}}, upsert=True)
         if action in ("ask", "reject"):
             out["reply"] = decision.get("question") or decision.get("message")
             logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} {action} reason={decision.get('reason')}")
@@ -2924,7 +2957,7 @@ async def send_chat_message(body: ChatMessage):
     instance_id = body.instance_id or "default"
     bot_config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
     knowledge = await search_knowledge(body.message, instance_id)
-    looked = await _api_lookup_context(instance_id, body.message, bot_config, "web")
+    looked = await _api_lookup_context(instance_id, body.message, bot_config, "web", conversation=f"web:{session_id}")
     lookup = looked["context"]
     if knowledge == "__NO_KB__" and lookup:
         knowledge = ""
@@ -4304,7 +4337,7 @@ async def external_chat(
     session_id = body.session_id or str(uuid.uuid4())
     bot_config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
     knowledge = await search_knowledge(body.message, instance_id)
-    looked = await _api_lookup_context(instance_id, body.message, bot_config, "api")
+    looked = await _api_lookup_context(instance_id, body.message, bot_config, "api", conversation=f"api:{session_id}")
     lookup = looked["context"]
     if knowledge == "__NO_KB__" and lookup:
         knowledge = ""
