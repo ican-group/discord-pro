@@ -126,16 +126,68 @@ def parse_cardano_address(text: str) -> Dict[str, Any]:
     return {"kind": kind, "network": network, "address_type": sub, "value": text.lower()}
 
 
+# ═════════════════════════════ governance and pool ids (CIP-129 / CIP-105) ═════════════════════════════
+
+# prefix → (kind, payload lengths, CIP-129 headers allowed for the 29-byte form)
+_ID_PREFIXES = {
+    "pool": ("pool_id", {28}, set()),
+    "drep": ("drep_id", {28, 29}, {0x22, 0x23}),
+    "drep_script": ("drep_id", {28}, set()),
+    "drep_vkh": ("drep_id", {28}, set()),
+    "drep_vk": ("drep_id", {32}, set()),
+    "cc_cold": ("committee_credential", {28, 29}, {0x12, 0x13}),
+    "cc_cold_script": ("committee_credential", {28}, set()),
+    "cc_cold_vkh": ("committee_credential", {28}, set()),
+    "cc_cold_vk": ("committee_credential", {32}, set()),
+    "cc_hot": ("committee_credential", {28, 29}, {0x02, 0x03}),
+    "cc_hot_script": ("committee_credential", {28}, set()),
+    "cc_hot_vkh": ("committee_credential", {28}, set()),
+    "cc_hot_vk": ("committee_credential", {32}, set()),
+    "gov_action": ("gov_action", {33}, set()),
+}
+
+
+def parse_cardano_id(text: str) -> Dict[str, Any]:
+    """``{kind, network: None, value}`` for a stake pool, DRep, committee credential or governance
+    action id in bech32 form. A governance action also carries ``tx_hash`` and ``index``. Raises
+    ValueError with a reason safe to show."""
+    hrp, payload = bech32_decode(text)
+    if hrp not in _ID_PREFIXES:
+        raise ValueError(f"unknown id prefix '{hrp}'")
+    kind, lengths, headers = _ID_PREFIXES[hrp]
+    if len(payload) not in lengths:
+        raise ValueError(f"wrong length for a {KIND_LABELS[kind]}")
+    if len(payload) == 29 and payload[0] not in headers:
+        raise ValueError(f"the header byte isn't a {KIND_LABELS[kind]}")
+    out = {"kind": kind, "network": None, "value": text.lower()}
+    if kind == "gov_action":
+        out.update(tx_hash=payload[:32].hex(), index=payload[32])
+    return out
+
+
 # ═════════════════════════════ input detection ═════════════════════════════
 
 _ADDR_LIKE = re.compile(r"(?<![0-9A-Za-z_])(?:addr_test|addr|stake_test|stake)1[0-9A-Za-z]{8,}(?![0-9A-Za-z_])", re.I)
+_ID_LIKE = re.compile(r"(?<![0-9A-Za-z_])(?:pool|drep_script|drep_vkh|drep_vk|drep|cc_cold_script|cc_cold_vkh|cc_cold_vk|cc_cold"
+                      r"|cc_hot_script|cc_hot_vkh|cc_hot_vk|cc_hot|gov_action)1[0-9A-Za-z]{8,}(?![0-9A-Za-z_])", re.I)
 _HEX64 = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_TX_INDEX = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{64})#(\d{1,3})(?!\d)")
+# A number only counts with its cue word right before it ("epoch 512", "slot #1234", "label 674").
+_NUMBER = re.compile(r"\b(epochs?|slot|block|label|index)\s*(?:no\.?|num(?:ber)?\.?|#)?\s*#?(\d{1,12})(?![\w.])", re.I)
+_NUMBER_KINDS = {"epoch": "epoch_number", "epochs": "epoch_number", "slot": "slot_number", "block": "block_number",
+                 "label": "metadata_label", "index": "proposal_index"}
+NUMBER_CUES = {"epoch_number": "epoch", "slot_number": "slot", "block_number": "block",
+               "metadata_label": "label", "proposal_index": "index"}
 _WORD = re.compile(r"[a-z][a-z0-9]*")
 _TX_CUES = {"transaction", "transactions", "tx", "txs", "txn", "txid", "utxo", "utxos", "metadata"}
 _BLOCK_CUES = {"block", "blocks"}
+_GOV_CUES = {"proposal", "proposals", "action"}
 _TX_SOFT_CUES = {"fee", "fees", "sent", "send", "payment", "paid", "transfer", "confirmed", "confirmation", "confirmations"}
 KIND_LABELS = {"payment_address": "payment address", "stake_address": "stake address",
-               "tx_hash": "transaction hash", "block_hash": "block hash", "hash": "64-character hash"}
+               "tx_hash": "transaction hash", "block_hash": "block hash", "hash": "64-character hash",
+               "pool_id": "stake pool id", "drep_id": "DRep id", "committee_credential": "committee credential",
+               "gov_action": "governance action id", "epoch_number": "epoch number", "slot_number": "slot number",
+               "block_number": "block number", "metadata_label": "metadata label", "proposal_index": "proposal index"}
 
 
 def short(value: str) -> str:
@@ -143,34 +195,65 @@ def short(value: str) -> str:
 
 
 def detect_inputs(text: Any) -> Dict[str, Any]:
-    """Cardano inputs in a message: ``{inputs: [...], invalid: [...], words: set}``. A 64-hex
-    value is a ``tx_hash`` or ``block_hash`` from the wording, else an ambiguous ``hash``."""
+    """Cardano inputs in a message: ``{inputs: [...], invalid: [...], words: set}``.
+
+    - Addresses (CIP-19) and pool / DRep / committee / governance-action ids (bech32).
+    - A 64-hex value is a ``tx_hash`` or ``block_hash`` from the wording, else an ambiguous
+      ``hash``. A hash a proposal refers to (``gov_action1…``, ``<hash>#<n>``, or "proposal"
+      right before it) is a ``tx_hash`` with ``role: proposal``.
+    - Numbers only with their cue word: ``epoch 512`` → ``epoch_number``…"""
     text = text[:20000] if isinstance(text, str) else ""
     words = set(_WORD.findall(text.lower()))
     inputs: List[Dict[str, Any]] = []
     invalid: List[Dict[str, Any]] = []
     seen = set()
+
+    def add(item: Dict[str, Any]) -> None:
+        key = (item["kind"], item["value"])
+        if key not in seen:
+            seen.add(key)
+            inputs.append(item)
+
     for m in _ADDR_LIKE.finditer(text):
         raw = m.group(0)
-        if raw.lower() in seen:
-            continue
-        seen.add(raw.lower())
         try:
-            inputs.append(parse_cardano_address(raw))
+            add(parse_cardano_address(raw))
         except ValueError as exc:
             invalid.append({"value": raw, "reason": str(exc),
                             "kind": "stake_address" if raw.lower().startswith("stake") else "payment_address"})
-    stripped = _ADDR_LIKE.sub(" ", text)
+    for m in _ID_LIKE.finditer(text):
+        raw = m.group(0)
+        try:
+            found = parse_cardano_id(raw)
+        except ValueError as exc:
+            prefix = raw.lower().rsplit("1", 1)[0]
+            prefix = next((p for p in sorted(_ID_PREFIXES, key=len, reverse=True) if raw.lower().startswith(p + "1")), prefix)
+            invalid.append({"value": raw, "reason": str(exc), "kind": _ID_PREFIXES.get(prefix, ("pool_id",))[0]})
+            continue
+        if found["kind"] == "gov_action":
+            add({"kind": "tx_hash", "network": None, "value": found["tx_hash"], "role": "proposal"})
+            add({"kind": "proposal_index", "network": None, "value": str(found["index"])})
+        else:
+            add(found)
+    stripped = _ID_LIKE.sub(" ", _ADDR_LIKE.sub(" ", text))
+    for m in _TX_INDEX.finditer(stripped):
+        add({"kind": "tx_hash", "network": None, "value": m.group(1).lower(), "role": "proposal"})
+        add({"kind": "proposal_index", "network": None, "value": str(int(m.group(2)))})
+    hashed = {i["value"] for i in inputs if i["kind"] == "tx_hash"}
     for m in _HEX64.finditer(stripped):
         h = m.group(0).lower()
-        if h in seen:
+        if h in hashed:
             continue
-        seen.add(h)
+        hashed.add(h)
         # The cue word right before the hash wins ("transactions in block <hash>", "block hash
-        # <hash>", "which block holds tx <hash>"); otherwise any cue in the message decides.
+        # <hash>", "which block holds tx <hash>", "votes on proposal <hash>"); otherwise any cue in
+        # the message decides.
         near = next((w for w in reversed(_WORD.findall(stripped[:m.start()].lower())[-3:])
-                     if w in _TX_CUES or w in _BLOCK_CUES), None)
-        if near:
+                     if w in _TX_CUES or w in _BLOCK_CUES or w in _GOV_CUES), None)
+        role = None
+        if near in _GOV_CUES:
+            kind, role = "tx_hash", "proposal"
+        elif near:
             kind = "block_hash" if near in _BLOCK_CUES else "tx_hash"
         elif words & _TX_CUES:
             kind = "tx_hash"
@@ -180,14 +263,18 @@ def detect_inputs(text: Any) -> Dict[str, Any]:
             kind = "tx_hash"
         else:
             kind = "hash"
-        inputs.append({"kind": kind, "network": None, "value": h})
+        add({"kind": kind, "network": None, "value": h, **({"role": role} if role else {})})
+    for m in _NUMBER.finditer(_HEX64.sub(" ", stripped)):
+        add({"kind": _NUMBER_KINDS[m.group(1).lower()], "network": None, "value": str(int(m.group(2)))})
     return {"inputs": inputs, "invalid": invalid, "words": words}
 
 
 def saved_lookup_hash(found: Mapping[str, Any]) -> Optional[str]:
     """The hash a saved transaction lookup (spec 015) answers first: a transaction hash, or a bare
-    hash with no wording (the existing default). An explicit block hash goes to the router."""
-    return next((i["value"] for i in found.get("inputs") or [] if i["kind"] in ("tx_hash", "hash")), None)
+    hash with no wording (the existing default). An explicit block hash, or a hash a proposal refers
+    to, goes to the router."""
+    return next((i["value"] for i in found.get("inputs") or []
+                 if i["kind"] in ("tx_hash", "hash") and i.get("role") != "proposal"), None)
 
 
 # ═════════════════════════════ what an endpoint needs ═════════════════════════════
@@ -195,25 +282,45 @@ def saved_lookup_hash(found: Mapping[str, Any]) -> Optional[str]:
 def param_kinds(param: Mapping[str, Any], path: str) -> List[str]:
     """Input kinds a documented parameter accepts, from its name and description."""
     name = str(param.get("name") or "").lower()
-    text = f"{name} {str(param.get('description') or '').lower()}"
+    desc = str(param.get("description") or "").lower()
+    text = f"{name} {desc}"
+    p = path.lower()
     kinds: List[str] = []
+    if "pool" in name or "pool1" in desc:
+        return ["pool_id"]
+    if "drep" in name or "drep1" in desc:
+        return ["drep_id"]
+    if "cc_cold" in desc or "cc_hot" in desc or ("credential" in name and "committee" in text):
+        return ["committee_credential"]
+    if name == "epoch_number" or (name in ("number", "epoch") and "/epochs/" in p):
+        return ["epoch_number"]
+    if name in ("slot_number", "slot"):
+        return ["slot_number"]
+    if name == "label" and "/metadata/" in p:
+        return ["metadata_label"]
+    if name in ("cert_index", "index", "proposal_index") and "/proposals/" in p:
+        return ["proposal_index"]
     if "stake" in name or re.search(r"stake address|reward address|stake1|stake_test1", text):
         kinds.append("stake_address")
     elif name in ("address", "addr", "payment_address", "addresses") or \
             re.search(r"payment address|addr1|addr_test1|bech32 address", text):
         kinds.append("payment_address")
     if "hash" in text or "hash" in name:
-        p = path.lower()
         if re.search(r"transaction|\btx", text) or re.search(r"/txs?/|/transactions?/", p):
             kinds.append("tx_hash")
         if "block" in text or re.search(r"/blocks?/", p):
             kinds.append("block_hash")
+            if "block number" in desc or "number" in name:
+                kinds.append("block_number")
     return kinds
+
+
+MAX_REQUIRED = 3
 
 
 def endpoint_requirements(ep: Mapping[str, Any]) -> Optional[List[Dict[str, Any]]]:
     """Required parameters with the kinds they accept, or None when one can't be filled from a
-    recognised input (pool ids, asset names, numbers…)."""
+    recognised input (asset units, policy ids…)."""
     reqs = []
     for p in ep.get("parameters") or []:
         if p.get("in") == "path" or p.get("required"):
@@ -226,9 +333,6 @@ def endpoint_requirements(ep: Mapping[str, Any]) -> Optional[List[Dict[str, Any]
 
 # What a value the router can't read from a message is, from the parameter's name and description.
 _UNREADABLE = [
-    ("pool", r"\bpool", "stake pool id (pool1…)"),
-    ("drep", r"drep", "DRep id (drep1…)"),
-    ("committee", r"committee|cc_cold|cc_hot", "committee credential (cc_cold1… / cc_hot1…)"),
     ("asset", r"\bpolicy\b|policy_id|\basset\b|native-asset", "native asset or policy id"),
 ]
 
@@ -242,7 +346,7 @@ def _unreadable_value(p: Mapping[str, Any]) -> Dict[str, str]:
                 label = "minting policy id" if "policy" in name.lower() else "native asset unit (policy id + asset name)"
             return {"category": category, "label": label, "param": name}
     if p.get("type") in ("integer", "number") or re.search(r"\binteger\b|\bnumber\b", text):
-        nice = {"cert_index": "proposal index", "label": "metadata label"}.get(name, name.replace("_", " "))
+        nice = name.replace("_", " ")
         if nice == "number":   # a bare name: take it from the description ("Epoch number (0 is …)")
             m = re.match(r"\s*([a-z-]+ number)\b", str(p.get("description") or "").lower())
             nice = m.group(1) if m else nice
@@ -252,8 +356,8 @@ def _unreadable_value(p: Mapping[str, Any]) -> Dict[str, str]:
 
 def bot_usability(ep: Mapping[str, Any]) -> Dict[str, Any]:
     """Whether the router can use an imported endpoint, the inputs it accepts and, when it can't,
-    why: ``{usable, accepts, reason: {category, label, param} | None}``. Same rule as ``route``:
-    GET, and every required value comes from one recognised input (or none is needed)."""
+    why: ``{usable, accepts, needs (kinds per required value), reason: {category, label, param} | None}``. Same rule as ``route``:
+    GET, and every required value (at most ``MAX_REQUIRED``) comes from a recognised input."""
     if str(ep.get("method") or "").upper() != "GET":
         return {"usable": False, "accepts": [], "reason": {"category": "method", "label": "only GET (read-only) calls", "param": ""}}
     reqs = endpoint_requirements(ep)
@@ -261,10 +365,13 @@ def bot_usability(ep: Mapping[str, Any]) -> Dict[str, Any]:
         blocker = next(p for p in ep.get("parameters") or []
                        if (p.get("in") == "path" or p.get("required")) and not param_kinds(p, ep.get("path") or ""))
         return {"usable": False, "accepts": [], "reason": _unreadable_value(blocker)}
-    if len(reqs) > 1:
-        return {"usable": False, "accepts": [], "reason": {"category": "multiple", "label": "more than one value from the message",
+    if len(reqs) > MAX_REQUIRED:
+        return {"usable": False, "accepts": [], "reason": {"category": "multiple", "label": f"more than {MAX_REQUIRED} values from the message",
                                                             "param": ", ".join(r["name"] for r in reqs)}}
-    return {"usable": True, "accepts": [k for r in reqs for k in r["kinds"]], "reason": None}
+    accepts: List[str] = []
+    for r in reqs:
+        accepts += [k for k in r["kinds"] if k not in accepts]
+    return {"usable": True, "accepts": accepts, "needs": [list(r["kinds"]) for r in reqs], "reason": None}
 
 
 def _check_schema(value: str, param: Mapping[str, Any]) -> Optional[str]:
@@ -297,7 +404,7 @@ _CONCEPTS = {
     "delegation": "delegation delegations delegated delegate delegating pool pools staked",
     "history": "history historical",
     "asset": "asset assets token tokens nft nfts native",
-    "utxo": "utxo utxos unspent",
+    "utxo": "utxo utxos unspent input inputs output outputs",
     "transaction": "transaction transactions tx txs txn txns",
     "metadata": "metadata",
     "epoch": "epoch epochs",
@@ -310,7 +417,11 @@ _CONCEPTS = {
     "total": "total totals sum received sent",
     "count": "count many number",
     "parameters": "parameters params parameter",
-    "governance": "governance drep dreps proposal proposals vote votes voting committee constitution treasury",
+    "governance": "governance constitution treasury",
+    "proposal": "proposal proposals",
+    "vote": "vote votes voting voted",
+    "drep": "drep dreps",
+    "committee": "committee",
     "supply": "supply circulating",
 }
 _WORD_CONCEPT = {w: c for c, ws in _CONCEPTS.items() for w in ws.split()}
@@ -405,33 +516,51 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
                 "question": f"Is {short(hashes[0]['value'])} a transaction hash or a block hash?"}
 
     candidates: List[Dict[str, Any]] = []
+    partial: List[Dict[str, Any]] = []      # one required value missing, at least one given
     mismatched: List[Tuple[Dict[str, Any], Mapping[str, Any]]] = []
     for prov in providers:
         integ = prov["integration"]
         net = integ.get("network") or "any"
+        usable = []
+        for inp in inputs:
+            if inp.get("network") and net not in ("any", inp["network"]):
+                mismatched.append((inp, integ))
+            else:
+                usable.append(inp)
         for ep in prov["endpoints"]:
             reqs = endpoint_requirements(ep)
-            if reqs is None:
+            if reqs is None or len(reqs) > MAX_REQUIRED:
                 continue
             if not reqs:
                 if not inputs:
                     candidates.append({"integration": integ, "endpoint": ep, "values": {}, "input": None,
                                        "score": score_endpoint(q, ep)})
                 continue
-            if len(reqs) != 1:
-                continue        # one recognised value per call
-            req = reqs[0]
-            for inp in inputs:
-                if inp["kind"] not in req["kinds"]:
+            score = None
+            for values, used, missing in _assignments(reqs, usable):
+                if len(missing) > 1 or (missing and not used):
                     continue
-                if inp.get("network") and net not in ("any", inp["network"]):
-                    mismatched.append((inp, integ))
-                    continue
-                problem = _check_schema(inp["value"], req["param"])
-                if problem:
-                    continue
-                candidates.append({"integration": integ, "endpoint": ep, "values": {req["name"]: inp["value"]},
-                                   "input": inp, "score": score_endpoint(q, ep)})
+                if score is None:
+                    score = score_endpoint(q, ep)
+                # Prefer the endpoint that uses more of what was given; a hash a proposal refers to
+                # belongs to the proposal endpoints.
+                sc = score + 1.5 * (len(used) - 1) - sum(2.0 for i in used if i.get("role") == "proposal"
+                                                         and "/proposals/" not in (ep.get("path") or "").lower())
+                entry = {"integration": integ, "endpoint": ep, "values": values, "input": used[0], "score": sc}
+                if missing:
+                    partial.append({**entry, "missing": missing[0]})
+                else:
+                    candidates.append(entry)
+
+    partial.sort(key=lambda c: -c["score"])
+    if partial and not _HOW_TO.search(question) and partial[0]["score"] >= MISSING_VALUE_MIN \
+            and (not candidates or partial[0]["score"] > max(c["score"] for c in candidates) + AMBIGUITY_MARGIN):
+        need = partial[0]
+        kind = need["missing"]["kinds"][0]
+        target = f" for {short(need['input']['value'])}" if need["input"]["kind"] not in ("proposal_index",) else ""
+        return {**base, "action": "ask", "reason": "missing_value", "expect": kind,
+                "question": ASK_FOR.get(kind, f"Which {KIND_LABELS.get(kind, kind)} should I look up?").replace("{target}", target),
+                "endpoint": need["endpoint"], "integration": need["integration"]}
 
     if not candidates:
         if mismatched:
@@ -445,7 +574,7 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
         if not inputs and _PERSONAL.search(question) and not _HOW_TO.search(question):
             need = _missing_value(q, providers)
             if need:
-                return {**base, "action": "ask", "reason": "missing_value", "question": need}
+                return {**base, "action": "ask", "reason": "missing_value", **need}
         return {**base, "action": "none"}
 
     candidates.sort(key=lambda c: -c["score"])
@@ -460,7 +589,7 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
         if _PERSONAL.search(question) and not _HOW_TO.search(question):
             need = _missing_value(q, providers)
             if need:
-                return {**base, "action": "ask", "reason": "missing_value", "question": need}
+                return {**base, "action": "ask", "reason": "missing_value", **need}
         return {**base, "action": "none"}
     close = [c for c in candidates[1:] if best["score"] - c["score"] < AMBIGUITY_MARGIN]
     # The same question answered by providers for different networks: ask which network, unless the
@@ -488,8 +617,53 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
                              for c in candidates[1:4]]}
 
 
-def _missing_value(q: set, providers: Sequence[Mapping[str, Any]]) -> Optional[str]:
-    """When the question clearly asks for something that needs an address or hash that isn't there."""
+def _assignments(reqs: Sequence[Mapping[str, Any]], inputs: Sequence[Mapping[str, Any]]):
+    """Ways to fill the required values from distinct inputs: ``(values, used inputs, missing reqs)``.
+    Values that break the documented constraints don't fill a requirement."""
+    out: List[Tuple[Dict[str, str], List[Mapping[str, Any]], List[Mapping[str, Any]]]] = []
+
+    def walk(i: int, values: Dict[str, str], used: List[Mapping[str, Any]], missing: List[Mapping[str, Any]]) -> None:
+        if len(out) >= 50 or len(missing) > 1:
+            return
+        if i == len(reqs):
+            out.append((dict(values), list(used), list(missing)))
+            return
+        req = reqs[i]
+        options = [inp for inp in inputs if inp["kind"] in req["kinds"] and inp not in used
+                   and not _check_schema(inp["value"], req["param"])]
+        for inp in options:
+            values[req["name"]] = inp["value"]
+            walk(i + 1, values, used + [inp], missing)
+            del values[req["name"]]
+        if not options:
+            walk(i + 1, values, used, missing + [req])
+
+    walk(0, {}, [], [])
+    return out
+
+
+ASK_FOR = {
+    "stake_address": "Which stake address (stake1…) should I look up?",
+    "payment_address": "Which address (addr1…) should I look up?",
+    "tx_hash": "Which transaction hash should I look up?",
+    "block_hash": "Which block hash should I look up?",
+    "pool_id": "Which stake pool (pool1…) should I look up?",
+    "drep_id": "Which DRep (drep1…) should I look up?",
+    "committee_credential": "Which committee member (cc_cold1… or cc_hot1…) should I look up?",
+    "epoch_number": "Which epoch number{target}?",
+    "slot_number": "Which slot number{target}?",
+    "metadata_label": "Which metadata label (for example 674)?",
+    "proposal_index": "Which proposal index in that transaction? It's usually 0.",
+}
+
+
+# "my …" questions ask for something the user has: their address, stake address or transaction.
+_OWN_KINDS = {"stake_address", "payment_address", "tx_hash"}
+
+
+def _missing_value(q: set, providers: Sequence[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """When the question clearly asks for something that needs a value that isn't there:
+    ``{question, expect}``."""
     known = _known(q)
     if not known:
         return None
@@ -497,7 +671,7 @@ def _missing_value(q: set, providers: Sequence[Mapping[str, Any]]) -> Optional[s
     for prov in providers:
         for ep in prov["endpoints"]:
             reqs = endpoint_requirements(ep)
-            if not reqs or len(reqs) != 1:
+            if not reqs or len(reqs) != 1 or reqs[0]["kinds"][0] not in _OWN_KINDS:
                 continue
             scored.append((score_endpoint(known, ep), reqs[0]["kinds"][0]))
     scored.sort(key=lambda x: -x[0])
@@ -508,14 +682,53 @@ def _missing_value(q: set, providers: Sequence[Mapping[str, Any]]) -> Optional[s
         if scored[0][0] - sc < AMBIGUITY_MARGIN and kind not in kinds:
             kinds.append(kind)
     labels = {"stake_address": "stake address (stake1…)", "payment_address": "address (addr1…)",
-              "tx_hash": "transaction hash", "block_hash": "block hash"}
-    return f"Which {' or '.join(labels[k] for k in kinds[:2])} should I look up?"
+              "tx_hash": "transaction hash", "block_hash": "block hash", "pool_id": "stake pool (pool1…)",
+              "drep_id": "DRep (drep1…)", "committee_credential": "committee member (cc_cold1… or cc_hot1…)",
+              "epoch_number": "epoch number", "slot_number": "slot number", "metadata_label": "metadata label",
+              "proposal_index": "proposal index", "block_number": "block number"}
+    if len(kinds) == 1 and kinds[0] in ASK_FOR:
+        return {"question": ASK_FOR[kinds[0]].replace("{target}", ""), "expect": kinds[0]}
+    return {"question": f"Which {' or '.join(labels.get(k, k) for k in kinds[:2])} should I look up?",
+            "expect": kinds[0] if len(kinds) == 1 else None}
+
+
+# ═════════════════════════════ follow-up answers (spec 019) ═════════════════════════════
+
+PENDING_SECONDS = 600
+_FOLLOW_UP_WORDS = {"mainnet", "testnet", "preprod", "preview"} | _TX_CUES | _BLOCK_CUES | _GOV_CUES
+
+
+def follow_up_text(original: str, reply: Any, expect: Optional[str]) -> Optional[str]:
+    """The remembered question plus a short reply that looks like its answer, or None. A bare number
+    gets the cue word of the kind asked for ("512" → "epoch 512")."""
+    reply = reply.strip() if isinstance(reply, str) else ""
+    if not reply or len(reply) > 200 or len(reply.split()) > 12:
+        return None
+    number = re.fullmatch(r"#?\s*(\d{1,12})\.?", reply)
+    if number:
+        if expect not in NUMBER_CUES:
+            return None
+        reply = f"{NUMBER_CUES[expect]} {number.group(1)}"
+    found = detect_inputs(reply)
+    if not (found["inputs"] or found["invalid"] or _known(_concepts(reply)) or found["words"] & _FOLLOW_UP_WORDS):
+        return None          # "thanks", "ok"…: not an answer
+    return f"{original} {reply}"
+
+
+def answers_expected(reply: Any, expect: Optional[str]) -> bool:
+    """The reply supplies exactly the kind of value the bot asked for."""
+    if not expect or not isinstance(reply, str):
+        return False
+    if expect in NUMBER_CUES and re.fullmatch(r"#?\s*\d{1,12}\.?", reply.strip()):
+        return True
+    return any(i["kind"] == expect for i in detect_inputs(reply)["inputs"])
 
 
 # ═════════════════════════════ what the bot can look up (for its prompt) ═════════════════════════════
 
 _INPUT_PHRASES = {"payment_address": "a Cardano address (addr1…)", "stake_address": "a stake address (stake1…)",
-                  "tx_hash": "a transaction hash", "block_hash": "a block hash"}
+                  "tx_hash": "a transaction hash", "block_hash": "a block hash", "pool_id": "a stake pool id (pool1…)",
+                  "drep_id": "a DRep id (drep1…)", "epoch_number": "an epoch number (\"epoch 512\")"}
 _EXAMPLES = {"stake_address": "What are the staking rewards for stake1…?", "payment_address": "What's the balance of addr1…?",
              "tx_hash": "What was the fee for transaction <hash>?"}
 
@@ -541,7 +754,7 @@ def capability_note(providers: Sequence[Mapping[str, Any]], saved_tx_lookup: boo
                 live = True
     if not kinds and not live:
         return ""
-    order = ["stake_address", "payment_address", "tx_hash", "block_hash"]
+    order = ["stake_address", "payment_address", "tx_hash", "block_hash", "pool_id", "drep_id", "epoch_number"]
     kinds.sort(key=order.index)
     wants = [_INPUT_PHRASES[k] for k in kinds]
     triggers = []
@@ -553,6 +766,43 @@ def capability_note(providers: Sequence[Mapping[str, Any]], saved_tx_lookup: boo
     source = ", ".join(names) if names else "this workspace's saved lookup"
     return (f"You can look up live data from {source}. BridgeBot runs the lookup automatically when "
             f"{', or when '.join(triggers)}. Example questions: " + "; ".join(f'"{e}"' for e in examples) + ".")
+
+
+# What was last looked up in a conversation, so "show me the inputs for this transaction" works.
+SUBJECT_SECONDS = 1800
+_BACK_REF = re.compile(r"\b(this|that|it|its|same|those|these|them|the (transaction|tx|block|address|pool|account|proposal))\b"
+                       r"|^\s*(and|also|what about|how about)\b", re.I)
+
+
+_QUESTION_START = re.compile(r"\s*(what|which|when|where|who|how|is|was|were|did|does|do|has|had|can|could|show|list|give|tell)\b", re.I)
+
+
+def subject_text(found_inputs: Sequence[Mapping[str, Any]], values: Mapping[str, str]) -> str:
+    """The inputs a call used, written so the router recognises them again ("transaction <hash>")."""
+    used = set(values.values())
+    parts = []
+    for i in found_inputs:
+        if i["value"] not in used:
+            continue
+        if i["kind"] == "tx_hash":
+            parts.append(f"{'proposal' if i.get('role') == 'proposal' else 'transaction'} {i['value']}")
+        elif i["kind"] == "block_hash":
+            parts.append(f"block {i['value']}")
+        elif i["kind"] in NUMBER_CUES:
+            parts.append(f"{NUMBER_CUES[i['kind']]} {i['value']}")
+        else:
+            parts.append(i["value"])
+    return " ".join(parts)
+
+
+def about_subject(text: Any) -> bool:
+    """A message with no input of its own that asks about the last thing looked up."""
+    if not isinstance(text, str) or len(text) > 300 or _HOW_TO.search(text):
+        return False
+    found = detect_inputs(text)
+    asks = "?" in text or bool(_known(_concepts(text))) or bool(_QUESTION_START.match(text)) \
+        or bool({"show", "list", "detail", "details", "more"} & found["words"])
+    return not found["inputs"] and not found["invalid"] and bool(_BACK_REF.search(text)) and asks
 
 
 # ═════════════════════════════ the call ═════════════════════════════
@@ -632,6 +882,7 @@ _UNIX = re.compile(r"unix (time|timestamp|epoch)|posix time|seconds since (the )
 _IN_ADA = re.compile(r"\bin ada\b", re.I)
 MAX_ROWS = 10
 MAX_LINES = 12
+MAX_SHOWN = 8
 
 
 def unit_spec(description: str) -> Dict[str, Any]:
@@ -705,9 +956,38 @@ def _auto_fields(sample: Any, schema: Optional[Mapping[str, Any]], *, table: boo
         def weight(f):
             v = sample.get(f["path"]) if isinstance(sample, dict) else None
             long_id = isinstance(v, str) and len(v) > 40
-            return (1 if long_id else 0, 0 if f.get("unit") or f.get("format") == "timestamp" else 0)
-        out = sorted(out, key=weight)[:4]
+            amount = _is_amounts(v) or bool(f.get("unit"))
+            return (0 if f["path"] == "address" else 1 if amount else 3 if long_id else 2)
+        out = sorted(out, key=weight)
     return out[:60]
+
+
+def _empty(v: Any) -> bool:
+    return v is None or v == "" or v == [] or v == {}
+
+
+def _zero(v: Any) -> bool:
+    n = apiint._number(v) if isinstance(v, (int, float, str)) and not isinstance(v, bool) else None
+    return n is not None and n == 0
+
+
+def _field_concepts(f: Mapping[str, Any]) -> set:
+    return _known(_concepts(f"{f['path'].replace('.', ' ')} {f.get('label') or ''}"))
+
+
+def _table(rows: Sequence[Any], cols: Sequence[Mapping[str, Any]], channel: str, *, max_cols: int = 4) -> str:
+    """Rows as a channel-suited table; columns empty in every shown row are dropped."""
+    val = lambda r, c: apiint.get_path(r, c["path"]) if apiint.get_path(r, c["path"]) is not apiint._MISSING else None
+    cols = [c for c in cols if any(not _empty(val(r, c)) for r in rows)][:max_cols] or list(cols)[:max_cols]
+    cells = [[_value_text(val(r, c), c, cell=True) for c in cols] for r in rows]
+    labels = [c.get("label") or humanize(c["path"]) for c in cols]
+    if channel == "discord":
+        widths = [max(len(labels[i]), *(len(row[i]) for row in cells)) for i in range(len(cols))]
+        line = lambda vals: "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals)).rstrip()
+        return "```\n" + "\n".join([line(labels)] + [line(r) for r in cells]) + "\n```"
+    if channel == "api":
+        return "\n".join(["| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)] + ["| " + " | ".join(r) + " |" for r in cells])
+    return "\n".join("• " + " · ".join(f"{labels[i]}: {v}" for i, v in enumerate(r)) for r in cells)
 
 
 def _rows(data: Any) -> Optional[list]:
@@ -718,12 +998,17 @@ def _rows(data: Any) -> Optional[list]:
 
 def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping[str, Any],
                   fields: Optional[Sequence[Mapping[str, Any]]] = None, channel: str = "web",
-                  target: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                  target: Optional[Mapping[str, Any]] = None, question: str = "") -> Dict[str, Any]:
     """The text the tester shows and the bot receives, for ``channel`` web (plain text), discord
     (Markdown, tables in a code block) or api (Markdown with a pipe table).
 
     ``kind``: ``single``, ``list``, ``empty`` (the API answered with no rows: a genuine empty result),
-    ``not_found`` (no match) or ``unavailable`` (couldn't check). Zero values are shown as values."""
+    ``not_found`` (no match) or ``unavailable`` (couldn't check). Zero values are shown as values.
+
+    Without an override, a single record shows the fields the ``question`` asks about first, then
+    amounts and times, skipping empty values and zero counts the question didn't ask about; at
+    most ``MAX_SHOWN`` lines. ``details`` holds every other field for the bot's follow-up answers.
+    Lists inside a record (a transaction's inputs and outputs) are shown as tables."""
     md = channel in ("discord", "api")
     title = f"{provider} — {(endpoint.get('summary') or endpoint.get('path') or '').strip()}"
     about = f" for {short(target['value'])}" if target else ""
@@ -749,36 +1034,61 @@ def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping
         more = f"Showing {len(shown)} of {len(rows)}." if len(rows) > len(shown) else f"{len(rows)} record{'s' if len(rows) != 1 else ''}."
         if not cols or not isinstance(rows[0], dict):
             body = "\n".join(f"• {_value_text(r, {}, cell=True)}" for r in shown)
-            return {"kind": "list", "text": f"{head}\n{body}\n{more}"}
-        cells = [[_value_text(apiint.get_path(r, c['path']) if apiint.get_path(r, c['path']) is not apiint._MISSING else None, c, cell=True)
-                  for c in cols] for r in shown]
-        labels = [c.get("label") or humanize(c["path"]) for c in cols]
-        if channel == "discord":
-            widths = [max(len(labels[i]), *(len(row[i]) for row in cells)) for i in range(len(cols))]
-            line = lambda vals: "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals)).rstrip()
-            body = "```\n" + "\n".join([line(labels)] + [line(r) for r in cells]) + "\n```"
-        elif channel == "api":
-            body = "\n".join(["| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)] +
-                             ["| " + " | ".join(r) + " |" for r in cells])
-        else:
-            body = "\n".join("• " + " · ".join(f"{labels[i]}: {v}" for i, v in enumerate(r)) for r in cells)
-        return {"kind": "list", "text": f"{head}\n{body}\n{more}"}
-    lines = []
-    flds = list(fields) if fields else _auto_fields(data if isinstance(data, dict) else {}, schema, table=False)
-    for f in flds:
+            return {"kind": "list", "text": f"{head}\n{body}\n{more}", "details": ""}
+        body = _table(shown, cols, channel, max_cols=len(cols) if fields else 4)
+        return {"kind": "list", "text": f"{head}\n{body}\n{more}", "details": ""}
+    if fields:                                   # an admin override: exactly these fields, in this order
+        lines = []
+        for f in fields:
+            v = apiint.get_path(data, f["path"])
+            if v is apiint._MISSING:
+                continue
+            label = f.get("label") or humanize(f["path"])
+            val = _value_text(v, f)
+            lines.append(f"• **{label}:** {val}" if md else f"{label}: {val}")
+        body = "\n".join(lines) or json.dumps(data, ensure_ascii=False)[:300]
+        return {"kind": "single", "text": f"{head}\n{body}", "details": ""}
+
+    record = data if isinstance(data, dict) else {}
+    q = _known(_concepts(question)) if question else set()
+    qwords = {w.rstrip("s") for w in _WORD.findall(question.lower()) if len(w) > 3 and w not in _STOP} if question else set()
+    named = lambda path: bool({w.rstrip("s") for w in re.split(r"[._]", path.lower()) if len(w) > 3} & qwords)
+    # Lists inside the record (inputs/outputs…): tables, the one the question names first.
+    props = (schema.get("properties") or {}) if schema else {}
+    lists = [k for k, v in record.items() if isinstance(v, list) and v and isinstance(v[0], dict) and not _is_amounts(v)]
+    asked_lists = [k for k in lists if named(k)] or [k for k in lists if _field_concepts({"path": k}) & q]
+    show_lists = asked_lists or lists[:2]
+    sections = []
+    for k in show_lists:
+        rows = record[k]
+        cols = _auto_fields(rows[0], (props.get(k) or {}).get("items") or {}, table=True)
+        more = f"Showing {MAX_ROWS} of {len(rows)}." if len(rows) > MAX_ROWS else f"{len(rows)} in total."
+        sections.append(f"{humanize(k)}:\n{_table(rows[:MAX_ROWS], cols, channel)}\n{more}")
+
+    flds = _auto_fields(record, schema, table=False)
+    ranked = []
+    for i, f in enumerate(flds):
         v = apiint.get_path(data, f["path"])
-        if v is apiint._MISSING:
+        if v is apiint._MISSING or (isinstance(v, list) and not _is_amounts(v)):
             continue
-        if not fields and target and isinstance(v, str) and v.lower() == target["value"]:
+        if target and isinstance(v, str) and v.lower() == target["value"]:
             continue                      # the value the user asked about
+        asked = named(f["path"]) or bool(_field_concepts(f) & q)
+        if not asked and (_empty(v) or (_zero(v) and (f["path"].endswith("_count") or f.get("unit")))):
+            continue                      # empty values and zero counts nobody asked about
+        rank = 0 if asked else 1 if (f.get("unit") or f.get("format") == "timestamp" or _is_amounts(v)) else 2
         label = f.get("label") or humanize(f["path"])
-        val = _value_text(v, f, cell=not fields)
-        lines.append(f"• **{label}:** {val}" if md else f"{label}: {val}")
-    if not lines:
-        lines = [f"{json.dumps(data, ensure_ascii=False)[:300]}"]
-    extra = len(lines) - MAX_LINES
-    body = "\n".join(lines[:MAX_LINES]) + (f"\n…and {extra} more field{'s' if extra != 1 else ''}." if extra > 0 else "")
-    return {"kind": "single", "text": f"{head}\n{body}"}
+        ranked.append((rank, i, label, _value_text(v, f, cell=True)))
+    ranked.sort()
+    limit = MAX_SHOWN if not sections else 4
+    shown, rest = ranked[:limit], ranked[limit:]
+    lines = [f"• **{l}:** {v}" if md else f"{l}: {v}" for _, _, l, v in shown]
+    if asked_lists:
+        lines = []                        # the question is about the list: show just that
+        rest = ranked
+    body = "\n".join(lines + sections) or json.dumps(data, ensure_ascii=False)[:300]
+    details = "\n".join(f"{l}: {v}" for _, _, l, v in sorted(rest, key=lambda x: x[1]))
+    return {"kind": "single", "text": f"{head}\n{body}", "details": details}
 
 
 def documented_fields(endpoint: Mapping[str, Any]) -> List[Dict[str, Any]]:

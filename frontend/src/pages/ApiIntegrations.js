@@ -615,7 +615,12 @@ function ConnectionPanel({ integration, endpoints, onChanged }) {
   );
 }
 
-const KIND_LABEL = { payment_address: "Payment address", stake_address: "Stake address", tx_hash: "Transaction hash", block_hash: "Block hash", hash: "64-character hash (type unclear)" };
+const KIND_LABEL = {
+  payment_address: "Payment address", stake_address: "Stake address", tx_hash: "Transaction hash", block_hash: "Block hash", hash: "64-character hash (type unclear)",
+  pool_id: "Stake pool id", drep_id: "DRep id", committee_credential: "Committee credential", gov_action: "Governance action id",
+  epoch_number: "Epoch number", slot_number: "Slot number", block_number: "Block number", metadata_label: "Metadata label", proposal_index: "Proposal index",
+};
+const kindLabel = (k) => KIND_LABEL[k] || k;
 const NETWORKS = [["mainnet", "Cardano mainnet"], ["testnet", "Cardano testnet (preprod / preview)"], ["any", "Any network"]];
 const CHANNELS = [["web", "Web chat"], ["discord", "Discord"], ["api", "External API"]];
 const FORMATTED_KIND = {
@@ -642,7 +647,7 @@ function BotPanel({ integration, onChanged }) {
           <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Bot answers from {integration.name}</p>
           <p style={{ ...T.hint, margin: "4px 0 0" }} data-testid="integ-bot-summary">
             <span data-testid="integ-bot-usable">{integration.get_endpoint_count} GET endpoints imported; the bot can use {integration.bot_usable_count}</span>
-            {" "}(from a payment address, stake address, transaction or block hash, or no input).
+            {" "}(from addresses, transaction and block hashes, pool, DRep, committee and governance action ids, epoch, slot, block and label numbers, or no input).
             {integration.disabled_endpoint_count ? ` ${integration.disabled_endpoint_count} turned off.` : ""}
             {integration.formatted_endpoint_count ? ` ${integration.formatted_endpoint_count} with custom formatting.` : ""}
             {" "}Usable ones are on by default; turn individual ones off below.
@@ -777,8 +782,8 @@ function AskTester({ integrations }) {
             <p style={T.monoLabel}>Detected input</p>
             <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }} data-testid="ask-inputs">
               {d.inputs.length === 0 && d.invalid.length === 0 && <span style={T.hint}>None — a question without an address or hash.</span>}
-              {d.inputs.map((i) => <Pill key={i.value} color={colors.brand.light || colors.brand.primary} testid={`ask-input-${i.kind}`}>{KIND_LABEL[i.kind]}{i.network ? ` · ${i.network}` : ""}{i.address_type ? ` · ${i.address_type}` : ""}</Pill>)}
-              {d.invalid.map((i) => <Pill key={i.value} color={colors.brand.error} testid="ask-input-invalid">Invalid {KIND_LABEL[i.kind].toLowerCase()}: {i.reason}</Pill>)}
+              {d.inputs.map((i) => <Pill key={`${i.kind}:${i.value}`} color={colors.brand.light || colors.brand.primary} testid={`ask-input-${i.kind}`}>{kindLabel(i.kind)}{i.network ? ` · ${i.network}` : ""}{i.address_type ? ` · ${i.address_type}` : ""}</Pill>)}
+              {d.invalid.map((i) => <Pill key={`${i.kind}:${i.value}`} color={colors.brand.error} testid="ask-input-invalid">Invalid {kindLabel(i.kind).toLowerCase()}: {i.reason}</Pill>)}
             </div>
           </div>
           <div data-testid="ask-decision">
@@ -794,6 +799,9 @@ function AskTester({ integrations }) {
             {(d.action === "ask" || d.action === "reject") && (
               <p style={{ margin: 0, fontSize: "13px", color: d.action === "reject" ? colors.brand.warning : colors.text.primary }}>
                 {d.action === "ask" ? "The bot asks:" : "The bot replies:"} <span data-testid="ask-bot-reply">{res.bot_reply}</span>
+                {d.action === "ask" && d.endpoint && <span style={{ display: "block", ...T.hint }} data-testid="ask-missing">
+                  For <span style={{ fontFamily: fonts.mono }}>{d.endpoint.id}</span>{d.expect ? `, which also needs a ${kindLabel(d.expect).toLowerCase()}` : ""}.</span>}
+                {d.action === "ask" && <span style={{ display: "block", ...T.hint }}>In a conversation, the bot remembers this question for 10 minutes, so a short answer completes the lookup.</span>}
               </p>
             )}
           </div>
@@ -802,6 +810,12 @@ function AskTester({ integrations }) {
               <p style={T.monoLabel}>Formatted preview ({CHANNELS.find(([v]) => v === channel)[1]}) — <span style={{ color: FORMATTED_KIND[res.formatted.kind][1] }} data-testid="ask-kind">{FORMATTED_KIND[res.formatted.kind][0]}</span>
                 {res.result?.http_status != null ? ` · HTTP ${res.result.http_status} · ${res.result.duration_ms} ms` : ""}</p>
               <pre data-testid="ask-preview" style={{ margin: 0, padding: "10px", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: fonts.mono, color: colors.text.primary, backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.subtle}` }}>{res.formatted.text}</pre>
+              {res.formatted.details && (
+                <details data-testid="ask-details">
+                  <summary style={{ ...T.hint, cursor: "pointer" }}>Other fields the bot can use for follow-up questions</summary>
+                  <pre style={{ margin: "6px 0 0", padding: "10px", whiteSpace: "pre-wrap", fontSize: "11px", fontFamily: fonts.mono, color: colors.text.secondary, backgroundColor: colors.bg.base, borderRadius: "8px" }}>{res.formatted.details}</pre>
+                </details>
+              )}
               {res.result?.request_url && <p style={{ ...T.hint, fontFamily: fonts.mono, wordBreak: "break-all" }} data-testid="ask-request">GET {res.result.request_url}</p>}
             </div>
           )}
@@ -837,7 +851,7 @@ function EndpointTable({ integration, endpoints, onChanged }) {
       await onChanged();
     } catch (err) { toast.error(detail(err, "Couldn't change the endpoint")); }
   };
-  const accepts = (e) => (e.accepts.length ? e.accepts.map((k) => KIND_LABEL[k]).join(" or ") : "no input");
+  const accepts = (e) => (e.needs?.length ? e.needs.map((ks) => ks.map(kindLabel).join(" or ")).join(" + ") : "no input");
   return (
     <div style={{ marginBottom: "16px" }} data-testid="endpoint-section">
       <button style={T.btnGhost} onClick={() => setOpen((v) => !v)} data-testid="endpoints-toggle">{open ? "Hide endpoints" : `Show endpoints (${endpoints.length})`}</button>

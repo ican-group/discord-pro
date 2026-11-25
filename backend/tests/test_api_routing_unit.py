@@ -102,11 +102,14 @@ def test_parameter_kinds_from_documentation():
     eps = {e["id"]: e for e in GS_EPS + MOCK_EPS}
     kinds = lambda i: [k for req in r.endpoint_requirements(eps[i]) for k in req["kinds"]]
     assert kinds("GET /api/txs/{hash}") == ["tx_hash"]
-    assert kinds("GET /api/blocks/{hash_or_number}") == ["block_hash"]
+    assert kinds("GET /api/blocks/{hash_or_number}") == ["block_hash", "block_number"]
     assert kinds("GET /api/addresses/{address}") == ["payment_address"]
     assert kinds("GET /api/accounts/{stake_address}/rewards") == ["stake_address"]
-    assert kinds("GET /txs/{hash}") == ["tx_hash"] and kinds("GET /blocks/{hash_or_number}") == ["block_hash"]
-    assert r.endpoint_requirements(eps["GET /api/pools/{pool_id}"]) is None          # can't be filled
+    assert kinds("GET /txs/{hash}") == ["tx_hash"] and kinds("GET /blocks/{hash_or_number}") == ["block_hash", "block_number"]
+    assert kinds("GET /api/pools/{pool_id}") == ["pool_id"]                          # spec 019
+    assert kinds("GET /api/epochs/{number}") == ["epoch_number"]
+    assert kinds("GET /api/governance/proposals/{tx_hash}/{cert_index}/votes") == ["tx_hash", "proposal_index"]
+    assert kinds("GET /api/governance/committee/members/{credential}") == ["committee_credential"]
     assert r.endpoint_requirements(eps["GET /api/network"]) == []                    # no input
 
 
@@ -280,19 +283,45 @@ def test_call_blocks_private_destinations():
 
 # ── formatting ──
 
-def fmt(path, data, channel="web", fields=None, target=None, status="ok"):
+def fmt(path, data, channel="web", fields=None, target=None, status="ok", question=""):
     return r.format_result({"status": status, "data": data, "message": "The API had a server error (HTTP 500)."},
-                           provider="GridScan", endpoint=EPS["GET " + path], channel=channel, fields=fields, target=target)
+                           provider="GridScan", endpoint=EPS["GET " + path], channel=channel, fields=fields, target=target,
+                           question=question)
 
 
 def test_single_result_labelled_list_with_documented_units():
     out = fmt("/api/txs/{hash}", example("/api/txs/{hash}"), target={"kind": "tx_hash", "value": TX})
     t = out["text"]
     assert out["kind"] == "single" and t.startswith("GridScan — Tx Info for ed3551406390…837ae125")
-    assert "Fees: 0.172365 ADA" in t and "Deposit: 0 ADA" in t                       # lovelace -> ADA; zero kept
+    assert "Fees: 0.172365 ADA" in t                                                  # lovelace -> ADA
     assert "Block time: 2026-11-05 19:47:43 UTC" in t                                 # UNIX time documented
     assert "Hash: " not in t                                                          # the value asked about
-    assert "…and" in t and len(t.splitlines()) <= r.MAX_LINES + 2
+    assert "…and" not in t and len(t.splitlines()) <= r.MAX_SHOWN + 1                 # short, no "more fields" line
+    # amounts and times first; empty values and zero counts nobody asked about are left out
+    body = t.splitlines()[1:]
+    assert body[0].startswith(("Block time", "Fees", "Output amount")) and body[1].startswith(("Block time", "Fees", "Output amount"))
+    assert "Deposit" not in t and "Delegation count" not in t and "Invalid before" not in t
+    # ...but every other field is kept for the bot's follow-up answers
+    assert "Input count: " in out["details"] and "Size: " in out["details"]
+
+
+def test_single_result_puts_what_was_asked_first_and_keeps_a_real_zero():
+    out = fmt("/api/txs/{hash}", example("/api/txs/{hash}"), target={"kind": "tx_hash", "value": TX},
+              question=f"what was the deposit and fee of transaction {TX}?")
+    body = out["text"].splitlines()[1:]
+    assert {body[0], body[1]} == {"Fees: 0.172365 ADA", "Deposit: 0 ADA"}              # asked: first, and a real 0 is shown
+
+
+def test_nested_lists_shown_as_tables():
+    data = example("/api/txs/{hash}/utxos")
+    out = fmt("/api/txs/{hash}/utxos", data, channel="discord", target={"kind": "tx_hash", "value": TX},
+              question=f"show me the inputs for transaction {TX}")
+    t = out["text"]
+    assert "Inputs:" in t and "Outputs:" not in t and "```" in t                        # the list asked about, as a table
+    assert "Amount" in t and "ADA" in t and "Address" in t
+    assert f"{len(data['inputs'])} in total." in t or "Showing" in t
+    both = fmt("/api/txs/{hash}/utxos", data, target={"kind": "tx_hash", "value": TX})["text"]
+    assert "Inputs:" in both and "Outputs:" in both
 
 
 def test_amount_lists_and_nested_objects():
@@ -368,25 +397,147 @@ def test_blockfrost_style_lovelaces_plural():
 
 def test_bot_usability_explains_endpoints_the_bot_cannot_fill():
     by_id = {e["id"]: r.bot_usability(e) for e in GS_EPS}
-    assert by_id["GET /api/addresses/{address}"] == {"usable": True, "accepts": ["payment_address"], "reason": None}
+    assert by_id["GET /api/addresses/{address}"] == {"usable": True, "accepts": ["payment_address"], "needs": [["payment_address"]], "reason": None}
     assert by_id["GET /api/network"]["usable"] is True and by_id["GET /api/network"]["accepts"] == []
-    expected = {
-        "GET /api/pools/{pool_id}": ("pool", "stake pool id (pool1…)"),
-        "GET /api/epochs/{number}": ("number", "a number (epoch number)"),
-        "GET /api/blocks/slot/{slot_number}": ("number", "a number (slot number)"),
-    }
-    for ep_id, (category, label) in expected.items():
-        u = by_id[ep_id]
-        assert u["usable"] is False and (u["reason"]["category"], u["reason"]["label"]) == (category, label), ep_id
-    # the same rule as the router: an endpoint is usable exactly when its requirements can be filled
+    assert by_id["GET /api/governance/proposals/{tx_hash}/{cert_index}/votes"]["needs"] == [["tx_hash"], ["proposal_index"]]
+    # spec 019: pools, epochs, slots, committee credentials and proposals are now usable
+    for ep_id in ("GET /api/pools/{pool_id}", "GET /api/epochs/{number}", "GET /api/blocks/slot/{slot_number}",
+                  "GET /api/blocks/epoch/{epoch_number}/slot/{slot_number}", "GET /api/governance/committee/members/{credential}",
+                  "GET /api/governance/proposals/{tx_hash}/{cert_index}/votes", "GET /api/governance/dreps/{drep_id}",
+                  "GET /api/metadata/txs/labels/{label}"):
+        assert by_id[ep_id]["usable"], ep_id
+    asset = {"method": "GET", "path": "/api/assets/{asset}", "parameters": [{"name": "asset", "in": "path", "required": True,
+             "description": "Native-asset unit: the 56-character policy id immediately followed by the hex-encoded asset name"}]}
+    assert r.bot_usability(asset)["reason"]["category"] == "asset"
+    # the same rule as the router: usable exactly when the requirements can be filled
     for e in GS_EPS:
         reqs = r.endpoint_requirements(e)
-        assert r.bot_usability(e)["usable"] == (reqs is not None and len(reqs) <= 1), e["id"]
+        assert r.bot_usability(e)["usable"] == (reqs is not None and len(reqs) <= r.MAX_REQUIRED), e["id"]
     assert r.bot_usability({"method": "POST", "path": "/x"})["reason"]["category"] == "method"
-    two = {"method": "GET", "path": "/txs/{hash}/{address}", "parameters": [
+    four = {"method": "GET", "path": "/txs/{hash}/{address}/{stake}/{pool}", "parameters": [
         {"name": "hash", "in": "path", "required": True, "description": "Transaction hash"},
-        {"name": "address", "in": "path", "required": True, "description": "Payment address"}]}
-    assert r.bot_usability(two)["reason"]["category"] == "multiple"
+        {"name": "address", "in": "path", "required": True, "description": "Payment address"},
+        {"name": "stake", "in": "path", "required": True, "description": "Stake address"},
+        {"name": "pool", "in": "path", "required": True, "description": "Pool id"}]}
+    assert r.bot_usability(four)["reason"]["category"] == "multiple"
+
+
+# ── spec 019: pool, DRep, committee and governance ids; numbers; follow-up answers ──
+
+import re  # noqa: E402
+
+_RAW = json.dumps(GRIDSCAN)
+POOL = re.findall(r"pool1[02-9ac-hj-np-z]{50,}", _RAW)[0]            # ids from GridScan's documented examples
+CC_COLD = re.findall(r"cc_cold1[02-9ac-hj-np-z]{50,}", _RAW)[0]
+CC_HOT = re.findall(r"cc_hot1[02-9ac-hj-np-z]{50,}", _RAW)[0]
+GOV = re.findall(r"gov_action1[02-9ac-hj-np-z]{50,}", _RAW)[0]
+DREP = r.bech32_encode("drep", bytes([0x22]) + bytes(range(28)))   # CIP-129 key-hash DRep
+DREP_LEGACY = r.bech32_encode("drep", bytes(range(28)))             # CIP-105
+
+
+def test_parse_cardano_ids():
+    assert r.parse_cardano_id(POOL)["kind"] == "pool_id"
+    assert r.parse_cardano_id(CC_COLD)["kind"] == r.parse_cardano_id(CC_HOT)["kind"] == "committee_credential"
+    assert r.parse_cardano_id(DREP)["kind"] == r.parse_cardano_id(DREP_LEGACY)["kind"] == "drep_id"
+    g = r.parse_cardano_id(GOV)
+    hrp, payload = r.bech32_decode(GOV)
+    assert g["kind"] == "gov_action" and g["tx_hash"] == payload[:32].hex() and g["index"] == payload[32]
+    for bad, reason in ((POOL[:-1] + ("q" if POOL[-1] != "q" else "p"), "checksum"),
+                        (r.bech32_encode("pool", bytes(27)), "wrong length"),
+                        (r.bech32_encode("drep", bytes([0x12]) + bytes(28)), "header"),     # a CC cold header on a DRep
+                        (r.bech32_encode("gov_action", bytes(32)), "wrong length")):
+        with pytest.raises(ValueError, match=reason):
+            r.parse_cardano_id(bad)
+
+
+def test_detects_new_inputs():
+    kinds = lambda q: [(i["kind"], i["value"]) for i in r.detect_inputs(q)["inputs"]]
+    assert kinds(f"pool {POOL}") == [("pool_id", POOL)]
+    hrp, payload = r.bech32_decode(GOV)
+    assert kinds(f"votes on {GOV}") == [("tx_hash", payload[:32].hex()), ("proposal_index", str(payload[32]))]
+    assert kinds(f"tally {TX}#2") == [("tx_hash", TX.lower()), ("proposal_index", "2")]
+    assert kinds("epoch 512") == [("epoch_number", "512")] and kinds("epoch #512") == [("epoch_number", "512")]
+    assert kinds("block in epoch 512 slot 1000") == [("epoch_number", "512"), ("slot_number", "1000")]
+    assert kinds("block 11000000") == [("block_number", "11000000")] and kinds("metadata label 674") == [("metadata_label", "674")]
+    for q in ("top 10 pools", "send 2 ADA", "epoch 5.5", "my 3 wallets"):     # numbers need their cue word
+        assert kinds(q) == [], q
+    assert kinds(f"block {TX}") == [("block_hash", TX.lower())]                 # a 64-hex hash isn't a block number
+    bad = r.detect_inputs(f"pool {POOL[:-1]}x")
+    assert bad["inputs"] == [] and bad["invalid"][0]["kind"] == "pool_id"
+
+
+def test_proposal_hashes_skip_saved_lookup():
+    for q in (f"votes on proposal {TX}", f"tally {TX}#0", f"votes on {GOV}"):
+        assert r.saved_lookup_hash(r.detect_inputs(q)) is None, q
+    assert r.saved_lookup_hash(r.detect_inputs(TX)) == TX.lower()
+
+
+@pytest.mark.parametrize("question,endpoint", [
+    (f"pool info {POOL}", "GET /api/pools/{pool_id}"),
+    (f"history of {POOL}", "GET /api/pools/{pool_id}/history"),
+    (f"how did pool {POOL} vote", "GET /api/governance/pools/{pool_id}/votes"),
+    (f"voting power of {POOL}", "GET /api/governance/pools/{pool_id}/voting_power"),
+    (f"drep {DREP}", "GET /api/governance/dreps/{drep_id}"),
+    (f"who delegates to {DREP}", "GET /api/governance/dreps/{drep_id}/delegators"),
+    (f"votes by {DREP_LEGACY}", "GET /api/governance/dreps/{drep_id}/votes"),
+    (f"committee member {CC_COLD}", "GET /api/governance/committee/members/{credential}"),
+    (f"votes of {CC_HOT}", "GET /api/governance/committee/members/{credential}/votes"),
+    (f"proposal {GOV}", "GET /api/governance/proposals/{tx_hash}/{cert_index}"),
+    (f"votes on {GOV}", "GET /api/governance/proposals/{tx_hash}/{cert_index}/votes"),
+    (f"tally for {GOV}", "GET /api/governance/proposals/{tx_hash}/{cert_index}/tally"),
+    (f"timeline of {GOV}", "GET /api/governance/proposals/{tx_hash}/{cert_index}/timeline"),
+    (f"votes on proposal {TX}#0", "GET /api/governance/proposals/{tx_hash}/{cert_index}/votes"),
+    (f"tally of proposal {TX} index 0", "GET /api/governance/proposals/{tx_hash}/{cert_index}/tally"),
+    ("epoch 512", "GET /api/epochs/{number}"),
+    ("blocks in epoch 512", "GET /api/epochs/{number}/blocks"),
+    ("slot 123456789", "GET /api/blocks/slot/{slot_number}"),
+    ("block in epoch 512 slot 1000", "GET /api/blocks/epoch/{epoch_number}/slot/{slot_number}"),
+    ("block 11000000", "GET /api/blocks/{hash_or_number}"),
+    ("transactions with metadata label 674", "GET /api/metadata/txs/labels/{label}"),
+    (f"fee for tx {TX}", "GET /api/txs/{hash}"),                                 # unchanged
+])
+def test_routes_new_inputs(question, endpoint):
+    assert decide(question) == ("call", endpoint)
+
+
+def test_multi_value_call_fills_every_parameter():
+    d = r.route("block in epoch 512 slot 1000", [GS])
+    assert d["values"] == {"epoch_number": "512", "slot_number": "1000"}
+    hrp, payload = r.bech32_decode(GOV)
+    d = r.route(f"votes on {GOV}", [GS])
+    assert d["values"] == {"tx_hash": payload[:32].hex(), "cert_index": str(payload[32])}
+
+
+@pytest.mark.parametrize("question,ask,expect", [
+    (f"votes on proposal {TX}", "Which proposal index in that transaction? It's usually 0.", "proposal_index"),
+    ("What are my staking rewards?", "Which stake address (stake1…) should I look up?", "stake_address"),
+    ("who is my drep?", "Which stake address (stake1…) should I look up?", "stake_address"),   # never "which DRep"
+])
+def test_asks_for_the_missing_value(question, ask, expect):
+    d = r.route(question, [GS])
+    assert (d["action"], d["question"], d["expect"]) == ("ask", ask, expect)
+
+
+@pytest.mark.parametrize("question", ["top 10 pools", "How do DReps work?", "what is a stake pool?", "tell me about epoch boundaries"])
+def test_new_kinds_leave_knowledge_questions_alone(question):
+    assert decide(question)[0] == "none"
+
+
+def test_follow_up_answers_complete_the_lookup():
+    # bare number gets the cue of the kind asked for
+    q = f"votes on proposal {TX}"
+    combined = r.follow_up_text(q, "0", "proposal_index")
+    assert combined == f"{q} index 0" and decide(combined) == ("call", "GET /api/governance/proposals/{tx_hash}/{cert_index}/votes")
+    combined = r.follow_up_text("What are my staking rewards?", STAKE, "stake_address")
+    assert decide(combined) == ("call", "GET /api/accounts/{stake_address}/rewards")
+    assert decide(r.follow_up_text(TX, "block", None)) == ("call", "GET /api/blocks/{hash_or_number}")
+    assert decide(r.follow_up_text(TX, "the transaction", None)) == ("call", "GET /api/txs/{hash}")
+    # not answers
+    assert r.follow_up_text(q, "thanks!", "proposal_index") is None
+    assert r.follow_up_text(q, "512", None) is None                     # a bare number needs a number question
+    assert r.follow_up_text(q, " ".join(["word"] * 13), None) is None    # too long to be an answer
+    assert r.answers_expected("0", "proposal_index") and r.answers_expected(STAKE, "stake_address")
+    assert not r.answers_expected(ADDR, "stake_address") and not r.answers_expected("0", None)
 
 
 # ── what the bot can look up, for its prompt ──
@@ -405,3 +556,33 @@ def test_capability_note_saved_lookup_only_and_nothing():
     assert r.capability_note([]) == ""
     note = r.capability_note([], saved_tx_lookup=True)
     assert "saved lookup" in note and "a transaction hash" in note and "stake address" not in note
+
+
+# ── spec 020: follow-ups about the last thing looked up ──
+
+def test_subject_text_round_trips_through_the_router():
+    d = r.route(f"what was the fee for transaction {TX}?", [GS])
+    subj = r.subject_text(d["inputs"], d["values"])
+    assert subj == f"transaction {TX.lower()}"
+    assert r.detect_inputs(subj)["inputs"][0]["kind"] == "tx_hash"
+    d = r.route(f"votes on {GOV}", [GS])
+    assert r.subject_text(d["inputs"], d["values"]).startswith("proposal ")
+
+
+@pytest.mark.parametrize("question,endpoint", [
+    ("Can you show me the inputs for this transaction?", "GET /api/txs/{hash}/utxos"),
+    ("and the outputs?", "GET /api/txs/{hash}/utxos"),
+    ("what about its metadata?", "GET /api/txs/{hash}/metadata"),
+    ("how big was it in bytes?", "GET /api/txs/{hash}"),                      # no concept word: the record again
+])
+def test_follow_up_about_the_last_transaction(question, endpoint):
+    assert r.about_subject(question)
+    assert decide(f"{question} transaction {TX}") == ("call", endpoint)
+
+
+@pytest.mark.parametrize("question", [
+    "What is an epoch?", "thanks!", "how do I stake my ADA?", f"fee of transaction {TX}", "hello there", "What are fees on Cardano?",
+    "thanks, that's great", "why did it fail?", "How does this work?",
+])
+def test_not_about_the_last_subject(question):
+    assert not r.about_subject(question)
