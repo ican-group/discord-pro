@@ -512,6 +512,49 @@ def _missing_value(q: set, providers: Sequence[Mapping[str, Any]]) -> Optional[s
     return f"Which {' or '.join(labels[k] for k in kinds[:2])} should I look up?"
 
 
+# ═════════════════════════════ what the bot can look up (for its prompt) ═════════════════════════════
+
+_INPUT_PHRASES = {"payment_address": "a Cardano address (addr1…)", "stake_address": "a stake address (stake1…)",
+                  "tx_hash": "a transaction hash", "block_hash": "a block hash"}
+_EXAMPLES = {"stake_address": "What are the staking rewards for stake1…?", "payment_address": "What's the balance of addr1…?",
+             "tx_hash": "What was the fee for transaction <hash>?"}
+
+
+def capability_note(providers: Sequence[Mapping[str, Any]], saved_tx_lookup: bool = False) -> str:
+    """What the bot can look up live, for its prompt when no lookup ran (or alongside one), so it
+    never tells users it can't query the API. Empty when nothing is available."""
+    kinds: List[str] = ["tx_hash"] if saved_tx_lookup else []
+    live = False
+    names: List[str] = []
+    for prov in providers:
+        integ = prov["integration"]
+        net = integ.get("network") or "any"
+        names.append(f"{integ['name']}" + (f" (Cardano {net})" if net != "any" else ""))
+        for ep in prov["endpoints"]:
+            u = bot_usability(ep)
+            if not u["usable"]:
+                continue
+            for k in u["accepts"]:
+                if k in _INPUT_PHRASES and k not in kinds:
+                    kinds.append(k)
+            if not u["accepts"] and _concepts(f"{ep.get('summary') or ''} {' '.join(_literals(ep.get('path') or ''))}") & LIVE_CONCEPTS:
+                live = True
+    if not kinds and not live:
+        return ""
+    order = ["stake_address", "payment_address", "tx_hash", "block_hash"]
+    kinds.sort(key=order.index)
+    wants = [_INPUT_PHRASES[k] for k in kinds]
+    triggers = []
+    if wants:
+        triggers.append("the message includes " + (", ".join(wants[:-1]) + " or " + wants[-1] if len(wants) > 1 else wants[0]))
+    if live:
+        triggers.append("it asks for current network data, such as the network status, the latest block or the current epoch")
+    examples = [_EXAMPLES[k] for k in kinds if k in _EXAMPLES][:2] + (["What's the network status?"] if live else [])
+    source = ", ".join(names) if names else "this workspace's saved lookup"
+    return (f"You can look up live data from {source}. BridgeBot runs the lookup automatically when "
+            f"{', or when '.join(triggers)}. Example questions: " + "; ".join(f'"{e}"' for e in examples) + ".")
+
+
 # ═════════════════════════════ the call ═════════════════════════════
 
 def _optional_query(ep: Mapping[str, Any]) -> Dict[str, str]:

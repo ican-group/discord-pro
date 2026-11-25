@@ -1254,7 +1254,7 @@ async def get_tone_examples_text(instance_id: str, bot_config: dict = None) -> s
     return "\n\n---\n\n".join(parts[:5])
 
 
-def build_system_prompt(bot_config: dict, knowledge_context: str = "", tone_examples: str = "", passive_mode: bool = False, allow_skip: bool = False, lookup_context: str = "") -> str:
+def build_system_prompt(bot_config: dict, knowledge_context: str = "", tone_examples: str = "", passive_mode: bool = False, allow_skip: bool = False, lookup_context: str = "", lookup_hint: str = "") -> str:
     name = bot_config.get("name", "Assistant")
     persona = bot_config.get("persona", "You are a helpful, friendly assistant.")
     custom_instructions = bot_config.get("custom_instructions", "")
@@ -1310,6 +1310,19 @@ def build_system_prompt(bot_config: dict, knowledge_context: str = "", tone_exam
             "- If they say NO (no, never mind, don't bother, skip, etc.) → acknowledge politely and offer to help with something else.\n"
             "- If they ask a completely different question → treat it as a new query and apply the knowledge gate protocol again.\n"
             "Keep your ask short and natural — one sentence is enough."
+        )
+
+    if lookup_hint:
+        # What live lookups this workspace offers, so the bot never says it can't query the API.
+        parts.append(
+            "LIVE API LOOKUPS — WHAT YOU CAN DO:\n" + lookup_hint + "\n"
+            + ("" if lookup_context else
+               "No lookup ran for this message because it contains none of these. ")
+            + "If the user asks whether you can query the API, check live data or look something up, "
+            "say yes and tell them what to send (for example a stake address or a transaction hash), "
+            "or which question to ask. This applies even when the knowledge base has nothing on it. "
+            "Never say you can't access the API or live data, and never claim you looked something "
+            "up unless a lookup result is included below."
         )
 
     if lookup_context:
@@ -1593,7 +1606,7 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     bot_config = await db.bot_config.find_one({"instance_id": instance_id}, {"_id": 0}) or {}
     knowledge = await search_knowledge(user_text, instance_id)
     passive_msg = live_cfg.get("passive_mode", False) and not is_mentioned and not is_dm
-    looked = {"context": "", "reply": None} if passive_msg \
+    looked = {"context": "", "reply": None, "hint": ""} if passive_msg \
         else await _api_lookup_context(instance_id, user_text, bot_config, "discord")
     lookup = looked["context"]
     if looked["reply"]:
@@ -1609,7 +1622,7 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     passive_mode = bool(live_cfg.get("passive_mode", False))
     # In passive mode, allow the LLM to skip unless the user @mentioned the bot or DM'd it
     allow_skip = passive_mode and not is_mentioned and not is_dm
-    system_prompt = build_system_prompt(bot_config, knowledge, tone, passive_mode=passive_mode, allow_skip=allow_skip, lookup_context=lookup)
+    system_prompt = build_system_prompt(bot_config, knowledge, tone, passive_mode=passive_mode, allow_skip=allow_skip, lookup_context=lookup, lookup_hint=looked.get("hint", ""))
     async with (typing() if typing else contextlib.nullcontext()):
         response = await call_claude(session_id, user_text, system_prompt, instance_id=instance_id, platform="discord", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"), effort=bot_config.get("effort"))
     # Passive mode: detect [SKIP] sentinel and stay silent
@@ -2849,10 +2862,13 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
       is the formatted result for the prompt;
     - ``reply`` is one short question (ambiguous or missing value) or an input problem (invalid
       address, wrong network); it is sent as the bot's answer without calling the model."""
-    out = {"context": "", "reply": None}
+    out = {"context": "", "reply": None, "hint": ""}
     try:
         if not bot_config.get("api_lookups_enabled"):
             return out
+        providers = await _apiint_providers(instance_id)
+        has_saved = bool(await db.api_lookups.find_one({"instance_id": instance_id, "kind": "transaction", "enabled": True}, {"_id": 1}))
+        out["hint"] = apiroute.capability_note(providers, saved_tx_lookup=has_saved)
         found = apiroute.detect_inputs(text)
         tx_hash = apiroute.saved_lookup_hash(found)   # an explicit block hash goes to the router
         lookup = await db.api_lookups.find_one(
@@ -2873,7 +2889,6 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
                             f"reason={result.get('reason') or '-'} http={result.get('http_status')} ms={result.get('duration_ms')}")
                 out["context"] = apiint.bot_block(lookup["name"], result)
                 return out
-        providers = await _apiint_providers(instance_id)
         if not providers:
             return out
         decision = apiroute.route(text, providers)
@@ -2919,7 +2934,7 @@ async def send_chat_message(body: ChatMessage):
         response = "I don't have any knowledge base configured yet. Please check back later or contact the administrator to set up my knowledge base."
     else:
         tone = await get_tone_examples_text(instance_id, bot_config)
-        system_prompt = build_system_prompt(bot_config, knowledge, tone, lookup_context=lookup)
+        system_prompt = build_system_prompt(bot_config, knowledge, tone, lookup_context=lookup, lookup_hint=looked.get("hint", ""))
         response = await call_claude(session_id, body.message, system_prompt,
                                     instance_id=instance_id, platform="web", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"), effort=bot_config.get("effort"))
     await save_conversation(session_id, body.message, response, platform="web", instance_id=instance_id)
@@ -4299,7 +4314,7 @@ async def external_chat(
         reply = "I don't have any knowledge base configured yet. Please check back later or contact the administrator."
     else:
         tone = await get_tone_examples_text(instance_id, bot_config)
-        system_prompt = build_system_prompt(bot_config, knowledge, tone, lookup_context=lookup)
+        system_prompt = build_system_prompt(bot_config, knowledge, tone, lookup_context=lookup, lookup_hint=looked.get("hint", ""))
         reply = await call_claude(
             session_id, body.message, system_prompt,
             instance_id=instance_id, platform="api",
