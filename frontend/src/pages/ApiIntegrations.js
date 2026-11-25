@@ -641,11 +641,20 @@ function BotPanel({ integration, onChanged }) {
         <div>
           <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Bot answers from {integration.name}</p>
           <p style={{ ...T.hint, margin: "4px 0 0" }} data-testid="integ-bot-summary">
-            {integration.bot_endpoint_count} GET endpoints can answer from a message (payment address, stake address, transaction or block hash, or no input).
+            <span data-testid="integ-bot-usable">{integration.get_endpoint_count} GET endpoints imported; the bot can use {integration.bot_usable_count}</span>
+            {" "}(from a payment address, stake address, transaction or block hash, or no input).
             {integration.disabled_endpoint_count ? ` ${integration.disabled_endpoint_count} turned off.` : ""}
             {integration.formatted_endpoint_count ? ` ${integration.formatted_endpoint_count} with custom formatting.` : ""}
-            {" "}All are on by default; turn individual ones off below.
+            {" "}Usable ones are on by default; turn individual ones off below.
           </p>
+          {integration.bot_unusable?.length > 0 && (
+            <p style={{ ...T.hint, margin: "4px 0 0" }} data-testid="integ-bot-unusable">
+              Imported but not usable by the bot ({integration.get_endpoint_count - integration.bot_usable_count}): they need{" "}
+              {integration.bot_unusable.map((r, i) => (
+                <span key={r.category} data-category={r.category}>{i ? "; " : ""}{r.summary} ({r.count})</span>
+              ))}. The bot can't read these values from a message, so it never calls them. Filter the table by "Imported, bot can't use" to see them.
+            </p>
+          )}
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <select style={{ ...small, width: "auto" }} value={integration.network} disabled={busy} onChange={(e) => save(integration.bot_enabled, e.target.value)} data-testid="integ-network"
@@ -818,7 +827,8 @@ function EndpointTable({ integration, endpoints, onChanged }) {
     const f = q.trim().toLowerCase();
     return endpoints.filter((e) => (!f || `${e.id} ${e.summary}`.toLowerCase().includes(f))
       && (only === "all" || (only === "untested" ? !e.last_result : only === "used" ? e.used_by.length > 0
-        : only === "bot_off" ? e.bot_disabled : e.last_result?.outcome === only)));
+        : only === "bot_off" ? e.bot_disabled : only === "bot_usable" ? e.routable : only === "bot_unusable" ? (e.method === "GET" && !e.routable)
+        : e.last_result?.outcome === only)));
   }, [endpoints, q, only]);
   const toggle = async (e) => {
     try {
@@ -837,6 +847,7 @@ function EndpointTable({ integration, endpoints, onChanged }) {
           <select style={{ ...small, width: "auto" }} value={only} onChange={(e) => setOnly(e.target.value)} data-testid="endpoints-status-filter">
             <option value="all">All</option><option value="untested">Not tested</option><option value="passed">Passed</option>
             <option value="not_found">Not found for this input</option><option value="failed">Failed</option><option value="used">Used by lookups</option>
+            <option value="bot_usable">Bot can use</option><option value="bot_unusable">Imported, bot can't use</option>
             <option value="bot_off">Turned off for the bot</option>
           </select>
         </div>
@@ -848,7 +859,7 @@ function EndpointTable({ integration, endpoints, onChanged }) {
                 const r = e.last_result; const o = r && OUTCOMES[r.outcome];
                 const usable = e.method === "GET" && e.routable;
                 return (
-                  <tr key={e.id} data-endpoint-id={e.id} data-outcome={r?.outcome || "untested"} data-bot={usable ? (e.bot_disabled ? "off" : "on") : "n/a"} style={{ borderBottom: `1px solid ${colors.border.faint}` }}>
+                  <tr key={e.id} data-endpoint-id={e.id} data-outcome={r?.outcome || "untested"} data-bot={usable ? (e.bot_disabled ? "off" : "on") : e.method === "GET" ? "unusable" : "n/a"} style={{ borderBottom: `1px solid ${colors.border.faint}` }}>
                     <td style={cell}><span style={{ fontFamily: fonts.mono, color: e.method === "GET" ? colors.text.primary : colors.text.muted }}>{e.id}</span>
                       {e.summary && <span style={{ display: "block", color: colors.text.muted }}>{e.summary}</span>}</td>
                     <td style={{ ...cell, color: colors.text.secondary }}>
@@ -863,7 +874,9 @@ function EndpointTable({ integration, endpoints, onChanged }) {
                         <span style={{ display: "block", color: colors.text.muted }}>{accepts(e)}</span>
                         <button style={{ ...T.btnGhost, padding: "2px 6px", fontSize: "11px", marginTop: "2px" }} onClick={() => setEditing(e)} data-testid="endpoint-format-btn">
                           {e.has_format ? "Formatting (custom)" : "Formatting"}</button>
-                      </>) : <span style={{ color: colors.text.muted }}>{e.method !== "GET" ? "read-only calls only" : "needs an input the bot can't recognise"}</span>}
+                      </>) : e.method !== "GET" ? <span style={{ color: colors.text.muted }}>Not used: the bot only makes GET calls</span>
+                        : (<span data-testid="endpoint-bot-unusable"><Pill color={colors.text.muted}>Imported only</Pill>
+                          <span style={{ display: "block", color: colors.text.muted, marginTop: "2px" }}>Bot can't use: needs {e.bot_reason}</span></span>)}
                     </td>
                     <td style={{ ...cell, color: colors.text.secondary }}>{e.used_by.join(", ") || "—"}</td>
                     <td style={cell}>

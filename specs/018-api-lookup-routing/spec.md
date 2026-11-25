@@ -20,8 +20,17 @@ unchanged.
   - Outbound protections: every call goes through spec 015's guard (https, public DNS answers
     only, pinned address, no redirects, same origin and base path, key only to the API).
   - Rate limit: 30 calls per workspace per minute.
-- **Saved transaction lookups still answer transaction hashes first,** as before. A question that
-  names a block goes to the router.
+- **Imported vs usable.** An imported GET endpoint is usable by the bot only when every required
+  value comes from one recognised input, or none is needed (`bot_usability`, the same rule the
+  router applies). The bot panel shows "N GET endpoints imported; the bot can use M". It lists the
+  rest grouped by the value they need: stake pool id, DRep id, committee credential, native asset or
+  policy id, or a number such as an epoch, slot, metadata label or proposal index. In the endpoint
+  table, usable rows have the On/Off switch. The others show "Imported only" and the value they
+  need, and the filters "Bot can use" and "Imported, bot can't use" separate them. For GridScan's
+  document: 89 GET, 60 usable, 29 not.
+- **Saved transaction lookups still answer transaction hashes and bare hashes first,** as before.
+  A hash the question explicitly calls a block goes to the router, even when a saved transaction
+  lookup is enabled. Examples: "block hash …", "which transactions are in block …".
 
 ## 2. Inputs and routing (`backend/api_routing.py`, deterministic)
 
@@ -33,8 +42,10 @@ No language model chooses the endpoint or the values.
     limit, per CIP-5), header type, the header's network id must match the prefix, and payload
     length. Byron addresses aren't recognised.
   - **64-hex hashes** are a transaction hash or a block hash depending on the wording
-    (transaction, tx, utxo, metadata, fee… vs block). With neither, the bot asks: "Is … a
-    transaction hash or a block hash?"
+    (transaction, tx, utxo, metadata, fee… vs block). A cue in the three words before the hash
+    wins: "transactions in block …" is a block, and "what block is transaction … in?" is a
+    transaction. Otherwise a transaction cue anywhere wins over a block cue. With neither, the bot
+    asks: "Is … a transaction hash or a block hash?"
 - **What an endpoint needs:** each required parameter's accepted input is inferred from its name
   and documented description. Examples: "Payment address in bech32 form (`addr1…`)", "Stake
   address", "Transaction hash", "Block hash … or block number".

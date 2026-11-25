@@ -166,7 +166,13 @@ def detect_inputs(text: Any) -> Dict[str, Any]:
         if h in seen:
             continue
         seen.add(h)
-        if words & _TX_CUES:
+        # The cue word right before the hash wins ("transactions in block <hash>", "block hash
+        # <hash>", "which block holds tx <hash>"); otherwise any cue in the message decides.
+        near = next((w for w in reversed(_WORD.findall(stripped[:m.start()].lower())[-3:])
+                     if w in _TX_CUES or w in _BLOCK_CUES), None)
+        if near:
+            kind = "block_hash" if near in _BLOCK_CUES else "tx_hash"
+        elif words & _TX_CUES:
             kind = "tx_hash"
         elif words & _BLOCK_CUES:
             kind = "block_hash"
@@ -176,6 +182,12 @@ def detect_inputs(text: Any) -> Dict[str, Any]:
             kind = "hash"
         inputs.append({"kind": kind, "network": None, "value": h})
     return {"inputs": inputs, "invalid": invalid, "words": words}
+
+
+def saved_lookup_hash(found: Mapping[str, Any]) -> Optional[str]:
+    """The hash a saved transaction lookup (spec 015) answers first: a transaction hash, or a bare
+    hash with no wording (the existing default). An explicit block hash goes to the router."""
+    return next((i["value"] for i in found.get("inputs") or [] if i["kind"] in ("tx_hash", "hash")), None)
 
 
 # ═════════════════════════════ what an endpoint needs ═════════════════════════════
@@ -210,6 +222,49 @@ def endpoint_requirements(ep: Mapping[str, Any]) -> Optional[List[Dict[str, Any]
                 return None
             reqs.append({"name": p["name"], "in": p["in"], "kinds": kinds, "param": p})
     return reqs
+
+
+# What a value the router can't read from a message is, from the parameter's name and description.
+_UNREADABLE = [
+    ("pool", r"\bpool", "stake pool id (pool1…)"),
+    ("drep", r"drep", "DRep id (drep1…)"),
+    ("committee", r"committee|cc_cold|cc_hot", "committee credential (cc_cold1… / cc_hot1…)"),
+    ("asset", r"\bpolicy\b|policy_id|\basset\b|native-asset", "native asset or policy id"),
+]
+
+
+def _unreadable_value(p: Mapping[str, Any]) -> Dict[str, str]:
+    name = str(p.get("name") or "")
+    text = f"{name} {str(p.get('description') or '')}".lower().replace("_", " ")
+    for category, pattern, label in _UNREADABLE:
+        if re.search(pattern, f"{name.lower()} {text}"):
+            if category == "asset":
+                label = "minting policy id" if "policy" in name.lower() else "native asset unit (policy id + asset name)"
+            return {"category": category, "label": label, "param": name}
+    if p.get("type") in ("integer", "number") or re.search(r"\binteger\b|\bnumber\b", text):
+        nice = {"cert_index": "proposal index", "label": "metadata label"}.get(name, name.replace("_", " "))
+        if nice == "number":   # a bare name: take it from the description ("Epoch number (0 is …)")
+            m = re.match(r"\s*([a-z-]+ number)\b", str(p.get("description") or "").lower())
+            nice = m.group(1) if m else nice
+        return {"category": "number", "label": f"a number ({nice})", "param": name}
+    return {"category": "other", "label": f"'{name}'", "param": name}
+
+
+def bot_usability(ep: Mapping[str, Any]) -> Dict[str, Any]:
+    """Whether the router can use an imported endpoint, the inputs it accepts and, when it can't,
+    why: ``{usable, accepts, reason: {category, label, param} | None}``. Same rule as ``route``:
+    GET, and every required value comes from one recognised input (or none is needed)."""
+    if str(ep.get("method") or "").upper() != "GET":
+        return {"usable": False, "accepts": [], "reason": {"category": "method", "label": "only GET (read-only) calls", "param": ""}}
+    reqs = endpoint_requirements(ep)
+    if reqs is None:
+        blocker = next(p for p in ep.get("parameters") or []
+                       if (p.get("in") == "path" or p.get("required")) and not param_kinds(p, ep.get("path") or ""))
+        return {"usable": False, "accepts": [], "reason": _unreadable_value(blocker)}
+    if len(reqs) > 1:
+        return {"usable": False, "accepts": [], "reason": {"category": "multiple", "label": "more than one value from the message",
+                                                            "param": ", ".join(r["name"] for r in reqs)}}
+    return {"usable": True, "accepts": [k for r in reqs for k in r["kinds"]], "reason": None}
 
 
 def _check_schema(value: str, param: Mapping[str, Any]) -> Optional[str]:

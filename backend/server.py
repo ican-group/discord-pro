@@ -2312,11 +2312,35 @@ def _apiint_view(doc: dict, *, lookups: Optional[List[dict]] = None, tested: int
         "connection": doc.get("connection") or {}, "connection_check": doc.get("connection_check"),
         "bot_enabled": bool(doc.get("bot_enabled")), "network": doc.get("network") or "any",
         "network_hint": (doc.get("import") or {}).get("network"),
-        "bot_endpoint_count": sum(1 for e in eps if e["method"] == "GET" and e["id"] not in _apiint_disabled(doc)
-                                  and apiroute.endpoint_requirements(e) is not None),
+        **_apiint_bot_counts(doc, eps),
         "disabled_endpoint_count": len(_apiint_disabled(doc) & ids),
         "formatted_endpoint_count": sum(1 for x in doc.get("endpoint_settings") or [] if x.get("fields") and x["endpoint_id"] in ids),
         "created_at": doc.get("created_at"), "updated_at": doc.get("updated_at"),
+    }
+
+
+def _apiint_bot_counts(doc: dict, eps: List[dict]) -> dict:
+    """Imported GET endpoints vs the ones the bot can actually use (spec 018), and why the rest can't."""
+    disabled = _apiint_disabled(doc)
+    usable, reasons = 0, {}
+    for e in eps:
+        if e["method"] != "GET":
+            continue
+        u = apiroute.bot_usability(e)
+        if u["usable"]:
+            usable += 1
+            continue
+        r = reasons.setdefault(u["reason"]["category"], {"category": u["reason"]["category"], "labels": [], "count": 0})
+        r["count"] += 1
+        if u["reason"]["label"] not in r["labels"]:
+            r["labels"].append(u["reason"]["label"])
+    for r in reasons.values():   # "a number (epoch number, slot number)" rather than one "a number (…)" per parameter
+        nums = [l[len("a number ("):-1] for l in r["labels"] if l.startswith("a number (")]
+        r["summary"] = f"a number ({', '.join(nums)})" if r["category"] == "number" and nums else ", ".join(r["labels"])
+    return {
+        "bot_usable_count": usable,
+        "bot_endpoint_count": usable - sum(1 for e in eps if e["id"] in disabled and apiroute.bot_usability(e)["usable"]),
+        "bot_unusable": sorted(reasons.values(), key=lambda r: -r["count"]),
     }
 
 
@@ -2565,13 +2589,13 @@ async def list_api_endpoints(integration_id: str, instance_id: str = Depends(get
     disabled = _apiint_disabled(doc)
     for e in doc.get("endpoints") or []:
         view = {k: v for k, v in e.items() if k != "response_schema"}
-        reqs = apiroute.endpoint_requirements(e) if e["method"] == "GET" else None
+        usability = apiroute.bot_usability(e)
         view.update(has_response_schema=bool(e.get("response_schema")),
                     response_field_count=apiint.schema_field_count(e.get("response_schema")),
                     used_by=used.get(e["id"], []), last_result=status.get(e["id"]),
                     bot_disabled=e["id"] in disabled, has_format=bool(_apiint_format_fields(doc, e["id"])),
-                    routable=reqs is not None and len(reqs) <= 1,
-                    accepts=[k for r in reqs or [] for k in r["kinds"]])
+                    routable=usability["usable"], accepts=usability["accepts"],
+                    bot_reason=(usability["reason"] or {}).get("label"))
         out.append(view)
     return {"endpoints": out}
 
@@ -2830,19 +2854,19 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
         if not bot_config.get("api_lookups_enabled"):
             return out
         found = apiroute.detect_inputs(text)
-        hashes = [i["value"] for i in found["inputs"] if i["kind"] in ("tx_hash", "hash")]
+        tx_hash = apiroute.saved_lookup_hash(found)   # an explicit block hash goes to the router
         lookup = await db.api_lookups.find_one(
             {"instance_id": instance_id, "kind": "transaction", "enabled": True}, {"_id": 0}, sort=[("created_at", 1)]) \
-            if hashes else None
+            if tx_hash else None
         if lookup:
             integration = await db.api_integrations.find_one(
                 {"instance_id": instance_id, "id": lookup["integration_id"]}, {"_id": 0, "endpoints": 0})
             if integration:
                 if not _api_lookup_allowed(instance_id):
-                    result = {"status": "unavailable", "reason": "rate_limited", "tx_hash": hashes[0],
+                    result = {"status": "unavailable", "reason": "rate_limited", "tx_hash": tx_hash,
                               "message": "Too many lookups right now; try again in a minute."}
                 else:
-                    result = await apiint.run_lookup(integration, lookup, hashes[0], _apiint_secret(integration))
+                    result = await apiint.run_lookup(integration, lookup, tx_hash, _apiint_secret(integration))
                     await _apiint_log(instance_id, lookup, source, result)
                     await _apiint_record_status(instance_id, lookup["integration_id"], lookup.get("endpoint_id"), source, result)
                 logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} saved status={result['status']} "

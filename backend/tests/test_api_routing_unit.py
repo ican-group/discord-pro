@@ -87,6 +87,12 @@ def test_detects_kinds_and_hash_intent():
     assert r.detect_inputs(f"show block {TX}")["inputs"][0]["kind"] == "block_hash"
     assert r.detect_inputs(f"which block holds tx {TX}")["inputs"][0]["kind"] == "tx_hash"
     assert r.detect_inputs(TX)["inputs"][0]["kind"] == "hash"
+    # an explicit block hash stays a block hash even when the question also talks about transactions
+    for q in (f"which transactions are in block {TX}?", f"how many txs in block {TX}",
+              f"what is the tx count of block hash {TX}"):
+        assert r.detect_inputs(q)["inputs"][0]["kind"] == "block_hash", q
+    for q in (f"what block is transaction {TX} in?", f"block containing tx {TX}", f"fees {TX}"):
+        assert r.detect_inputs(q)["inputs"][0]["kind"] == "tx_hash", q
     assert r.detect_inputs("a" * 65)["inputs"] == []                    # longer hex run isn't a hash
     bad = r.detect_inputs(ADDR[:-1] + "x")
     assert bad["inputs"] == [] and "checksum" in bad["invalid"][0]["reason"]
@@ -130,6 +136,21 @@ def decide(q, providers=(GS,)):
 ])
 def test_routes_to_the_endpoint_that_answers(question, endpoint):
     assert decide(question) == ("call", endpoint)
+
+
+@pytest.mark.parametrize("question,endpoint", [
+    (f"block hash {TX}", "GET /api/blocks/{hash_or_number}"),
+    (f"which transactions are in block {TX}?", "GET /api/blocks/{hash_or_number}/txs"),
+    (f"how many txs in block {TX}", "GET /api/blocks/{hash_or_number}/txs"),
+])
+def test_explicit_block_hash_skips_saved_lookup_and_reaches_block_endpoint(question, endpoint):
+    assert r.saved_lookup_hash(r.detect_inputs(question)) is None
+    assert decide(question) == ("call", endpoint)
+
+
+def test_saved_lookup_keeps_transaction_and_bare_hashes():
+    for q in (TX, f"fee of transaction {TX}", f"what block is transaction {TX} in?", f"fees {TX}"):
+        assert r.saved_lookup_hash(r.detect_inputs(q)) == TX.lower(), q
 
 
 @pytest.mark.parametrize("question", [
@@ -341,3 +362,28 @@ def test_blockfrost_style_lovelaces_plural():
     rows = MOCK["paths"]["/accounts/{stake_address}/rewards"]["get"]["responses"]["200"]["content"]["application/json"]["example"]
     t = r.format_result({"status": "ok", "data": rows}, provider="Preprod mock", endpoint=eps["GET /accounts/{stake_address}/rewards"])["text"]
     assert "Amount: 1.25 ADA" in t and "Amount: 0 ADA" in t
+
+
+# ── imported vs usable by the bot ──
+
+def test_bot_usability_explains_endpoints_the_bot_cannot_fill():
+    by_id = {e["id"]: r.bot_usability(e) for e in GS_EPS}
+    assert by_id["GET /api/addresses/{address}"] == {"usable": True, "accepts": ["payment_address"], "reason": None}
+    assert by_id["GET /api/network"]["usable"] is True and by_id["GET /api/network"]["accepts"] == []
+    expected = {
+        "GET /api/pools/{pool_id}": ("pool", "stake pool id (pool1…)"),
+        "GET /api/epochs/{number}": ("number", "a number (epoch number)"),
+        "GET /api/blocks/slot/{slot_number}": ("number", "a number (slot number)"),
+    }
+    for ep_id, (category, label) in expected.items():
+        u = by_id[ep_id]
+        assert u["usable"] is False and (u["reason"]["category"], u["reason"]["label"]) == (category, label), ep_id
+    # the same rule as the router: an endpoint is usable exactly when its requirements can be filled
+    for e in GS_EPS:
+        reqs = r.endpoint_requirements(e)
+        assert r.bot_usability(e)["usable"] == (reqs is not None and len(reqs) <= 1), e["id"]
+    assert r.bot_usability({"method": "POST", "path": "/x"})["reason"]["category"] == "method"
+    two = {"method": "GET", "path": "/txs/{hash}/{address}", "parameters": [
+        {"name": "hash", "in": "path", "required": True, "description": "Transaction hash"},
+        {"name": "address", "in": "path", "required": True, "description": "Payment address"}]}
+    assert r.bot_usability(two)["reason"]["category"] == "multiple"
