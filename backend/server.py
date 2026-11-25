@@ -30,6 +30,7 @@ from urllib.parse import urlparse, urlencode, parse_qsl
 import httpx
 import embed_loader
 import api_integrations as apiint
+import agent_connection as agentconn
 import api_routing as apiroute
 from collections import deque
 
@@ -1691,13 +1692,15 @@ async def _discord_reply(instance_id: str, live_cfg: dict, user_text: str, sessi
     knowledge = await search_knowledge(user_text, instance_id)
     passive_msg = live_cfg.get("passive_mode", False) and not is_mentioned and not is_dm
     looked = {"context": "", "reply": None, "hint": ""} if passive_msg \
-        else await _api_lookup_context(instance_id, user_text, bot_config, "discord", conversation=f"discord:{author_id}:{channel_id}")
+        else await _api_lookup_context(instance_id, user_text, bot_config, "discord", conversation=f"discord:{author_id}:{channel_id}",
+                                       typing=typing)
     lookup = looked["context"]
     if looked["reply"]:
         return looked["reply"]
     if messages := looked.get("discord_messages"):
         if extras is not None:
             extras["messages"] = messages
+            extras["files"] = looked.get("discord_files") or []
         return "\n\n".join(messages)
     if knowledge == "__NO_KB__" and lookup:
         knowledge = ""
@@ -1920,8 +1923,14 @@ async def start_shared_discord_bot(token: str):
                     else:
                         response = f"{message.author.mention} {response}"
                         chunks = [response[i:i + 1990] for i in range(0, len(response), 1990)]
-                for chunk in chunks:
-                    await message.channel.send(chunk)
+                files = extras.get("files") or []
+                for i, chunk in enumerate(chunks):
+                    if files and i == len(chunks) - 1:     # spec 024: a raw response too long to post inline
+                        import io
+                        await message.channel.send(chunk, files=[discord.File(io.BytesIO(f["content"]), filename=f["filename"])
+                                                                 for f in files[:10]])
+                    else:
+                        await message.channel.send(chunk)
             except Exception as e:
                 logger.error(f"Discord message error (instance={instance_id}): {type(e).__name__}: {e}", exc_info=True)
                 err_kind = type(e).__name__
@@ -2413,7 +2422,7 @@ def _apiint_view(doc: dict, *, lookups: Optional[List[dict]] = None, tested: int
     ids = {e["id"] for e in eps}
     used = {l.get("endpoint_id") for l in (lookups or []) if l.get("integration_id") == doc["id"]} & ids
     return {
-        "id": doc["id"], "name": doc["name"], "base_url": doc["base_url"],
+        "id": doc["id"], "name": doc["name"], "base_url": doc["base_url"], "kind": doc.get("kind") or "openapi",
         "auth_type": doc.get("auth_type") or "none", "auth_name": doc.get("auth_name") or "",
         "has_secret": bool(doc.get("secret_enc")), "import": doc.get("import"), "doc_url": doc.get("doc_url") or "",
         "endpoint_count": len(eps), "get_endpoint_count": sum(e["method"] == "GET" for e in eps),
@@ -2586,6 +2595,8 @@ async def list_api_integrations(instance_id: str = Depends(get_instance_access))
         tested[row["_id"]] = row["n"]
     ids_by_integration = {d["id"]: {e["id"] for e in d.get("endpoints") or []} for d in integrations}
     return {"bot_access": bool(config.get("api_lookups_enabled")),
+            "agent_available": bool(agentconn.agent_url()),
+            "agent_active": any(d.get("kind") == agentconn.KIND and d.get("bot_enabled") for d in integrations),
             "integrations": [_apiint_view(d, lookups=lookups, tested=tested.get(d["id"], 0)) for d in integrations],
             "lookups": [_apiint_lookup_view(d, ids_by_integration.get(d["integration_id"], set())) for d in lookups]}
 
@@ -2609,10 +2620,35 @@ async def create_api_integration(body: ApiIntegrationBody, instance_id: str = De
     return _apiint_view(doc)
 
 
+class ApiAgentBody(BaseModel):
+    name: str = Field(agentconn.DEFAULT_NAME, min_length=1, max_length=80)
+
+
+@api_router.post("/api-integrations/agent", status_code=201)
+async def create_api_agent_connection(body: ApiAgentBody, instance_id: str = Depends(get_instance_access)):
+    """Spec 024: a GridScan Agent connection. Its address is the server's GRIDSCAN_AGENT_URL, never
+    one a workspace enters. Bot use starts off; existing integrations are not changed."""
+    url = agentconn.agent_url()
+    if not url:
+        raise HTTPException(422, "GridScan Agent isn't set up on this server (GRIDSCAN_AGENT_URL).")
+    if await db.api_integrations.find_one({"instance_id": instance_id, "kind": agentconn.KIND}, {"_id": 1}):
+        raise HTTPException(409, "This workspace already has a GridScan Agent connection.")
+    if await db.api_integrations.count_documents({"instance_id": instance_id}) >= 20:
+        raise HTTPException(422, "A workspace can have up to 20 API integrations")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {"id": str(uuid.uuid4()), "instance_id": instance_id, "kind": agentconn.KIND, "name": body.name.strip(),
+           "base_url": url, "auth_type": "none", "auth_name": "", "secret_enc": None, "endpoints": [], "import": None,
+           "bot_enabled": False, "network": "mainnet", "created_at": now, "updated_at": now}
+    await db.api_integrations.insert_one(doc)
+    doc.pop("_id", None)
+    return _apiint_view(doc)
+
+
 @api_router.put("/api-integrations/{integration_id}")
 async def update_api_integration(integration_id: str, body: ApiIntegrationBody,
                                  instance_id: str = Depends(get_instance_access)):
-    await _apiint_get(instance_id, integration_id)
+    if (await _apiint_get(instance_id, integration_id)).get("kind") == agentconn.KIND:
+        raise HTTPException(422, "GridScan Agent's address is set on the server; there's nothing to edit here.")
     fields = {**_apiint_fields(body), "updated_at": datetime.now(timezone.utc).isoformat()}
     if body.secret is not None:
         fields["secret_enc"] = _apiint_cipher.encrypt(body.secret.encode()).decode() if body.secret else None
@@ -2638,6 +2674,8 @@ async def import_api_document(integration_id: str, body: ApiIntegrationImport,
     endpoints are matched by method + path; lookups, their formatters and the saved key are never
     changed; a lookup whose endpoint disappeared is reported (it keeps its saved path)."""
     doc = await _apiint_get(instance_id, integration_id)
+    if doc.get("kind") == agentconn.KIND:
+        raise HTTPException(422, "GridScan Agent loads the API documentation itself; there's nothing to import.")
     has_url, has_doc = bool((body.url or "").strip()), body.document is not None
     if has_url == has_doc:
         raise HTTPException(422, "Provide either a documentation URL or a file.")
@@ -2826,11 +2864,43 @@ async def test_api_connection(integration_id: str, instance_id: str = Depends(ge
     doc = await _apiint_get(instance_id, integration_id)
     if not _api_lookup_allowed(instance_id):
         raise HTTPException(429, "Too many API calls right now; try again in a minute.")
-    result = await apiint.connection_check(doc, {e["id"]: e for e in doc.get("endpoints") or []}, _apiint_secret(doc))
+    if doc.get("kind") == agentconn.KIND:
+        result = await _agent_connection_check(instance_id)
+    else:
+        result = await apiint.connection_check(doc, {e["id"]: e for e in doc.get("endpoints") or []}, _apiint_secret(doc))
     result["checked_at"] = datetime.now(timezone.utc).isoformat()
     await db.api_integrations.update_one({"instance_id": instance_id, "id": integration_id},
                                          {"$set": {"connection_check": result}})
     return result
+
+
+async def _agent_connection_check(instance_id: str) -> dict:
+    """Spec 024: is the agent up (GET /api/health), and does its chat endpoint answer
+    (POST /api/chat with "/tools", which the agent answers itself: no model call, no API call)."""
+    url = agentconn.agent_url()
+    if not url:
+        return {"ok": False, "kind": agentconn.KIND, "reachability": {"state": "not_configured", "message": "GRIDSCAN_AGENT_URL isn't set on this server."},
+                "credentials": {"state": "not_required", "message": ""}, "probes": []}
+    h = await agentconn.health(url)
+    probes = [{"label": "Health", "url": f"GET {url}/api/health", "http_status": h["http_status"],
+               "message": h["message"], "duration_ms": h["duration_ms"]}]
+    chat = {"ok": False}
+    if h["ok"]:
+        chat = await agentconn.chat("/tools", agentconn.session_id(instance_id, "connection-test"), url, timeout=30)
+        probes.append({"label": "Chat endpoint", "url": f"POST {url}/api/chat", "http_status": chat["http_status"],
+                       "message": "Answered" if chat["ok"] else chat["error"], "duration_ms": chat["duration_ms"]})
+    ok = bool(h["ok"] and chat["ok"])
+    tools = h.get("tools_loaded")
+    if ok:
+        msg = (f"Agent is up with {tools} API endpoints loaded." if tools else
+               "Agent is up; it loads the API endpoints on its first question.")
+        reach = {"state": "reachable", "message": msg}
+    elif h["http_status"]:
+        reach = {"state": "unhealthy", "message": h["message"] if not h["ok"] else f"Chat endpoint: {chat.get('error')}"}
+    else:
+        reach = {"state": "unreachable", "message": h["message"]}
+    return {"ok": ok, "kind": agentconn.KIND, "reachability": reach, "tools_loaded": tools,
+            "credentials": {"state": "not_required", "message": "The agent holds its own Gridscan key."}, "probes": probes}
 
 
 def _apiint_validated(doc: dict, body: ApiLookupBody, *, require_fields: bool = True) -> dict:
@@ -3016,8 +3086,65 @@ async def _apiint_remember_subject(instance_id: str, conversation: str, subject:
                                               "expires_at": now + timedelta(seconds=apiroute.SUBJECT_SECONDS)}}, upsert=True)
 
 
+async def _agent_lookup_context(instance_id: str, text: str, source: str, conversation: Optional[str],
+                                doc: dict, typing=None) -> dict:
+    """Spec 024: the bot's lookups through GridScan Agent. The agent picks and chains the API calls
+    and remembers this conversation's subjects (its session is per bot and conversation). A raw JSON
+    request is answered with the API responses themselves, posted without the model; anything else
+    gives the bot the agent's answer as lookup data, so the knowledge base and its focus still apply."""
+    out = {"context": "", "reply": None, "hint": agentconn.capability_note((doc.get("connection_check") or {}).get("tools_loaded"))}
+    reply_format = _REPLY_FORMAT.get(source, _REPLY_FORMAT["web"])
+    at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    raw = agentconn.wants_raw(text)
+    if not agentconn.agent_url():
+        result = {"ok": False, "error": "not set up on this server", "tool_calls": [], "duration_ms": 0}
+    elif not _api_lookup_allowed(instance_id):
+        result = {"ok": False, "error": "too many lookups right now; try again in a minute", "tool_calls": [], "duration_ms": 0}
+    else:
+        session = agentconn.session_id(instance_id, conversation or f"{source}:anonymous")
+        async with (typing() if typing else contextlib.nullcontext()):
+            result = await agentconn.chat(agentconn.agent_message(text, raw), session)
+            from_memory = result.get("ok") and not result.get("tool_calls")
+            if from_memory and (raw or agentconn.wants_fresh(text)) and _api_lookup_allowed(instance_id):
+                # The agent answered from memory: for a raw request its model wrote the JSON, and an explicit
+                # "look up …" deserves a fresh call. Ask once more for the API itself.
+                result = await agentconn.chat(agentconn.agent_message(text, raw, refetch=True), session)
+    calls = agentconn.call_summary(result.get("tool_calls") or [])
+    status = ("unavailable" if not result.get("ok") else "no_call" if not calls
+              else "ok" if all(c["ok"] for c in calls) else "partial")
+    try:
+        await db.api_lookup_log.insert_one({
+            "instance_id": instance_id, "lookup_id": None, "integration_id": doc["id"], "endpoint_id": "GridScan Agent",
+            "source": source, "status": status, "reason": result.get("error") or None, "http_status": result.get("http_status"),
+            "duration_ms": result.get("duration_ms"), "agent_calls": calls, "raw": raw,
+            "at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        logger.warning(f"API lookup log failed: {e}")
+    logger.info(f"[API_LOOKUP] instance={instance_id[:12]} source={source} agent status={status} raw={raw} "
+                f"calls={','.join(c['tool'] for c in calls) or '-'} reason={result.get('error') or '-'} ms={result.get('duration_ms')}")
+    if raw:
+        payloads = result.get("raw_json") or []
+        if not result.get("ok") and result.get("http_status"):
+            # The agent answered with an error. Its /raw mode currently fails this way when a response is
+            # over its 50,000-character limit, so suggest a narrower query.
+            out["reply"] = (f"GridScan Agent returned an error ({result.get('error')}), so there's no API response to show. "
+                            "If you asked for a large result, try a narrower query, such as fewer results per page.")
+        elif not result.get("ok"):
+            out["reply"] = f"I couldn't reach GridScan Agent ({result.get('error')}), so there's no API response to show. Please try again shortly."
+        elif not payloads:
+            out["reply"] = agentconn.no_payload_reply(result)
+        elif source == "discord":
+            d = agentconn.raw_discord(payloads, at=at)
+            out["discord_messages"], out["discord_files"] = d["messages"], d["files"]
+        else:
+            out["reply"] = agentconn.raw_text(payloads, at=at, markdown=source == "api")
+        return out
+    out["context"] = agentconn.lookup_block(result, at=at, reply_format=reply_format)
+    return out
+
+
 async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, source: str,
-                              conversation: Optional[str] = None) -> dict:
+                              conversation: Optional[str] = None, typing=None) -> dict:
     """Live API data for the bot (specs 015 + 018), or a direct reply. Only when the workspace opted in.
 
     Returns ``{"context": str, "reply": Optional[str]}``:
@@ -3033,6 +3160,10 @@ async def _api_lookup_context(instance_id: str, text: str, bot_config: dict, sou
     try:
         if not bot_config.get("api_lookups_enabled"):
             return out
+        agent = await db.api_integrations.find_one(
+            {"instance_id": instance_id, "kind": agentconn.KIND, "bot_enabled": True}, {"_id": 0})
+        if agent:       # spec 024: when GridScan Agent is on, it is the bot's only lookup path
+            return await _agent_lookup_context(instance_id, text, source, conversation, agent, typing)
         providers = await _apiint_providers(instance_id)
         has_saved = bool(await db.api_lookups.find_one({"instance_id": instance_id, "kind": "transaction", "enabled": True}, {"_id": 1}))
         out["hint"] = apiroute.capability_note(providers, saved_tx_lookup=has_saved)
