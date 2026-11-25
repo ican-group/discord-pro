@@ -842,6 +842,11 @@ def about_subject(text: Any) -> bool:
     if len(text) > 300 or _HOW_TO.search(text):
         return False
     found = detect_inputs(text)
+    # A bare lookup term ("utxos?", "balance?", "rewards"): a follow-up on the last subject.
+    terms = [w for w in _WORD.findall(text.lower()) if w not in _STOP]
+    if not found["inputs"] and not found["invalid"] and 1 <= len(terms) <= 3 \
+            and all(_WORD_CONCEPT.get(w) or _WORD_CONCEPT.get(w.rstrip("s")) for w in terms):
+        return True
     asks = "?" in text or bool(_known(_concepts(text))) or bool(_QUESTION_START.match(text)) \
         or bool({"show", "list", "detail", "details", "more"} & found["words"])
     return not found["inputs"] and not found["invalid"] and bool(_BACK_REF.search(text)) and asks

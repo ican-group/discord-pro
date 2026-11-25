@@ -694,3 +694,19 @@ def test_discord_displays_exact_utxos_inline(copies):
         {key: row[key] for key in ("txHash", "outputIndex", "lovelace", "assets")}
         for row in records["utxos"]
     ]
+
+
+# ── spec 023: a bare lookup term follows up on the last subject ──
+
+@pytest.mark.parametrize("question,endpoint", [
+    ("utxos?", "GET /api/addresses/{address}/utxos"), ("UTxOs", "GET /api/addresses/{address}/utxos"),
+    ("balance?", "GET /api/addresses/{address}"),
+])
+def test_bare_lookup_term_is_a_follow_up(question, endpoint):
+    assert r.about_subject(question)
+    assert decide(f"{question} {UTXO_ADDR}") == ("call", endpoint)
+
+
+@pytest.mark.parametrize("question", ["thanks?", "ok", "hello", "utxos are confusing, how do they work?", f"utxos? {UTXO_ADDR}"])
+def test_not_a_bare_lookup_term(question):
+    assert not r.about_subject(question)
