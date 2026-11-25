@@ -679,13 +679,18 @@ def test_structured_records_keep_every_raw_value():
     assert r.structured_result(example("/api/txs/{hash}")) is None
 
 
-def test_card_and_utxos_json_come_from_the_same_records():
-    rec = r.structured_result(example("/api/addresses/{address}/utxos"))
-    js = json.loads(r.utxos_json(rec, provider="Grid Scan", operation="GET /api/addresses/{address}/utxos", address=UTXO_ADDR, at="t"))
-    assert js["utxos"] == rec["utxos"] and js["operation"] == "GET /api/addresses/{address}/utxos" and js["count"] == rec["count"]
-    card = r.utxo_card(rec, provider="Grid Scan", address=UTXO_ADDR, at="t")
-    assert UTXO_ADDR in card["description"]
-    for f, u in zip(card["fields"], rec["utxos"]):
-        assert f"`{u['txHash']}#{u['outputIndex']}`" in f["value"] and f"({u['lovelace']} lovelace)" in f["value"]
-        for a in u["assets"][:5]:
-            assert a["policyId"] in f["value"] and a["quantity"] in f["value"]
+@pytest.mark.parametrize("copies", [0, 1, 20])
+def test_discord_displays_exact_utxos_inline(copies):
+    records = r.structured_result(example("/api/addresses/{address}/utxos"))
+    records["utxos"] = records["utxos"][:1] * copies
+    messages = r.discord_utxo_messages(records, provider="Grid Scan", address=UTXO_ADDR, at="t")
+    assert messages[0].startswith("**Grid Scan — Address UTxOs** · Fresh lookup at t")
+    assert (len(messages) > 1) == (copies == 20)
+    assert all(len(message) < 1990 and message.endswith("\n```") for message in messages)
+    payload = "".join(message.split("\n```json\n", 1)[1][:-4] for message in messages)
+    result = json.loads(payload)
+    assert result["address"] == UTXO_ADDR and result["count"] == copies
+    assert result["utxos"] == [
+        {key: row[key] for key in ("txHash", "outputIndex", "lovelace", "assets")}
+        for row in records["utxos"]
+    ]

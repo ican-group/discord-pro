@@ -1159,7 +1159,7 @@ def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping
 
 
 # ═════════════════════════════ structured UTxO records (spec 022) ═════════════════════════════
-# One parse of the raw response: the bot's data, the Discord card and utxos.json all come from it,
+# One parse of the raw response for the bot's data and the Discord display,
 # with full values (addresses, hashes, exact lovelace, policy ids, asset names in hex).
 
 def _amounts_struct(amounts: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -1206,32 +1206,30 @@ def structured_result(data: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _ada(lovelace: Optional[str]) -> str:
-    return apiint.format_value(lovelace, {"scale": 6, "format": "number"}) if lovelace is not None else "?"
-
-
-def utxo_card(structured: Mapping[str, Any], *, provider: str, address: str, at: str, max_fields: int = 10) -> Dict[str, Any]:
-    """A Discord card (embed fields as plain data) for an address's UTxOs, from ``structured``."""
-    utxos = structured.get("utxos") or []
-    total = sum(int(u["lovelace"]) for u in utxos if u.get("lovelace") and str(u["lovelace"]).isdigit())
-    fields = []
-    for i, u in enumerate(utxos[:max_fields]):
-        lines = [f"`{u['txHash']}#{u['outputIndex']}`", f"{_ada(u.get('lovelace'))} ADA ({u.get('lovelace')} lovelace)"]
-        for a in u["assets"][:5]:
-            label = a["assetName"] if a.get("assetName") else (a["assetNameHex"] or "(no name)")
-            lines.append(f"• {a['quantity']} × {label} · policy `{a['policyId']}`")
-        if len(u["assets"]) > 5:
-            lines.append(f"• …and {len(u['assets']) - 5} more assets (in utxos.json)")
-        fields.append({"name": f"UTxO {i + 1}", "value": "\n".join(lines)[:1024]})
-    more = f" · showing {max_fields}" if len(utxos) > max_fields else ""
-    return {"title": f"{provider} — Address UTxOs",
-            "description": f"`{address}`\n{len(utxos)} UTxO{'s' if len(utxos) != 1 else ''} · {_ada(str(total))} ADA in total{more}",
-            "fields": fields, "footer": f"Every UTxO with exact values: utxos.json · looked up {at}"}
-
-
-def utxos_json(structured: Mapping[str, Any], *, provider: str, operation: str, address: str, at: str) -> str:
-    return json.dumps({"source": provider, "operation": operation, "address": address, "lookedUpAt": at,
-                       "count": len(structured.get("utxos") or []), "utxos": structured.get("utxos") or []}, indent=2)
+def discord_utxo_messages(structured: Mapping[str, Any], *, provider: str, address: str, at: str) -> List[str]:
+    """Render exact output values inline, keeping each Discord message independently fenced."""
+    outputs = [
+        {key: row[key] for key in ("txHash", "outputIndex", "lovelace", "assets")}
+        for row in structured["utxos"]
+    ]
+    payload = json.dumps({"address": address, "count": len(outputs), "utxos": outputs}, indent=2)
+    # Asset names are arbitrary text. Escape backticks so they cannot terminate the fence.
+    payload = payload.replace("`", r"\u0060")
+    title = f"**{provider} — Address UTxOs** · Fresh lookup at {at}"
+    parts = []
+    # Leave room for the heading, code fences, and the optional Discord mention.
+    while len(payload) > 1750:
+        end = payload.rfind("\n", 0, 1750) + 1 or 1750
+        parts.append(payload[:end])
+        payload = payload[end:]
+    parts.append(payload)
+    messages = []
+    for index, part in enumerate(parts, 1):
+        heading = title if index == 1 else ""
+        if len(parts) > 1:
+            heading = f"{heading} · JSON part {index}/{len(parts)}" if heading else f"JSON part {index}/{len(parts)}"
+        messages.append(f"{heading}\n```json\n{part}\n```")
+    return messages
 
 
 def documented_fields(endpoint: Mapping[str, Any]) -> List[Dict[str, Any]]:
