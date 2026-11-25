@@ -164,8 +164,32 @@ def test_knowledge_questions_make_no_call(question):
     assert decide(question)[0] == "none"
 
 
+def test_bare_hash_tries_transaction_then_block():
+    d = r.route(TX, [GS])
+    assert d["action"] == "call" and d["endpoint"]["id"] == "GET /api/txs/{hash}"
+    assert d["fallback"]["endpoint"]["id"] == "GET /api/blocks/{hash_or_number}" and d["fallback"]["values"] == {"hash_or_number": TX.lower()}
+    tx_only = {**GS, "endpoints": [e for e in GS_EPS if "/blocks/" not in e["path"]]}
+    assert r.route(TX, [tx_only])["fallback"] is None
+    nothing = {**GS, "endpoints": [e for e in GS_EPS if "/blocks/" not in e["path"] and "/txs/" not in e["path"]]}
+    assert r.route(TX, [nothing])["action"] in ("ask", "none")
+
+
+def test_capability_questions_and_now_make_no_call():
+    for q in ("Ok what abou now can you query a transaction for me", "can you check a transaction for me now?",
+              "can you look up a stake address?"):
+        assert decide(q)[0] == "none", q
+
+
+def test_general_question_and_related_endpoint():
+    assert r.general_question(f"Can you tell me about this transaction {TX}") and r.general_question(TX)
+    assert not r.general_question(f"what was the fee for tx {TX}") and not r.general_question("show me the inputs")
+    eps = {e["id"]: e for e in GS_EPS}
+    assert r.related_endpoint(eps["GET /api/txs/{hash}"], GS_EPS)["id"] == "GET /api/txs/{hash}/utxos"
+    assert r.related_endpoint(eps["GET /api/blocks/{hash_or_number}"], GS_EPS) is None
+    assert r.related_endpoint(eps["GET /api/accounts/{stake_address}"], GS_EPS) is None      # accounts: no extra call
+
+
 @pytest.mark.parametrize("question,ask", [
-    (TX, "transaction hash or a block hash"),
     ("What are my staking rewards?", "Which stake address (stake1…)"),
     ("What's my balance?", "Which stake address (stake1…) or address (addr1…)"),
 ])

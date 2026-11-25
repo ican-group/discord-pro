@@ -399,7 +399,7 @@ _CONCEPTS = {
     "fee": "fee fees cost",
     "status": "status info information tip health healthy state sync synced",
     "network": "network chain blockchain mainnet",
-    "latest": "latest current now newest last tip",
+    "latest": "latest current newest last tip",
     "recent": "recent",
     "delegation": "delegation delegations delegated delegate delegating pool pools staked",
     "history": "history historical",
@@ -512,6 +512,14 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
                            "Please check it and send it again."}
     hashes = [i for i in inputs if i["kind"] == "hash"]
     if hashes and len(inputs) == 1:
+        # A bare hash: most are transactions. Try it as one, and as a block if the provider has no
+        # such transaction (the server calls ``fallback`` on "not found"). Ask only when neither works.
+        as_tx = route(f"{question} transaction", providers)
+        as_block = route(f"{question} block", providers)
+        if as_tx["action"] == "call":
+            return {**as_tx, "fallback": as_block if as_block["action"] == "call" else None}
+        if as_block["action"] == "call":
+            return as_block
         return {**base, "action": "ask", "reason": "hash_kind",
                 "question": f"Is {short(hashes[0]['value'])} a transaction hash or a block hash?"}
 
@@ -803,6 +811,27 @@ def about_subject(text: Any) -> bool:
     asks = "?" in text or bool(_known(_concepts(text))) or bool(_QUESTION_START.match(text)) \
         or bool({"show", "list", "detail", "details", "more"} & found["words"])
     return not found["inputs"] and not found["invalid"] and bool(_BACK_REF.search(text)) and asks
+
+
+def general_question(question: str) -> bool:
+    """A question about a thing as a whole ("tell me about this transaction", a bare hash), not
+    about one detail of it."""
+    return not (_known(_concepts(question)) - {"transaction", "block", "address", "status"})
+
+
+def related_endpoint(ep: Mapping[str, Any], endpoints: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    """For a record endpoint, the provider's endpoint for its inputs and outputs (GridScan's
+    ``/txs/{hash}/utxos``), so a general answer can say where the funds came from and went."""
+    reqs = endpoint_requirements(ep) or []
+    if [r["kinds"] for r in reqs] != [["tx_hash"]]:
+        return None                       # only transactions have inputs and outputs worth fetching
+    base = (ep.get("path") or "").rstrip("/")
+    for other in endpoints:
+        path = (other.get("path") or "").rstrip("/")
+        if path.startswith(base + "/") and path.count("/") == base.count("/") + 1 \
+                and "utxo" in _concepts(path[len(base):]) and endpoint_requirements(other) == endpoint_requirements(ep):
+            return other
+    return None
 
 
 # ═════════════════════════════ the call ═════════════════════════════
