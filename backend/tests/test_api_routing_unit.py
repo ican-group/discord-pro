@@ -610,3 +610,79 @@ def test_follow_up_about_the_last_transaction(question, endpoint):
 ])
 def test_not_about_the_last_subject(question):
     assert not r.about_subject(question)
+
+
+# ── spec 022: explicit UTxO requests, formatting instructions, exact records ──
+
+UTXO_ADDR = "addr1qxqwa25lgphps64rmzx8d8j6xw5tzxujqvr52yc9vwfy5q4duclwzhtj5ancyfpttr638dtsq5nysy96yunc5ssz4t9q7zyg2m"
+UTXO_REQUEST = (f"Run a fresh UTxO lookup for {UTXO_ADDR}  Reply with one JSON code block containing txHash, outputIndex, "
+                "lovelace, and assets for each output.")
+UTXO_REQUEST_PROD = (f"Run a fresh UTxO lookup for {UTXO_ADDR}. Reply with one JSON code block containing txHash, outputIndex, "
+                     "lovelace, and assets for each output. Include each asset’s policyId, assetNameHex, and quantity when "
+                     "available. Use assets: null if you only have a token count. If no fresh lookup runs, say so.")
+
+
+@pytest.mark.parametrize("question,endpoint", [
+    (UTXO_REQUEST, "GET /api/addresses/{address}/utxos"),           # the request as reported, JSON instructions included
+    (UTXO_REQUEST_PROD, "GET /api/addresses/{address}/utxos"),      # as sent on Discord (it called Tx Count)
+    (f"What is the UTXO at this address? {UTXO_ADDR}", "GET /api/addresses/{address}/utxos"),
+    (f"utxos of {UTXO_ADDR} as JSON", "GET /api/addresses/{address}/utxos"),
+    (f"how many transactions has {UTXO_ADDR} made?", "GET /api/addresses/{address}/tx_count"),
+    (f"tx count for {UTXO_ADDR}", "GET /api/addresses/{address}/tx_count"),
+    (f"ok can you query this address {UTXO_ADDR}", "GET /api/addresses/{address}"),
+])
+def test_utxo_requests_call_address_utxos_and_counts_call_tx_count(question, endpoint):
+    assert decide(question) == ("call", endpoint)
+
+
+def test_this_address_follow_up_still_reaches_utxos():
+    for q in ("What is the UTXO at this address?", "What is the UTXO at this address? Reply as JSON."):
+        assert r.about_subject(q), q
+        assert decide(f"{q} {UTXO_ADDR}") == ("call", "GET /api/addresses/{address}/utxos")
+
+
+def test_formatting_instructions_are_not_lookup_intent():
+    assert r.intent_text(UTXO_REQUEST_PROD) == f"Run a fresh UTxO lookup for {UTXO_ADDR}."
+    assert r.intent_text(UTXO_REQUEST).startswith("Run a fresh UTxO lookup for") and "JSON" not in r.intent_text(UTXO_REQUEST)
+    assert r.intent_text("Reply in JSON.") == "Reply in JSON."                       # nothing else: keep it all
+    # "code block" in the instructions no longer makes a bare hash a block hash
+    assert r.detect_inputs(f"{TX}. Reply with one JSON code block.")["inputs"][0]["kind"] == "hash"
+
+
+def test_address_with_stray_prefix_is_rejected():
+    d = r.route(f"Look up the current UTxOs for P{UTXO_ADDR}. Reply with one JSON code block.", [GS])
+    assert d["action"] == "reject" and "extra characters 'P'" in d["message"]
+
+
+def test_utxo_set_is_not_cut_to_ten():
+    eps = {e["id"]: e for e in GS_EPS}
+    assert r._optional_query(eps["GET /api/addresses/{address}/utxos"]) == {}
+    assert r._optional_query(eps["GET /api/accounts/{stake_address}/rewards"]) == {"order": "desc", "count": "10"}
+
+
+def test_structured_records_keep_every_raw_value():
+    raw = example("/api/addresses/{address}/utxos")
+    rec = r.structured_result(raw)
+    assert rec["kind"] == "utxos" and rec["count"] == len(raw)
+    for row, u in zip(raw, rec["utxos"]):
+        assert (u["txHash"], u["outputIndex"], u["address"]) == (row["tx_hash"], row["output_index"], row["address"])   # full values
+        lovelace = [a["quantity"] for a in row["amount"] if a["unit"] == "lovelace"]
+        assert u["lovelace"] == (lovelace[0] if lovelace else None)                                                    # exact string
+        assert [(a["policyId"] + a["assetNameHex"], a["quantity"]) for a in u["assets"]] == \
+               [(a["unit"], a["quantity"]) for a in row["amount"] if a["unit"] != "lovelace"]
+        assert all(len(a["policyId"]) == 56 for a in u["assets"])
+    tx = r.structured_result(example("/api/txs/{hash}/utxos"))
+    assert tx["kind"] == "tx_utxos" and tx["inputs"][0]["txHash"] and tx["outputs"][0]["txHash"] == tx["txHash"]
+    assert r.structured_result(example("/api/txs/{hash}")) is None
+
+
+def test_card_and_utxos_json_come_from_the_same_records():
+    rec = r.structured_result(example("/api/addresses/{address}/utxos"))
+    js = json.loads(r.utxos_json(rec, provider="Grid Scan", operation="GET /api/addresses/{address}/utxos", address=UTXO_ADDR, at="t"))
+    assert js["utxos"] == rec["utxos"] and js["operation"] == "GET /api/addresses/{address}/utxos" and js["count"] == rec["count"]
+    card = r.utxo_card(rec, provider="Grid Scan", address=UTXO_ADDR, at="t")
+    assert UTXO_ADDR in card["description"]
+    for f, u in zip(card["fields"], rec["utxos"]):
+        assert f"`{u['txHash']}#{u['outputIndex']}`" in f["value"] and f"({u['lovelace']} lovelace)" in f["value"]
+        for a in u["assets"][:5]:
+            assert a["policyId"] in f["value"] and a["quantity"] in f["value"]

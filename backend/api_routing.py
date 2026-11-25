@@ -171,6 +171,8 @@ _ADDR_LIKE = re.compile(r"(?<![0-9A-Za-z_])(?:addr_test|addr|stake_test|stake)1[
 _ID_LIKE = re.compile(r"(?<![0-9A-Za-z_])(?:pool|drep_script|drep_vkh|drep_vk|drep|cc_cold_script|cc_cold_vkh|cc_cold_vk|cc_cold"
                       r"|cc_hot_script|cc_hot_vkh|cc_hot_vk|cc_hot|gov_action)1[0-9A-Za-z]{8,}(?![0-9A-Za-z_])", re.I)
 _HEX64 = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+# "Paddr1…": an address with stray characters stuck to the front.
+_ADDR_GLUED = re.compile(r"(?<![0-9A-Za-z_])([0-9A-Za-z]{1,8})((?:addr_test|addr|stake_test|stake)1[0-9A-Za-z]{20,})(?![0-9A-Za-z_])")
 _TX_INDEX = re.compile(r"(?<![0-9A-Fa-f])([0-9A-Fa-f]{64})#(\d{1,3})(?!\d)")
 # A number only counts with its cue word right before it ("epoch 512", "slot #1234", "label 674").
 _NUMBER = re.compile(r"\b(epochs?|slot|block|label|index)\s*(?:no\.?|num(?:ber)?\.?|#)?\s*#?(\d{1,12})(?![\w.])", re.I)
@@ -190,6 +192,25 @@ KIND_LABELS = {"payment_address": "payment address", "stake_address": "stake add
                "block_number": "block number", "metadata_label": "metadata label", "proposal_index": "proposal index"}
 
 
+# Sentences that only say how to format the reply ("Reply with one JSON code block containing
+# txHash…", "Use null for…", "If no fresh lookup runs, say so.") aren't part of what to look up.
+_FORMAT_SENTENCE = re.compile(
+    r"^\W*(please\s+)?(reply|respond|answer|format|return|output|use|include|list each|for each|make sure|do not|don't"
+    r"|if\s+(no|you|the|it|nothing|a|any)|only|keep|add|put|wrap)\b"
+    r"|\b(json|code ?block|markdown|yaml|csv|plain text|bullet points?)\b", re.I)
+
+
+def intent_text(text: Any) -> str:
+    """The part of a message that says what to look up: sentences that only give formatting
+    instructions are left out, unless they carry the address, hash or id (then they stay)."""
+    text = text if isinstance(text, str) else ""
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n+|\s{2,}|\s+(?=(?:please\s+)?(?:reply|respond|answer|format|return)\s+(?:with|in|as|using)\b)",
+                                 text, flags=re.I) if p and p.strip()]
+    kept = [p for p in parts if not _FORMAT_SENTENCE.search(p) or _ADDR_LIKE.search(p) or _ID_LIKE.search(p)
+            or _HEX64.search(p) or _ADDR_GLUED.search(p)]
+    return " ".join(kept) if kept else text
+
+
 def short(value: str) -> str:
     return value if len(value) <= 24 else f"{value[:12]}…{value[-8:]}"
 
@@ -203,7 +224,7 @@ def detect_inputs(text: Any) -> Dict[str, Any]:
       right before it) is a ``tx_hash`` with ``role: proposal``.
     - Numbers only with their cue word: ``epoch 512`` → ``epoch_number``…"""
     text = text[:20000] if isinstance(text, str) else ""
-    words = set(_WORD.findall(text.lower()))
+    words = set(_WORD.findall(intent_text(text).lower()))
     inputs: List[Dict[str, Any]] = []
     invalid: List[Dict[str, Any]] = []
     seen = set()
@@ -221,6 +242,10 @@ def detect_inputs(text: Any) -> Dict[str, Any]:
         except ValueError as exc:
             invalid.append({"value": raw, "reason": str(exc),
                             "kind": "stake_address" if raw.lower().startswith("stake") else "payment_address"})
+    for m in _ADDR_GLUED.finditer(text):
+        extra, rest = m.group(1), m.group(2)
+        invalid.append({"value": m.group(0), "kind": "stake_address" if rest.lower().startswith("stake") else "payment_address",
+                        "reason": f"it has extra characters '{extra}' before '{rest[:5]}…'"})
     for m in _ID_LIKE.finditer(text):
         raw = m.group(0)
         try:
@@ -503,7 +528,8 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
     """
     found = detect_inputs(question)
     inputs, invalid = found["inputs"], found["invalid"]
-    q = _concepts(question)
+    intent = intent_text(question)
+    q = _concepts(intent)
     base = {"inputs": inputs, "invalid": invalid}
     if invalid and not inputs:
         bad = invalid[0]
@@ -561,7 +587,7 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
                     candidates.append(entry)
 
     partial.sort(key=lambda c: -c["score"])
-    if partial and not _HOW_TO.search(question) and partial[0]["score"] >= MISSING_VALUE_MIN \
+    if partial and not _HOW_TO.search(intent) and partial[0]["score"] >= MISSING_VALUE_MIN \
             and (not candidates or partial[0]["score"] > max(c["score"] for c in candidates) + AMBIGUITY_MARGIN):
         need = partial[0]
         kind = need["missing"]["kinds"][0]
@@ -579,7 +605,7 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
             return {**base, "action": "reject", "reason": "network",
                     "message": f"That's a {inp['network']} {KIND_LABELS[inp['kind']]}, but {integ['name']} serves "
                                f"Cardano {integ.get('network')} data. Please send a {other} address ({prefix})."}
-        if not inputs and _PERSONAL.search(question) and not _HOW_TO.search(question):
+        if not inputs and _PERSONAL.search(intent) and not _HOW_TO.search(intent):
             need = _missing_value(q, providers)
             if need:
                 return {**base, "action": "ask", "reason": "missing_value", **need}
@@ -587,14 +613,14 @@ def route(question: str, providers: Sequence[Mapping[str, Any]]) -> Dict[str, An
 
     candidates.sort(key=lambda c: -c["score"])
     # A question that names a network only uses providers for that network.
-    asked_net = "testnet" if re.search(r"\b(testnet|preprod|preview)\b", question, re.I) else \
-        "mainnet" if re.search(r"\bmainnet\b", question, re.I) else None
+    asked_net = "testnet" if re.search(r"\b(testnet|preprod|preview)\b", intent, re.I) else \
+        "mainnet" if re.search(r"\bmainnet\b", intent, re.I) else None
     if asked_net:
         on_net = [c for c in candidates if (c["integration"].get("network") or "any") in ("any", asked_net)]
         candidates = on_net or candidates
     best = candidates[0]
-    if not inputs and (best["score"] < NO_INPUT_MIN or not (q & LIVE_CONCEPTS) or _HOW_TO.search(question)):
-        if _PERSONAL.search(question) and not _HOW_TO.search(question):
+    if not inputs and (best["score"] < NO_INPUT_MIN or not (q & LIVE_CONCEPTS) or _HOW_TO.search(intent)):
+        if _PERSONAL.search(intent) and not _HOW_TO.search(intent):
             need = _missing_value(q, providers)
             if need:
                 return {**base, "action": "ask", "reason": "missing_value", **need}
@@ -805,7 +831,10 @@ def subject_text(found_inputs: Sequence[Mapping[str, Any]], values: Mapping[str,
 
 def about_subject(text: Any) -> bool:
     """A message with no input of its own that asks about the last thing looked up."""
-    if not isinstance(text, str) or len(text) > 300 or _HOW_TO.search(text):
+    if not isinstance(text, str):
+        return False
+    text = intent_text(text)
+    if len(text) > 300 or _HOW_TO.search(text):
         return False
     found = detect_inputs(text)
     asks = "?" in text or bool(_known(_concepts(text))) or bool(_QUESTION_START.match(text)) \
@@ -837,8 +866,12 @@ def related_endpoint(ep: Mapping[str, Any], endpoints: Sequence[Mapping[str, Any
 # ═════════════════════════════ the call ═════════════════════════════
 
 def _optional_query(ep: Mapping[str, Any]) -> Dict[str, str]:
-    """Newest first and a short page when the endpoint documents ``order``/``count``-style options."""
+    """Newest first and a short page when the endpoint documents ``order``/``count``-style options.
+    A UTxO set is current state, not history: it keeps the API's own page size and order."""
     out = {}
+    literals = _literals(ep.get("path") or "")
+    if literals and "utxo" in _concepts(literals[-1]):
+        return out
     for p in ep.get("parameters") or []:
         if p.get("in") != "query" or p.get("required"):
             continue
@@ -1118,6 +1151,82 @@ def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping
     body = "\n".join(lines + sections) or json.dumps(data, ensure_ascii=False)[:300]
     details = "\n".join(f"{l}: {v}" for _, _, l, v in sorted(rest, key=lambda x: x[1]))
     return {"kind": "single", "text": f"{head}\n{body}", "details": details}
+
+
+# ═════════════════════════════ structured UTxO records (spec 022) ═════════════════════════════
+# One parse of the raw response: the bot's data, the Discord card and utxos.json all come from it,
+# with full values (addresses, hashes, exact lovelace, policy ids, asset names in hex).
+
+def _amounts_struct(amounts: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    lovelace, assets = None, []
+    for a in amounts:
+        unit, qty = str(a.get("unit") or ""), str(a.get("quantity") or "0")
+        if unit == "lovelace":
+            lovelace = qty
+        else:
+            name_hex = unit[56:]
+            try:
+                name = bytes.fromhex(name_hex).decode("utf-8") if name_hex else ""
+                name = name if name.isprintable() else None
+            except ValueError:
+                name = None
+            assets.append({"policyId": unit[:56], "assetNameHex": name_hex, "assetName": name, "quantity": qty})
+    return {"lovelace": lovelace, "assets": assets}
+
+
+def _is_utxo(row: Any) -> bool:
+    return isinstance(row, dict) and "output_index" in row and _is_amounts(row.get("amount"))
+
+
+def _utxo(row: Mapping[str, Any], tx_hash: Optional[str] = None) -> Dict[str, Any]:
+    out = {"txHash": row.get("tx_hash") or tx_hash, "outputIndex": row.get("output_index"), "address": row.get("address"),
+           **_amounts_struct(row.get("amount") or [])}
+    for key, name in (("block", "block"), ("tx_index", "txIndex"), ("data_hash", "dataHash"), ("inline_datum", "inlineDatum"),
+                      ("reference_script_hash", "referenceScriptHash"), ("stake_address", "stakeAddress")):
+        if row.get(key) is not None:
+            out[name] = row[key]
+    return out
+
+
+def structured_result(data: Any) -> Optional[Dict[str, Any]]:
+    """Exact UTxO records from a raw response: an address's UTxO list (``kind: utxos``) or a
+    transaction's inputs and outputs (``kind: tx_utxos``). None for anything else."""
+    if isinstance(data, list) and data and all(_is_utxo(r) for r in data):
+        return {"kind": "utxos", "count": len(data), "utxos": [_utxo(r) for r in data]}
+    if isinstance(data, dict) and any(isinstance(data.get(k), list) for k in ("inputs", "outputs")):
+        ins, outs = data.get("inputs") or [], data.get("outputs") or []
+        if all(_is_utxo(r) for r in ins + outs):
+            return {"kind": "tx_utxos", "txHash": data.get("hash"),
+                    "inputs": [_utxo(r) for r in ins], "outputs": [_utxo(r, tx_hash=data.get("hash")) for r in outs]}
+    return None
+
+
+def _ada(lovelace: Optional[str]) -> str:
+    return apiint.format_value(lovelace, {"scale": 6, "format": "number"}) if lovelace is not None else "?"
+
+
+def utxo_card(structured: Mapping[str, Any], *, provider: str, address: str, at: str, max_fields: int = 10) -> Dict[str, Any]:
+    """A Discord card (embed fields as plain data) for an address's UTxOs, from ``structured``."""
+    utxos = structured.get("utxos") or []
+    total = sum(int(u["lovelace"]) for u in utxos if u.get("lovelace") and str(u["lovelace"]).isdigit())
+    fields = []
+    for i, u in enumerate(utxos[:max_fields]):
+        lines = [f"`{u['txHash']}#{u['outputIndex']}`", f"{_ada(u.get('lovelace'))} ADA ({u.get('lovelace')} lovelace)"]
+        for a in u["assets"][:5]:
+            label = a["assetName"] if a.get("assetName") else (a["assetNameHex"] or "(no name)")
+            lines.append(f"• {a['quantity']} × {label} · policy `{a['policyId']}`")
+        if len(u["assets"]) > 5:
+            lines.append(f"• …and {len(u['assets']) - 5} more assets (in utxos.json)")
+        fields.append({"name": f"UTxO {i + 1}", "value": "\n".join(lines)[:1024]})
+    more = f" · showing {max_fields}" if len(utxos) > max_fields else ""
+    return {"title": f"{provider} — Address UTxOs",
+            "description": f"`{address}`\n{len(utxos)} UTxO{'s' if len(utxos) != 1 else ''} · {_ada(str(total))} ADA in total{more}",
+            "fields": fields, "footer": f"Every UTxO with exact values: utxos.json · looked up {at}"}
+
+
+def utxos_json(structured: Mapping[str, Any], *, provider: str, operation: str, address: str, at: str) -> str:
+    return json.dumps({"source": provider, "operation": operation, "address": address, "lookedUpAt": at,
+                       "count": len(structured.get("utxos") or []), "utxos": structured.get("utxos") or []}, indent=2)
 
 
 def documented_fields(endpoint: Mapping[str, Any]) -> List[Dict[str, Any]]:
