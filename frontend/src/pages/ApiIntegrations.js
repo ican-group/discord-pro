@@ -810,6 +810,12 @@ function AskTester({ integrations }) {
               <p style={T.monoLabel}>Formatted preview ({CHANNELS.find(([v]) => v === channel)[1]}) — <span style={{ color: FORMATTED_KIND[res.formatted.kind][1] }} data-testid="ask-kind">{FORMATTED_KIND[res.formatted.kind][0]}</span>
                 {res.result?.http_status != null ? ` · HTTP ${res.result.http_status} · ${res.result.duration_ms} ms` : ""}</p>
               <pre data-testid="ask-preview" style={{ margin: 0, padding: "10px", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: fonts.mono, color: colors.text.primary, backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.subtle}` }}>{res.formatted.text}</pre>
+              {res.formatted.details && (
+                <details data-testid="ask-details">
+                  <summary style={{ ...T.hint, cursor: "pointer" }}>Other fields the bot can use for follow-up questions</summary>
+                  <pre style={{ margin: "6px 0 0", padding: "10px", whiteSpace: "pre-wrap", fontSize: "11px", fontFamily: fonts.mono, color: colors.text.secondary, backgroundColor: colors.bg.base, borderRadius: "8px" }}>{res.formatted.details}</pre>
+                </details>
+              )}
               {res.result?.request_url && <p style={{ ...T.hint, fontFamily: fonts.mono, wordBreak: "break-all" }} data-testid="ask-request">GET {res.result.request_url}</p>}
             </div>
           )}

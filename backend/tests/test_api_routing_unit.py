@@ -283,19 +283,45 @@ def test_call_blocks_private_destinations():
 
 # ── formatting ──
 
-def fmt(path, data, channel="web", fields=None, target=None, status="ok"):
+def fmt(path, data, channel="web", fields=None, target=None, status="ok", question=""):
     return r.format_result({"status": status, "data": data, "message": "The API had a server error (HTTP 500)."},
-                           provider="GridScan", endpoint=EPS["GET " + path], channel=channel, fields=fields, target=target)
+                           provider="GridScan", endpoint=EPS["GET " + path], channel=channel, fields=fields, target=target,
+                           question=question)
 
 
 def test_single_result_labelled_list_with_documented_units():
     out = fmt("/api/txs/{hash}", example("/api/txs/{hash}"), target={"kind": "tx_hash", "value": TX})
     t = out["text"]
     assert out["kind"] == "single" and t.startswith("GridScan — Tx Info for ed3551406390…837ae125")
-    assert "Fees: 0.172365 ADA" in t and "Deposit: 0 ADA" in t                       # lovelace -> ADA; zero kept
+    assert "Fees: 0.172365 ADA" in t                                                  # lovelace -> ADA
     assert "Block time: 2026-11-05 19:47:43 UTC" in t                                 # UNIX time documented
     assert "Hash: " not in t                                                          # the value asked about
-    assert "…and" in t and len(t.splitlines()) <= r.MAX_LINES + 2
+    assert "…and" not in t and len(t.splitlines()) <= r.MAX_SHOWN + 1                 # short, no "more fields" line
+    # amounts and times first; empty values and zero counts nobody asked about are left out
+    body = t.splitlines()[1:]
+    assert body[0].startswith(("Block time", "Fees", "Output amount")) and body[1].startswith(("Block time", "Fees", "Output amount"))
+    assert "Deposit" not in t and "Delegation count" not in t and "Invalid before" not in t
+    # ...but every other field is kept for the bot's follow-up answers
+    assert "Input count: " in out["details"] and "Size: " in out["details"]
+
+
+def test_single_result_puts_what_was_asked_first_and_keeps_a_real_zero():
+    out = fmt("/api/txs/{hash}", example("/api/txs/{hash}"), target={"kind": "tx_hash", "value": TX},
+              question=f"what was the deposit and fee of transaction {TX}?")
+    body = out["text"].splitlines()[1:]
+    assert {body[0], body[1]} == {"Fees: 0.172365 ADA", "Deposit: 0 ADA"}              # asked: first, and a real 0 is shown
+
+
+def test_nested_lists_shown_as_tables():
+    data = example("/api/txs/{hash}/utxos")
+    out = fmt("/api/txs/{hash}/utxos", data, channel="discord", target={"kind": "tx_hash", "value": TX},
+              question=f"show me the inputs for transaction {TX}")
+    t = out["text"]
+    assert "Inputs:" in t and "Outputs:" not in t and "```" in t                        # the list asked about, as a table
+    assert "Amount" in t and "ADA" in t and "Address" in t
+    assert f"{len(data['inputs'])} in total." in t or "Showing" in t
+    both = fmt("/api/txs/{hash}/utxos", data, target={"kind": "tx_hash", "value": TX})["text"]
+    assert "Inputs:" in both and "Outputs:" in both
 
 
 def test_amount_lists_and_nested_objects():
@@ -530,3 +556,33 @@ def test_capability_note_saved_lookup_only_and_nothing():
     assert r.capability_note([]) == ""
     note = r.capability_note([], saved_tx_lookup=True)
     assert "saved lookup" in note and "a transaction hash" in note and "stake address" not in note
+
+
+# ── spec 020: follow-ups about the last thing looked up ──
+
+def test_subject_text_round_trips_through_the_router():
+    d = r.route(f"what was the fee for transaction {TX}?", [GS])
+    subj = r.subject_text(d["inputs"], d["values"])
+    assert subj == f"transaction {TX.lower()}"
+    assert r.detect_inputs(subj)["inputs"][0]["kind"] == "tx_hash"
+    d = r.route(f"votes on {GOV}", [GS])
+    assert r.subject_text(d["inputs"], d["values"]).startswith("proposal ")
+
+
+@pytest.mark.parametrize("question,endpoint", [
+    ("Can you show me the inputs for this transaction?", "GET /api/txs/{hash}/utxos"),
+    ("and the outputs?", "GET /api/txs/{hash}/utxos"),
+    ("what about its metadata?", "GET /api/txs/{hash}/metadata"),
+    ("how big was it in bytes?", "GET /api/txs/{hash}"),                      # no concept word: the record again
+])
+def test_follow_up_about_the_last_transaction(question, endpoint):
+    assert r.about_subject(question)
+    assert decide(f"{question} transaction {TX}") == ("call", endpoint)
+
+
+@pytest.mark.parametrize("question", [
+    "What is an epoch?", "thanks!", "how do I stake my ADA?", f"fee of transaction {TX}", "hello there", "What are fees on Cardano?",
+    "thanks, that's great", "why did it fail?", "How does this work?",
+])
+def test_not_about_the_last_subject(question):
+    assert not r.about_subject(question)

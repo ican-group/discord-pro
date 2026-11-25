@@ -404,7 +404,7 @@ _CONCEPTS = {
     "delegation": "delegation delegations delegated delegate delegating pool pools staked",
     "history": "history historical",
     "asset": "asset assets token tokens nft nfts native",
-    "utxo": "utxo utxos unspent",
+    "utxo": "utxo utxos unspent input inputs output outputs",
     "transaction": "transaction transactions tx txs txn txns",
     "metadata": "metadata",
     "epoch": "epoch epochs",
@@ -727,7 +727,8 @@ def answers_expected(reply: Any, expect: Optional[str]) -> bool:
 # ═════════════════════════════ what the bot can look up (for its prompt) ═════════════════════════════
 
 _INPUT_PHRASES = {"payment_address": "a Cardano address (addr1…)", "stake_address": "a stake address (stake1…)",
-                  "tx_hash": "a transaction hash", "block_hash": "a block hash"}
+                  "tx_hash": "a transaction hash", "block_hash": "a block hash", "pool_id": "a stake pool id (pool1…)",
+                  "drep_id": "a DRep id (drep1…)", "epoch_number": "an epoch number (\"epoch 512\")"}
 _EXAMPLES = {"stake_address": "What are the staking rewards for stake1…?", "payment_address": "What's the balance of addr1…?",
              "tx_hash": "What was the fee for transaction <hash>?"}
 
@@ -753,7 +754,7 @@ def capability_note(providers: Sequence[Mapping[str, Any]], saved_tx_lookup: boo
                 live = True
     if not kinds and not live:
         return ""
-    order = ["stake_address", "payment_address", "tx_hash", "block_hash"]
+    order = ["stake_address", "payment_address", "tx_hash", "block_hash", "pool_id", "drep_id", "epoch_number"]
     kinds.sort(key=order.index)
     wants = [_INPUT_PHRASES[k] for k in kinds]
     triggers = []
@@ -765,6 +766,43 @@ def capability_note(providers: Sequence[Mapping[str, Any]], saved_tx_lookup: boo
     source = ", ".join(names) if names else "this workspace's saved lookup"
     return (f"You can look up live data from {source}. BridgeBot runs the lookup automatically when "
             f"{', or when '.join(triggers)}. Example questions: " + "; ".join(f'"{e}"' for e in examples) + ".")
+
+
+# What was last looked up in a conversation, so "show me the inputs for this transaction" works.
+SUBJECT_SECONDS = 1800
+_BACK_REF = re.compile(r"\b(this|that|it|its|same|those|these|them|the (transaction|tx|block|address|pool|account|proposal))\b"
+                       r"|^\s*(and|also|what about|how about)\b", re.I)
+
+
+_QUESTION_START = re.compile(r"\s*(what|which|when|where|who|how|is|was|were|did|does|do|has|had|can|could|show|list|give|tell)\b", re.I)
+
+
+def subject_text(found_inputs: Sequence[Mapping[str, Any]], values: Mapping[str, str]) -> str:
+    """The inputs a call used, written so the router recognises them again ("transaction <hash>")."""
+    used = set(values.values())
+    parts = []
+    for i in found_inputs:
+        if i["value"] not in used:
+            continue
+        if i["kind"] == "tx_hash":
+            parts.append(f"{'proposal' if i.get('role') == 'proposal' else 'transaction'} {i['value']}")
+        elif i["kind"] == "block_hash":
+            parts.append(f"block {i['value']}")
+        elif i["kind"] in NUMBER_CUES:
+            parts.append(f"{NUMBER_CUES[i['kind']]} {i['value']}")
+        else:
+            parts.append(i["value"])
+    return " ".join(parts)
+
+
+def about_subject(text: Any) -> bool:
+    """A message with no input of its own that asks about the last thing looked up."""
+    if not isinstance(text, str) or len(text) > 300 or _HOW_TO.search(text):
+        return False
+    found = detect_inputs(text)
+    asks = "?" in text or bool(_known(_concepts(text))) or bool(_QUESTION_START.match(text)) \
+        or bool({"show", "list", "detail", "details", "more"} & found["words"])
+    return not found["inputs"] and not found["invalid"] and bool(_BACK_REF.search(text)) and asks
 
 
 # ═════════════════════════════ the call ═════════════════════════════
@@ -844,6 +882,7 @@ _UNIX = re.compile(r"unix (time|timestamp|epoch)|posix time|seconds since (the )
 _IN_ADA = re.compile(r"\bin ada\b", re.I)
 MAX_ROWS = 10
 MAX_LINES = 12
+MAX_SHOWN = 8
 
 
 def unit_spec(description: str) -> Dict[str, Any]:
@@ -917,9 +956,38 @@ def _auto_fields(sample: Any, schema: Optional[Mapping[str, Any]], *, table: boo
         def weight(f):
             v = sample.get(f["path"]) if isinstance(sample, dict) else None
             long_id = isinstance(v, str) and len(v) > 40
-            return (1 if long_id else 0, 0 if f.get("unit") or f.get("format") == "timestamp" else 0)
-        out = sorted(out, key=weight)[:4]
+            amount = _is_amounts(v) or bool(f.get("unit"))
+            return (0 if f["path"] == "address" else 1 if amount else 3 if long_id else 2)
+        out = sorted(out, key=weight)
     return out[:60]
+
+
+def _empty(v: Any) -> bool:
+    return v is None or v == "" or v == [] or v == {}
+
+
+def _zero(v: Any) -> bool:
+    n = apiint._number(v) if isinstance(v, (int, float, str)) and not isinstance(v, bool) else None
+    return n is not None and n == 0
+
+
+def _field_concepts(f: Mapping[str, Any]) -> set:
+    return _known(_concepts(f"{f['path'].replace('.', ' ')} {f.get('label') or ''}"))
+
+
+def _table(rows: Sequence[Any], cols: Sequence[Mapping[str, Any]], channel: str, *, max_cols: int = 4) -> str:
+    """Rows as a channel-suited table; columns empty in every shown row are dropped."""
+    val = lambda r, c: apiint.get_path(r, c["path"]) if apiint.get_path(r, c["path"]) is not apiint._MISSING else None
+    cols = [c for c in cols if any(not _empty(val(r, c)) for r in rows)][:max_cols] or list(cols)[:max_cols]
+    cells = [[_value_text(val(r, c), c, cell=True) for c in cols] for r in rows]
+    labels = [c.get("label") or humanize(c["path"]) for c in cols]
+    if channel == "discord":
+        widths = [max(len(labels[i]), *(len(row[i]) for row in cells)) for i in range(len(cols))]
+        line = lambda vals: "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals)).rstrip()
+        return "```\n" + "\n".join([line(labels)] + [line(r) for r in cells]) + "\n```"
+    if channel == "api":
+        return "\n".join(["| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)] + ["| " + " | ".join(r) + " |" for r in cells])
+    return "\n".join("• " + " · ".join(f"{labels[i]}: {v}" for i, v in enumerate(r)) for r in cells)
 
 
 def _rows(data: Any) -> Optional[list]:
@@ -930,12 +998,17 @@ def _rows(data: Any) -> Optional[list]:
 
 def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping[str, Any],
                   fields: Optional[Sequence[Mapping[str, Any]]] = None, channel: str = "web",
-                  target: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+                  target: Optional[Mapping[str, Any]] = None, question: str = "") -> Dict[str, Any]:
     """The text the tester shows and the bot receives, for ``channel`` web (plain text), discord
     (Markdown, tables in a code block) or api (Markdown with a pipe table).
 
     ``kind``: ``single``, ``list``, ``empty`` (the API answered with no rows: a genuine empty result),
-    ``not_found`` (no match) or ``unavailable`` (couldn't check). Zero values are shown as values."""
+    ``not_found`` (no match) or ``unavailable`` (couldn't check). Zero values are shown as values.
+
+    Without an override, a single record shows the fields the ``question`` asks about first, then
+    amounts and times, skipping empty values and zero counts the question didn't ask about; at
+    most ``MAX_SHOWN`` lines. ``details`` holds every other field for the bot's follow-up answers.
+    Lists inside a record (a transaction's inputs and outputs) are shown as tables."""
     md = channel in ("discord", "api")
     title = f"{provider} — {(endpoint.get('summary') or endpoint.get('path') or '').strip()}"
     about = f" for {short(target['value'])}" if target else ""
@@ -961,36 +1034,61 @@ def format_result(result: Mapping[str, Any], *, provider: str, endpoint: Mapping
         more = f"Showing {len(shown)} of {len(rows)}." if len(rows) > len(shown) else f"{len(rows)} record{'s' if len(rows) != 1 else ''}."
         if not cols or not isinstance(rows[0], dict):
             body = "\n".join(f"• {_value_text(r, {}, cell=True)}" for r in shown)
-            return {"kind": "list", "text": f"{head}\n{body}\n{more}"}
-        cells = [[_value_text(apiint.get_path(r, c['path']) if apiint.get_path(r, c['path']) is not apiint._MISSING else None, c, cell=True)
-                  for c in cols] for r in shown]
-        labels = [c.get("label") or humanize(c["path"]) for c in cols]
-        if channel == "discord":
-            widths = [max(len(labels[i]), *(len(row[i]) for row in cells)) for i in range(len(cols))]
-            line = lambda vals: "  ".join(v.ljust(widths[i]) for i, v in enumerate(vals)).rstrip()
-            body = "```\n" + "\n".join([line(labels)] + [line(r) for r in cells]) + "\n```"
-        elif channel == "api":
-            body = "\n".join(["| " + " | ".join(labels) + " |", "|" + "---|" * len(labels)] +
-                             ["| " + " | ".join(r) + " |" for r in cells])
-        else:
-            body = "\n".join("• " + " · ".join(f"{labels[i]}: {v}" for i, v in enumerate(r)) for r in cells)
-        return {"kind": "list", "text": f"{head}\n{body}\n{more}"}
-    lines = []
-    flds = list(fields) if fields else _auto_fields(data if isinstance(data, dict) else {}, schema, table=False)
-    for f in flds:
+            return {"kind": "list", "text": f"{head}\n{body}\n{more}", "details": ""}
+        body = _table(shown, cols, channel, max_cols=len(cols) if fields else 4)
+        return {"kind": "list", "text": f"{head}\n{body}\n{more}", "details": ""}
+    if fields:                                   # an admin override: exactly these fields, in this order
+        lines = []
+        for f in fields:
+            v = apiint.get_path(data, f["path"])
+            if v is apiint._MISSING:
+                continue
+            label = f.get("label") or humanize(f["path"])
+            val = _value_text(v, f)
+            lines.append(f"• **{label}:** {val}" if md else f"{label}: {val}")
+        body = "\n".join(lines) or json.dumps(data, ensure_ascii=False)[:300]
+        return {"kind": "single", "text": f"{head}\n{body}", "details": ""}
+
+    record = data if isinstance(data, dict) else {}
+    q = _known(_concepts(question)) if question else set()
+    qwords = {w.rstrip("s") for w in _WORD.findall(question.lower()) if len(w) > 3 and w not in _STOP} if question else set()
+    named = lambda path: bool({w.rstrip("s") for w in re.split(r"[._]", path.lower()) if len(w) > 3} & qwords)
+    # Lists inside the record (inputs/outputs…): tables, the one the question names first.
+    props = (schema.get("properties") or {}) if schema else {}
+    lists = [k for k, v in record.items() if isinstance(v, list) and v and isinstance(v[0], dict) and not _is_amounts(v)]
+    asked_lists = [k for k in lists if named(k)] or [k for k in lists if _field_concepts({"path": k}) & q]
+    show_lists = asked_lists or lists[:2]
+    sections = []
+    for k in show_lists:
+        rows = record[k]
+        cols = _auto_fields(rows[0], (props.get(k) or {}).get("items") or {}, table=True)
+        more = f"Showing {MAX_ROWS} of {len(rows)}." if len(rows) > MAX_ROWS else f"{len(rows)} in total."
+        sections.append(f"{humanize(k)}:\n{_table(rows[:MAX_ROWS], cols, channel)}\n{more}")
+
+    flds = _auto_fields(record, schema, table=False)
+    ranked = []
+    for i, f in enumerate(flds):
         v = apiint.get_path(data, f["path"])
-        if v is apiint._MISSING:
+        if v is apiint._MISSING or (isinstance(v, list) and not _is_amounts(v)):
             continue
-        if not fields and target and isinstance(v, str) and v.lower() == target["value"]:
+        if target and isinstance(v, str) and v.lower() == target["value"]:
             continue                      # the value the user asked about
+        asked = named(f["path"]) or bool(_field_concepts(f) & q)
+        if not asked and (_empty(v) or (_zero(v) and (f["path"].endswith("_count") or f.get("unit")))):
+            continue                      # empty values and zero counts nobody asked about
+        rank = 0 if asked else 1 if (f.get("unit") or f.get("format") == "timestamp" or _is_amounts(v)) else 2
         label = f.get("label") or humanize(f["path"])
-        val = _value_text(v, f, cell=not fields)
-        lines.append(f"• **{label}:** {val}" if md else f"{label}: {val}")
-    if not lines:
-        lines = [f"{json.dumps(data, ensure_ascii=False)[:300]}"]
-    extra = len(lines) - MAX_LINES
-    body = "\n".join(lines[:MAX_LINES]) + (f"\n…and {extra} more field{'s' if extra != 1 else ''}." if extra > 0 else "")
-    return {"kind": "single", "text": f"{head}\n{body}"}
+        ranked.append((rank, i, label, _value_text(v, f, cell=True)))
+    ranked.sort()
+    limit = MAX_SHOWN if not sections else 4
+    shown, rest = ranked[:limit], ranked[limit:]
+    lines = [f"• **{l}:** {v}" if md else f"{l}: {v}" for _, _, l, v in shown]
+    if asked_lists:
+        lines = []                        # the question is about the list: show just that
+        rest = ranked
+    body = "\n".join(lines + sections) or json.dumps(data, ensure_ascii=False)[:300]
+    details = "\n".join(f"{l}: {v}" for _, _, l, v in sorted(rest, key=lambda x: x[1]))
+    return {"kind": "single", "text": f"{head}\n{body}", "details": details}
 
 
 def documented_fields(endpoint: Mapping[str, Any]) -> List[Dict[str, Any]]:
