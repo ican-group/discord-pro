@@ -615,15 +615,229 @@ function ConnectionPanel({ integration, endpoints, onChanged }) {
   );
 }
 
-function EndpointTable({ endpoints }) {
+const KIND_LABEL = { payment_address: "Payment address", stake_address: "Stake address", tx_hash: "Transaction hash", block_hash: "Block hash", hash: "64-character hash (type unclear)" };
+const NETWORKS = [["mainnet", "Cardano mainnet"], ["testnet", "Cardano testnet (preprod / preview)"], ["any", "Any network"]];
+const CHANNELS = [["web", "Web chat"], ["discord", "Discord"], ["api", "External API"]];
+const FORMATTED_KIND = {
+  single: ["Result", colors.brand.success], list: ["Results", colors.brand.success], empty: ["Genuine empty result", colors.text.secondary],
+  not_found: ["No match", colors.brand.warning], unavailable: ["API unavailable", colors.brand.error],
+};
+
+// Spec 018: let the bot use this integration's imported GET endpoints, all on by default.
+function BotPanel({ integration, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const save = async (enabled, network) => {
+    setBusy(true);
+    try {
+      await api.put(`/api-integrations/${integration.id}/bot`, { enabled, network });
+      toast.success(enabled ? `The bot can use ${integration.name}` : `The bot won't use ${integration.name}`);
+      await onChanged();
+    } catch (e) { toast.error(detail(e, "Couldn't change bot access")); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ padding: "14px", borderRadius: "10px", border: `1px solid ${colors.border.subtle}`, marginBottom: "16px" }} data-testid="integ-bot-panel">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        <div>
+          <p style={{ ...T.sectionTitle, margin: 0, fontSize: "15px" }}>Bot answers from {integration.name}</p>
+          <p style={{ ...T.hint, margin: "4px 0 0" }} data-testid="integ-bot-summary">
+            <span data-testid="integ-bot-usable">{integration.get_endpoint_count} GET endpoints imported; the bot can use {integration.bot_usable_count}</span>
+            {" "}(from a payment address, stake address, transaction or block hash, or no input).
+            {integration.disabled_endpoint_count ? ` ${integration.disabled_endpoint_count} turned off.` : ""}
+            {integration.formatted_endpoint_count ? ` ${integration.formatted_endpoint_count} with custom formatting.` : ""}
+            {" "}Usable ones are on by default; turn individual ones off below.
+          </p>
+          {integration.bot_unusable?.length > 0 && (
+            <p style={{ ...T.hint, margin: "4px 0 0" }} data-testid="integ-bot-unusable">
+              Imported but not usable by the bot ({integration.get_endpoint_count - integration.bot_usable_count}): they need{" "}
+              {integration.bot_unusable.map((r, i) => (
+                <span key={r.category} data-category={r.category}>{i ? "; " : ""}{r.summary} ({r.count})</span>
+              ))}. The bot can't read these values from a message, so it never calls them. Filter the table by "Imported, bot can't use" to see them.
+            </p>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <select style={{ ...small, width: "auto" }} value={integration.network} disabled={busy} onChange={(e) => save(integration.bot_enabled, e.target.value)} data-testid="integ-network"
+            title={integration.network_hint ? `The documentation suggests ${integration.network_hint}` : ""}>
+            {NETWORKS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <button onClick={() => save(!integration.bot_enabled, integration.network)} disabled={busy} aria-pressed={integration.bot_enabled}
+            style={integration.bot_enabled ? T.btnPrimary : T.btnSecondary} data-testid="integ-bot-toggle">{integration.bot_enabled ? "On" : "Off"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormatEditor({ integration, endpoint, onClose, onSaved }) {
+  const [info, setInfo] = useState(null);
+  const [fields, setFields] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const loadInfo = useCallback(() => api.get(`/api-integrations/${integration.id}/endpoint-fields`, { params: { endpoint_id: endpoint.id } })
+    .then(({ data }) => { setInfo(data); setFields(data.fields.map((f) => ({ decimals: "", ...f }))); })
+    .catch((e) => toast.error(detail(e, "Couldn't load the documented fields"))), [integration.id, endpoint.id]);
+  useEffect(() => { loadInfo(); }, [loadInfo]);
+  const used = new Set(fields.map((f) => f.path));
+  const set = (i, k, v) => setFields((fs) => fs.map((f, j) => (j === i ? { ...f, [k]: v } : f)));
+  const move = (i, d) => setFields((fs) => { const a = [...fs]; const j = i + d; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a; });
+  const save = async (list) => {
+    setSaving(true);
+    try {
+      await api.put(`/api-integrations/${integration.id}/endpoint-settings`, { endpoint_id: endpoint.id, disabled: !!info?.disabled,
+        fields: list.map((f) => ({ ...f, scale: Number(f.scale) || 0, decimals: f.decimals === "" ? null : Number(f.decimals) })) });
+      toast.success(list.length ? "Formatting saved" : "Back to automatic formatting");
+      await Promise.all([onSaved(), loadInfo()]);
+      if (!list.length) onClose();
+    } catch (e) { toast.error(detail(e, "Couldn't save the formatting")); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div style={{ ...T.card, marginTop: "12px" }} data-testid="format-editor">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <p style={{ ...T.sectionTitle, margin: 0, fontSize: "14px" }}>Formatting for <span style={{ fontFamily: fonts.mono }}>{endpoint.id}</span></p>
+        <button style={{ ...T.btnGhost, padding: "4px" }} onClick={onClose} title="Close"><X size={14} /></button>
+      </div>
+      <p style={T.hint}>Without overrides, the bot shows the documented fields with their documented units (Lovelace as ADA, UNIX times as dates). {info?.is_list ? "This endpoint returns a list: fields are per row." : ""}</p>
+      {info && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", maxHeight: "120px", overflow: "auto", marginBottom: "10px" }}>
+          {info.documented.map((d) => (
+            <button key={d.path} disabled={used.has(d.path)} title={d.description} data-testid={`fmt-add-${d.path}`}
+              onClick={() => setFields((fs) => [...fs, { path: d.path, label: d.label, unit: d.unit || "", scale: d.scale || 0, format: d.format || "auto", decimals: "" }])}
+              style={{ ...T.btnGhost, padding: "3px 8px", fontSize: "11px", fontFamily: fonts.mono, opacity: used.has(d.path) ? 0.4 : 1 }}>
+              <Plus size={11} /> {d.path}{d.unit ? ` (${d.unit})` : d.format === "timestamp" ? " (time)" : ""}
+            </button>
+          ))}
+        </div>
+      )}
+      {fields.length > 0 && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }} data-testid="format-fields">
+          <thead><tr>{["Order", "Path", "Label", "Unit", "Decimal shift", "Decimals shown", "Format", ""].map((h) => <th key={h} style={T.th}>{h}</th>)}</tr></thead>
+          <tbody>
+            {fields.map((f, i) => (
+              <tr key={f.path}>
+                <td style={cell}><button style={{ ...T.btnGhost, padding: "2px 6px" }} onClick={() => move(i, -1)} disabled={i === 0} data-testid={`fmt-up-${i}`}>↑</button>
+                  <button style={{ ...T.btnGhost, padding: "2px 6px" }} onClick={() => move(i, 1)} disabled={i === fields.length - 1}>↓</button></td>
+                <td style={{ ...cell, fontFamily: fonts.mono }}>{f.path}</td>
+                <td style={cell}><input style={small} value={f.label} onChange={(e) => set(i, "label", e.target.value)} data-testid={`fmt-label-${i}`} /></td>
+                <td style={cell}><input style={{ ...small, width: "70px" }} value={f.unit} onChange={(e) => set(i, "unit", e.target.value)} data-testid={`fmt-unit-${i}`} /></td>
+                <td style={cell}><input type="number" min="0" max="18" style={{ ...small, width: "64px" }} value={f.scale} onChange={(e) => set(i, "scale", e.target.value)} data-testid={`fmt-scale-${i}`} /></td>
+                <td style={cell}><input type="number" min="0" max="18" style={{ ...small, width: "64px" }} value={f.decimals ?? ""} onChange={(e) => set(i, "decimals", e.target.value)} placeholder="auto" data-testid={`fmt-decimals-${i}`} /></td>
+                <td style={cell}><select style={small} value={f.format} onChange={(e) => set(i, "format", e.target.value)}>{FORMATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></td>
+                <td style={cell}><button style={{ ...T.btnGhost, padding: "4px" }} onClick={() => setFields((fs) => fs.filter((_, j) => j !== i))}><X size={13} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "10px" }}>
+        {info?.fields?.length > 0 && <button style={T.btnGhost} onClick={() => save([])} disabled={saving} data-testid="fmt-reset">Use automatic formatting</button>}
+        <button style={T.btnPrimary} onClick={() => save(fields)} disabled={saving || !fields.length} data-testid="fmt-save"><Save size={14} /> Save formatting</button>
+      </div>
+    </div>
+  );
+}
+
+function AskTester({ integrations }) {
+  const [question, setQuestion] = useState("");
+  const [channel, setChannel] = useState("web");
+  const [scope, setScope] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  const ask = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/api-integrations/ask", { question, channel, integration_id: scope || null });
+      setRes(data);
+    } catch (e) { setRes(null); toast.error(detail(e, "The test failed")); }
+    finally { setBusy(false); }
+  };
+  const d = res?.decision;
+  return (
+    <div style={{ ...T.card, marginBottom: "20px" }} data-testid="ask-tester">
+      <p style={{ ...T.sectionTitle, margin: 0 }}>Test a question</p>
+      <p style={{ ...T.hint, margin: "4px 0 10px" }}>Runs the same input detection, endpoint choice, call and formatter as the bot, and shows each step.</p>
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        <input style={{ ...T.input, flex: "1 1 420px" }} value={question} onChange={(e) => setQuestion(e.target.value)} onFocus={onFocus} onBlur={onBlur}
+          onKeyDown={(e) => { if (e.key === "Enter" && question.trim()) ask(); }}
+          placeholder="e.g. What are the staking rewards for stake1…?" data-testid="ask-input" />
+        <select style={{ ...small, width: "auto" }} value={scope} onChange={(e) => setScope(e.target.value)} data-testid="ask-scope">
+          <option value="">Integrations the bot uses</option>
+          {integrations.map((i) => <option key={i.id} value={i.id}>Only {i.name}</option>)}
+        </select>
+        <select style={{ ...small, width: "auto" }} value={channel} onChange={(e) => setChannel(e.target.value)} data-testid="ask-channel">
+          {CHANNELS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        <button style={{ ...T.btnPrimary, opacity: busy ? 0.6 : 1 }} disabled={busy || !question.trim()} onClick={ask} data-testid="ask-btn">
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Ask
+        </button>
+      </div>
+      {res && (
+        <div style={{ display: "grid", gap: "12px", marginTop: "14px" }} data-testid="ask-result" data-action={d.action}>
+          <div>
+            <p style={T.monoLabel}>Detected input</p>
+            <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }} data-testid="ask-inputs">
+              {d.inputs.length === 0 && d.invalid.length === 0 && <span style={T.hint}>None — a question without an address or hash.</span>}
+              {d.inputs.map((i) => <Pill key={i.value} color={colors.brand.light || colors.brand.primary} testid={`ask-input-${i.kind}`}>{KIND_LABEL[i.kind]}{i.network ? ` · ${i.network}` : ""}{i.address_type ? ` · ${i.address_type}` : ""}</Pill>)}
+              {d.invalid.map((i) => <Pill key={i.value} color={colors.brand.error} testid="ask-input-invalid">Invalid {KIND_LABEL[i.kind].toLowerCase()}: {i.reason}</Pill>)}
+            </div>
+          </div>
+          <div data-testid="ask-decision">
+            <p style={T.monoLabel}>Decision</p>
+            {d.action === "call" && (
+              <p style={{ margin: 0, fontSize: "13px", color: colors.text.primary }}>
+                <b>{d.provider}</b> · <span style={{ fontFamily: fonts.mono }} data-testid="ask-endpoint">{d.endpoint.id}</span>{d.endpoint.summary ? ` — ${d.endpoint.summary}` : ""}
+                <span style={{ color: colors.text.muted }}> · score {d.score}{Object.keys(d.values || {}).length ? ` · ${Object.entries(d.values).map(([k, v]) => `${k} = ${v.length > 24 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v}`).join(", ")}` : ""}</span>
+                {d.alternatives?.length > 0 && <span style={{ display: "block", ...T.hint }}>Next best: {d.alternatives.map((a) => `${a.endpoint} (${a.score})`).join(", ")}</span>}
+              </p>
+            )}
+            {d.action === "none" && <p style={{ ...T.hint, margin: 0 }} data-testid="ask-none">No lookup: nothing in this question for {res.providers.length ? res.providers.join(", ") : "an integration with bot access on"}. The bot answers from the knowledge base.</p>}
+            {(d.action === "ask" || d.action === "reject") && (
+              <p style={{ margin: 0, fontSize: "13px", color: d.action === "reject" ? colors.brand.warning : colors.text.primary }}>
+                {d.action === "ask" ? "The bot asks:" : "The bot replies:"} <span data-testid="ask-bot-reply">{res.bot_reply}</span>
+              </p>
+            )}
+          </div>
+          {res.formatted && (
+            <div>
+              <p style={T.monoLabel}>Formatted preview ({CHANNELS.find(([v]) => v === channel)[1]}) — <span style={{ color: FORMATTED_KIND[res.formatted.kind][1] }} data-testid="ask-kind">{FORMATTED_KIND[res.formatted.kind][0]}</span>
+                {res.result?.http_status != null ? ` · HTTP ${res.result.http_status} · ${res.result.duration_ms} ms` : ""}</p>
+              <pre data-testid="ask-preview" style={{ margin: 0, padding: "10px", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: fonts.mono, color: colors.text.primary, backgroundColor: colors.bg.base, borderRadius: "8px", border: `1px solid ${colors.border.subtle}` }}>{res.formatted.text}</pre>
+              {res.result?.request_url && <p style={{ ...T.hint, fontFamily: fonts.mono, wordBreak: "break-all" }} data-testid="ask-request">GET {res.result.request_url}</p>}
+            </div>
+          )}
+          {res.result?.raw && (
+            <details>
+              <summary style={{ ...T.hint, cursor: "pointer" }}>Raw JSON{res.result.raw_truncated ? " (truncated)" : ""}</summary>
+              <pre data-testid="ask-raw" style={{ margin: "6px 0 0", padding: "10px", maxHeight: "300px", overflow: "auto", fontSize: "11px", fontFamily: fonts.mono, color: colors.text.secondary, backgroundColor: colors.bg.base, borderRadius: "8px" }}>{res.result.raw}</pre>
+            </details>
+          )}
+          {res.result?.quality && <QualityView quality={res.result.quality} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EndpointTable({ integration, endpoints, onChanged }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [only, setOnly] = useState("all");
+  const [editing, setEditing] = useState(null);
   const rows = useMemo(() => {
     const f = q.trim().toLowerCase();
     return endpoints.filter((e) => (!f || `${e.id} ${e.summary}`.toLowerCase().includes(f))
-      && (only === "all" || (only === "untested" ? !e.last_result : only === "used" ? e.used_by.length > 0 : e.last_result?.outcome === only)));
+      && (only === "all" || (only === "untested" ? !e.last_result : only === "used" ? e.used_by.length > 0
+        : only === "bot_off" ? e.bot_disabled : only === "bot_usable" ? e.routable : only === "bot_unusable" ? (e.method === "GET" && !e.routable)
+        : e.last_result?.outcome === only)));
   }, [endpoints, q, only]);
+  const toggle = async (e) => {
+    try {
+      const { data: cur } = await api.get(`/api-integrations/${integration.id}/endpoint-fields`, { params: { endpoint_id: e.id } });
+      await api.put(`/api-integrations/${integration.id}/endpoint-settings`, { endpoint_id: e.id, disabled: !e.bot_disabled, fields: cur.fields });
+      await onChanged();
+    } catch (err) { toast.error(detail(err, "Couldn't change the endpoint")); }
+  };
+  const accepts = (e) => (e.accepts.length ? e.accepts.map((k) => KIND_LABEL[k]).join(" or ") : "no input");
   return (
     <div style={{ marginBottom: "16px" }} data-testid="endpoint-section">
       <button style={T.btnGhost} onClick={() => setOpen((v) => !v)} data-testid="endpoints-toggle">{open ? "Hide endpoints" : `Show endpoints (${endpoints.length})`}</button>
@@ -633,21 +847,37 @@ function EndpointTable({ endpoints }) {
           <select style={{ ...small, width: "auto" }} value={only} onChange={(e) => setOnly(e.target.value)} data-testid="endpoints-status-filter">
             <option value="all">All</option><option value="untested">Not tested</option><option value="passed">Passed</option>
             <option value="not_found">Not found for this input</option><option value="failed">Failed</option><option value="used">Used by lookups</option>
+            <option value="bot_usable">Bot can use</option><option value="bot_unusable">Imported, bot can't use</option>
+            <option value="bot_off">Turned off for the bot</option>
           </select>
         </div>
         <div style={{ maxHeight: "420px", overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }} data-testid="endpoint-table">
-            <thead><tr>{["Endpoint", "Documented", "Used by", "Latest result"].map((h) => <th key={h} style={T.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Endpoint", "Documented", "Bot", "Used by", "Latest result"].map((h) => <th key={h} style={T.th}>{h}</th>)}</tr></thead>
             <tbody>
               {rows.slice(0, 300).map((e) => {
                 const r = e.last_result; const o = r && OUTCOMES[r.outcome];
+                const usable = e.method === "GET" && e.routable;
                 return (
-                  <tr key={e.id} data-endpoint-id={e.id} data-outcome={r?.outcome || "untested"} style={{ borderBottom: `1px solid ${colors.border.faint}` }}>
+                  <tr key={e.id} data-endpoint-id={e.id} data-outcome={r?.outcome || "untested"} data-bot={usable ? (e.bot_disabled ? "off" : "on") : e.method === "GET" ? "unusable" : "n/a"} style={{ borderBottom: `1px solid ${colors.border.faint}` }}>
                     <td style={cell}><span style={{ fontFamily: fonts.mono, color: e.method === "GET" ? colors.text.primary : colors.text.muted }}>{e.id}</span>
                       {e.summary && <span style={{ display: "block", color: colors.text.muted }}>{e.summary}</span>}</td>
                     <td style={{ ...cell, color: colors.text.secondary }}>
                       {e.has_response_schema ? `${e.response_field_count} response fields` : "no response schema"}
                       <span style={{ display: "block", color: colors.text.muted }}>{e.requires_auth === true ? "needs a key" : e.requires_auth === false ? "public" : "auth not stated"}</span></td>
+                    <td style={{ ...cell, color: colors.text.secondary }}>
+                      {usable ? (<>
+                        <label style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                          <input type="checkbox" checked={!e.bot_disabled} onChange={() => toggle(e)} data-testid="endpoint-bot-checkbox" aria-label={`Bot can use ${e.id}`} />
+                          {e.bot_disabled ? "Off" : "On"}
+                        </label>
+                        <span style={{ display: "block", color: colors.text.muted }}>{accepts(e)}</span>
+                        <button style={{ ...T.btnGhost, padding: "2px 6px", fontSize: "11px", marginTop: "2px" }} onClick={() => setEditing(e)} data-testid="endpoint-format-btn">
+                          {e.has_format ? "Formatting (custom)" : "Formatting"}</button>
+                      </>) : e.method !== "GET" ? <span style={{ color: colors.text.muted }}>Not used: the bot only makes GET calls</span>
+                        : (<span data-testid="endpoint-bot-unusable"><Pill color={colors.text.muted}>Imported only</Pill>
+                          <span style={{ display: "block", color: colors.text.muted, marginTop: "2px" }}>Bot can't use: needs {e.bot_reason}</span></span>)}
+                    </td>
                     <td style={{ ...cell, color: colors.text.secondary }}>{e.used_by.join(", ") || "—"}</td>
                     <td style={cell}>
                       {o ? <><Pill color={o.color}>{o.label}</Pill>
@@ -662,6 +892,7 @@ function EndpointTable({ endpoints }) {
           </table>
           {rows.length > 300 && <p style={T.hint}>Showing 300 of {rows.length}; use the filter.</p>}
         </div>
+        {editing && <FormatEditor key={editing.id} integration={integration} endpoint={editing} onClose={() => setEditing(null)} onSaved={onChanged} />}
       </>)}
     </div>
   );
@@ -723,19 +954,22 @@ export default function ApiIntegrations() {
       <p style={T.overline}>Live data</p>
       <h1 style={T.h1 || { fontFamily: fonts.heading }}>API Integrations</h1>
       <p style={{ ...T.sectionSub, maxWidth: "760px" }}>
-        Read-only lookups from a public API. When a user's message contains a transaction hash, the bot calls the
-        configured endpoint and sees only the fields you choose. Credentials stay on the server.
+        Read-only lookups from a public API. When a question contains a Cardano address, stake address or transaction or
+        block hash, or asks for live data such as network status, the bot picks the imported endpoint that answers it and
+        shows a formatted result. Credentials stay on the server.
       </p>
 
       {!state ? <p style={T.sectionSub}><Loader2 size={14} className="animate-spin" /> Loading…</p> : (<>
         <div style={{ ...T.card, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", marginBottom: "20px" }} data-testid="bot-access-card">
           <div>
             <p style={{ ...T.sectionTitle, margin: 0 }}>Bot lookups for {selectedInstance?.name || "this workspace"}</p>
-            <p style={{ ...T.hint, margin: "4px 0 0" }}>Off by default. When on, web chat, Discord and the external API use enabled lookups.</p>
+            <p style={{ ...T.hint, margin: "4px 0 0" }}>Off by default. When on, web chat, Discord and the external API use enabled lookups and the integrations whose bot access is on.</p>
           </div>
           <button onClick={toggleAccess} data-testid="bot-access-toggle" aria-pressed={state.bot_access}
             style={state.bot_access ? T.btnPrimary : T.btnSecondary}>{state.bot_access ? "On" : "Off"}</button>
         </div>
+
+        <AskTester integrations={state.integrations} />
 
         <div style={{ ...T.card, marginBottom: "20px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
@@ -773,7 +1007,8 @@ export default function ApiIntegrations() {
 
             {integration.endpoint_count > 0 && (<>
               <ConnectionPanel integration={integration} endpoints={endpoints} onChanged={load} />
-              <EndpointTable endpoints={endpoints} />
+              <BotPanel integration={integration} onChanged={load} />
+              <EndpointTable integration={integration} endpoints={endpoints} onChanged={refreshResults} />
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "14px" }}>
                 <span style={T.monoLabel}>Lookups</span>
                 {lookups.map((l) => (

@@ -273,9 +273,14 @@ def _resolve_ref(ref: Any, root: dict) -> dict:
 
 
 def _endpoint(method: str, path: str, op: dict) -> dict:
+    description = str(op.get("description") or "")[:1000]
+    responses = op.get("responses") if isinstance(op.get("responses"), dict) else {}
     return {"method": method.upper(), "path": path,
             "summary": str(op.get("summary") or op.get("title") or "")[:300],
-            "description": str(op.get("description") or "")[:1000], "parameters": [],
+            "description": description, "parameters": [],
+            "tags": [str(t)[:60] for t in (op.get("tags") or []) if isinstance(t, str)][:5],
+            # spec 018: an HTTP 404 means "no such id" only when the documentation says so
+            "not_found_404": "404" in {str(k) for k in responses} or bool(re.search(r"\b404\b", description)),
             "response_schema": None, "requires_auth": None}
 
 
@@ -354,6 +359,8 @@ def normalize_schema(schema: Any, root: dict, *, _depth: int = 0, _refs: Tuple[s
     if not types and "items" in schema:
         types = ["array"]
     node: dict = {"types": types, "nullable": nullable}
+    if isinstance(schema.get("description"), str) and schema["description"].strip():
+        node["description"] = schema["description"].strip()[:200]     # spec 018: units for formatting
     if "object" in types:
         props = {}
         for name, sub in list((schema.get("properties") or {}).items())[:300]:
@@ -421,9 +428,19 @@ def _param(p: dict, path: str) -> Optional[dict]:
     if not name or where not in ("path", "query"):
         return None
     schema = p.get("schema") if isinstance(p.get("schema"), dict) else {}
-    return {"name": name, "in": where, "required": bool(p.get("required", where == "path")),
-            "type": str(schema.get("type") or p.get("type") or "string")[:20],
-            "description": str(p.get("description") or "")[:300]}
+    out = {"name": name, "in": where, "required": bool(p.get("required", where == "path")),
+           "type": str(schema.get("type") or p.get("type") or "string")[:20],
+           "description": str(p.get("description") or "")[:300]}
+    # spec 018: documented constraints, checked before a routed call
+    src = {**p, **schema}
+    if isinstance(src.get("pattern"), str):
+        out["pattern"] = src["pattern"][:300]
+    if isinstance(src.get("enum"), list):
+        out["enum"] = [x for x in src["enum"] if isinstance(x, (str, int, float))][:50]
+    for k, key in (("minLength", "min_length"), ("maxLength", "max_length")):
+        if isinstance(src.get(k), int):
+            out[key] = src[k]
+    return out
 
 
 def parse_openapi(spec: Any) -> List[dict]:
@@ -563,7 +580,7 @@ async def fetch_document(integration: Mapping[str, Any], doc: Mapping[str, Any],
         raise ConfigError("The documentation is not valid JSON. YAML isn't supported; use the JSON version.")
 
 
-_DIFF_KEYS = ("summary", "description", "parameters", "response_schema", "requires_auth")
+_DIFF_KEYS = ("summary", "description", "parameters", "response_schema", "requires_auth", "tags", "not_found_404")
 
 
 def diff_endpoints(old: Sequence[Mapping[str, Any]], new: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -595,6 +612,18 @@ def base_path_warning(base_url: Any, endpoints: Sequence[Mapping[str, Any]]) -> 
         return None
     return (f"The base URL ends in {bp} and the documented paths also start with {bp}, so requests would go to "
             f"{base['origin']}{bp}{bp}/…. Change the base URL to {base['origin']}.")
+
+
+def infer_network(document: Any) -> Optional[str]:
+    """``mainnet`` or ``testnet`` when the document names only one kind of Cardano network
+    (servers, title, descriptions, parameter text such as `addr1…` vs `addr_test1…`), else None."""
+    try:
+        text = json.dumps(document)[:3_000_000].lower()
+    except (TypeError, ValueError):
+        return None
+    main = bool(re.search(r"\bmainnet\b|`addr1|`stake1", text))
+    test = bool(re.search(r"\b(testnet|preprod|preview)\b|addr_test1|stake_test1", text))
+    return "mainnet" if main and not test else "testnet" if test and not main else None
 
 
 def doc_coverage(endpoints: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
@@ -647,6 +676,38 @@ def field_path_tokens(path: str) -> List[Any]:
     return tokens
 
 
+def validate_fields(raw: Sequence[Any]) -> List[Dict[str, Any]]:
+    """Normalised display fields (path, label, unit, decimal shift, format and, when given, the
+    number of decimals to show), or ConfigError. Shared by saved lookups and endpoint overrides."""
+    fields = []
+    for f in list(raw or [])[:MAX_FIELDS]:
+        if not isinstance(f, Mapping):
+            continue
+        path = str(f.get("path") or "").strip()
+        field_path_tokens(path)
+        fmt = f.get("format") or "auto"
+        if fmt not in FIELD_FORMATS:
+            raise ConfigError(f"Unknown format for '{path}'.")
+        try:
+            scale = int(f.get("scale") or 0)
+        except (TypeError, ValueError):
+            raise ConfigError(f"The decimal shift for '{path}' must be a whole number.")
+        if not 0 <= scale <= 18:
+            raise ConfigError(f"The decimal shift for '{path}' must be between 0 and 18.")
+        field = {"path": path, "label": (str(f.get("label") or "").strip() or path)[:80],
+                 "unit": str(f.get("unit") or "").strip()[:20], "scale": scale, "format": fmt}
+        if f.get("decimals") not in (None, ""):
+            try:
+                decimals = int(f["decimals"])
+            except (TypeError, ValueError):
+                raise ConfigError(f"The precision for '{path}' must be a whole number.")
+            if not 0 <= decimals <= 18:
+                raise ConfigError(f"The precision for '{path}' must be between 0 and 18.")
+            field["decimals"] = decimals
+        fields.append(field)
+    return fields
+
+
 def validate_lookup(lookup: Mapping[str, Any], endpoints: Mapping[str, dict], *, require_fields: bool = True) -> dict:
     """Normalised lookup config, or ConfigError. The endpoint must be an imported GET endpoint;
     every path parameter needs a value source; exactly one input must be the transaction hash."""
@@ -678,23 +739,7 @@ def validate_lookup(lookup: Mapping[str, Any], endpoints: Mapping[str, dict], *,
                        "value": value if source == "fixed" else ""})
     if sum(i["source"] == "tx_hash" for i in inputs) != 1:
         raise ConfigError("Exactly one parameter must take the transaction hash from the message.")
-    fields = []
-    for f in (lookup.get("fields") or [])[:MAX_FIELDS]:
-        if not isinstance(f, Mapping):
-            continue
-        path = str(f.get("path") or "").strip()
-        field_path_tokens(path)
-        fmt = f.get("format") or "auto"
-        if fmt not in FIELD_FORMATS:
-            raise ConfigError(f"Unknown format for '{path}'.")
-        try:
-            scale = int(f.get("scale") or 0)
-        except (TypeError, ValueError):
-            raise ConfigError(f"The decimal shift for '{path}' must be a whole number.")
-        if not 0 <= scale <= 18:
-            raise ConfigError(f"The decimal shift for '{path}' must be between 0 and 18.")
-        fields.append({"path": path, "label": (str(f.get("label") or "").strip() or path)[:80],
-                       "unit": str(f.get("unit") or "").strip()[:20], "scale": scale, "format": fmt})
+    fields = validate_fields(lookup.get("fields") or [])
     not_found_on = lookup.get("not_found_on") or "empty"
     if not_found_on not in NOT_FOUND_MODES:
         raise ConfigError("Unknown setting for how the API reports an unknown transaction.")
