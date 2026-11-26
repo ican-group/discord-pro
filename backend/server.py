@@ -1058,6 +1058,7 @@ _KB_TICKET_SOLUTION_SQL = (
 )
 # Suggested-reply evidence groups, highest priority first.
 KB_DRAFT_GROUPS = ("knowledge", "ticket_solutions", "urls", "documents")
+_ZENDESK_SOLUTION_SEPARATOR = "\n\nReviewed solution:\n"
 _KB_GROUP_FILTERS = {
     "knowledge": f"AND s.type IN ('faq', 'tech_note') AND NOT {_KB_TICKET_SOLUTION_SQL}",
     "ticket_solutions": f"AND {_KB_TICKET_SOLUTION_SQL}",
@@ -1200,6 +1201,37 @@ def _kb_group_context(ranked: list[dict], group: str) -> tuple[str, list[dict]]:
     return "\n\n".join(chunks), list(used.values())
 
 
+async def _zendesk_pair_solution_evidence(instance_id: str, ranked: list[dict]) -> list[dict]:
+    """A search can match a description chunk without returning any of its solution chunks."""
+    source_ids = list(dict.fromkeys(row["source_id"] for row in ranked
+                                    if "zendesk-reviewed-solution" in (row.get("tags") or [])))
+    if not source_ids:
+        return ranked
+    async with _paradedb_pool.acquire() as conn:
+        sources = await conn.fetch(
+            "SELECT id, content FROM knowledge_sources_index "
+            "WHERE instance_id = $1 AND id = ANY($2::text[]) AND is_active",
+            instance_id, source_ids,
+        )
+    pairs = {}
+    for source in sources:
+        description, separator, solution = source["content"].partition(_ZENDESK_SOLUTION_SEPARATOR)
+        if separator and description.startswith("Ticket description:\n"):
+            description = description[:1000] + ("…" if len(description) > 1000 else "")
+            solution = solution[:2200] + ("…" if len(solution) > 2200 else "")
+            pairs[source["id"]] = f"{description}{separator}{solution}"
+    evidence = []
+    seen = set()
+    for row in ranked:
+        source_id = row["source_id"]
+        if source_id not in pairs:
+            evidence.append(row)
+        elif source_id not in seen:
+            evidence.append({**row, "content": pairs[source_id], "part": 1, "parts": 1})
+            seen.add(source_id)
+    return evidence
+
+
 async def _zendesk_draft_evidence(query: str, instance_id: str, ticket_id: int) -> dict:
     """All four searches for a suggested reply, in priority order (KB_DRAFT_GROUPS)."""
     linked = frozenset(await _zendesk_linked_source_ids(instance_id, ticket_id))
@@ -1216,6 +1248,11 @@ async def _zendesk_draft_evidence(query: str, instance_id: str, ticket_id: int) 
         except Exception as e:
             logger.error(f"zendesk draft search failed group={group}: {e}")
             ranked = []
+        if group == "ticket_solutions":
+            try:
+                ranked = await _zendesk_pair_solution_evidence(instance_id, ranked)
+            except Exception:
+                logger.exception("Couldn't load paired Zendesk ticket descriptions and solutions")
         context, used = _kb_group_context(ranked, group)
         evidence[group] = {"context": context, "entries": used, "candidates": len(ranked)}
         sent |= {entry["source_id"] for entry in used}
@@ -5240,6 +5277,7 @@ async def zendesk_ticket_history(ticket_id: int, instance_id: str = Depends(get_
 
 
 ZENDESK_SOLVED_STATUSES = {"solved", "closed"}
+ZENDESK_SOLUTION_STATUSES = ZENDESK_SOLVED_STATUSES | {"new", "open", "pending"}
 ZENDESK_SUMMARY_HEADER = "★ BridgeBot AI-generated ticket summary"
 
 
@@ -5496,25 +5534,28 @@ async def zendesk_add_solution_to_kb(
     ticket_id: int, body: ZendeskSolution, instance_id: str = Depends(get_instance_access),
 ):
     ticket = await _zendesk_ticket_request(instance_id, ticket_id)
-    if ticket.get("status") not in ZENDESK_SOLVED_STATUSES:
-        raise HTTPException(409, "Only solved or closed Zendesk tickets can be added to the Knowledge Base")
+    if ticket.get("status") not in ZENDESK_SOLUTION_STATUSES:
+        raise HTTPException(409, "Save solutions from New, Open, Pending, Solved or Closed tickets")
     solution = body.solution.strip()
     if not solution or len(solution) > 30000:
         raise HTTPException(422, "Enter a reviewed solution between 1 and 30,000 characters")
-    connection = await db.zendesk_connections.find_one({"_id": instance_id}, {"subdomain": 1})
     # One Knowledge Base entry per ticket: reuse the one "Save to Knowledge Base" created, if any,
     # so the two save paths update the same entry instead of adding duplicates.
     kb_url = await _zendesk_kb_url(instance_id, ticket_id)
     linked = await _zendesk_kb_existing(instance_id, kb_url)
     source_id = linked["id"] if linked else str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([
-        instance_id, connection["subdomain"], ticket_id,
+        instance_id, urlparse(kb_url).hostname.removesuffix(".zendesk.com"), ticket_id,
     ])))
     now = datetime.now(timezone.utc).isoformat()
     existing = await _pg_fetch_source(source_id, instance_id)
+    description = (ticket.get("description") or "").strip()
+    description = description.replace(_ZENDESK_SOLUTION_SEPARATOR, "\n\nReviewed solution: ")
     doc = {
         "id": source_id, "instance_id": instance_id, "type": "faq",
-        "title": f"Zendesk ticket #{ticket_id} solution",
-        "content": solution, "tags": ["zendesk", f"zendesk-ticket-{ticket_id}"], "priority": 0,
+        "title": _EMAIL_RE.sub("[email]", (ticket.get("subject") or "").strip())[:150]
+                 or f"Zendesk ticket #{ticket_id} solution",
+        "content": _EMAIL_RE.sub("[email]", f"Ticket description:\n{description}{_ZENDESK_SOLUTION_SEPARATOR}{solution}"),
+        "tags": ["zendesk", f"zendesk-ticket-{ticket_id}", "zendesk-reviewed-solution"], "priority": 0,
         "url": kb_url, "canonical_url": kb_url,
         "is_active": existing["is_active"] if existing else True,
         "created_at": existing["created_at"] if existing else now,
@@ -5573,15 +5614,15 @@ async def zendesk_ticket_summary(ticket_id: int, instance_id: str = Depends(get_
     partial = len(text) > 48000
     if partial:
         text = text[:12000] + "\n\n[Middle of conversation omitted]\n\n" + text[-36000:]
-    solved = ticket.get("status") in ZENDESK_SOLVED_STATUSES
+    include_solution = ticket.get("status") in ZENDESK_SOLUTION_STATUSES
     format_instruction = (
         "Return a concise summary, then a new line containing exactly SOLUTION: followed by a "
         "reusable resolution supported by the conversation. If no resolution was confirmed, leave "
         "the solution empty. Omit names, emails, account identifiers, and other customer details "
-        "from the proposed solution. The SOLUTION: line records how this solved ticket was actually "
+        "from the solution. The SOLUTION: line records how this ticket was actually "
         "resolved, as confirmed in the conversation; it is not a proposed fix or next step, so rules "
         "that limit proposed fixes to knowledge base articles do not apply to it."
-        if solved else "Return only the concise summary as plain text."
+        if include_solution else "Return only the concise summary as plain text."
     )
     config = await db.bot_config.find_one({"instance_id": instance_id}) or {}
     session_id = f"zendesk-summary-{uuid.uuid4()}"
@@ -5603,7 +5644,7 @@ async def zendesk_ticket_summary(ticket_id: int, instance_id: str = Depends(get_
     finally:
         for model in ALLOWED_MODELS:
             llm_sessions.pop(f"{session_id}_{instance_id}_{model}", None)
-    summary_text, _, solution = summary.partition("\nSOLUTION:") if solved else (summary, "", "")
+    summary_text, _, solution = summary.partition("\nSOLUTION:") if include_solution else (summary, "", "")
     return {
         "summary": summary_text.strip(), "partial": partial, "solution": solution.strip(),
         "requester_comment_id": _zendesk_requester_comment(ticket, history),
@@ -5733,7 +5774,7 @@ async def zendesk_draft_note(ticket_id: int, instance_id: str = Depends(get_inst
         if requester_id and comment["public"] and comment.get("author_id") == requester_id
     ]
     latest_update = requester_updates[-1][:4000] if requester_updates else ""
-    query = " ".join(f"{subject} {latest_update} {description}".split()[:80])
+    query = " ".join((subject.split()[:15] + description.split()[:45] + latest_update.split())[:80])
     # Two searches on every draft: manual FAQs/Tech Notes, and saved ticket solutions.
     evidence = await _zendesk_draft_evidence(query, instance_id, ticket_id)
     config = await db.bot_config.find_one({"instance_id": instance_id}) or {}
@@ -5752,8 +5793,11 @@ async def zendesk_draft_note(ticket_id: int, instance_id: str = Depends(get_inst
             "Draft a concise internal note for a support agent. Base any proposed solution only on "
             "the supplied evidence. It comes from four Knowledge Base groups, in priority order: "
             "1. workspace_knowledge (the workspace's FAQs and Tech Notes), 2. ticket_solutions "
-            "(resolutions saved from past solved Zendesk tickets), 3. web_pages (scraped web pages), "
+            "(reviewed solutions saved from Zendesk tickets), 3. web_pages (scraped web pages), "
             "4. documents (uploaded documents). Use only evidence that is relevant to this ticket. "
+            "For a saved ticket solution, compare its description with the current issue first. "
+            "When they match, use its reviewed solution as guidance. Ticket descriptions report issues, "
+            "so do not treat their wording as a fix. "
             "When relevant sources disagree, follow the highest-priority group and mention the "
             "conflict briefly. Use relevant lower-priority evidence to fill gaps the higher groups "
             "don't cover. When a step rests only on a past ticket, a web page or a document, say "

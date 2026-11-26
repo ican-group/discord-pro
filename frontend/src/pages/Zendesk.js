@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import api from "@/utils/api";
@@ -31,7 +31,9 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPoste
   const [savingSolution, setSavingSolution] = useState(false);
   const [solutionMessage, setSolutionMessage] = useState("");
   const [solutionError, setSolutionError] = useState("");
-  const solved = ["solved", "closed"].includes(ticket.status);
+  const solutionEdited = useRef(false);
+  const solved = SOLVED_STATUSES.includes(ticket.status);
+  const canSaveSolution = SOLUTION_STATUSES.includes(ticket.status);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -44,7 +46,7 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPoste
       api.post(`${path}/summary`, null, options).then(({ data: result }) => {
         if (!controller.signal.aborted) {
           setSummary(result);
-          setSolution(result.solution || "");
+          if (!solutionEdited.current) setSolution(result.solution || "");
         }
       }).catch((error) => {
         if (!controller.signal.aborted) setSummaryError(
@@ -149,12 +151,16 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPoste
           )}
         </section>
       )}
-      {solved && summary && (
+      {canSaveSolution && (
         <section style={{ ...T.card, marginBottom: 20 }}>
           <h4 style={T.sectionTitle}>Solution</h4>
-          <label style={T.label}>Review or edit the solution before adding it to the Knowledge Base.
+          <label style={T.label}>Review or enter a reusable solution. The ticket description and solution will be saved together.
             <textarea style={T.textarea} rows={6} value={solution} disabled={savingSolution}
-              onChange={(event) => { setSolution(event.target.value); setSolutionMessage(""); }} />
+              onChange={(event) => {
+                solutionEdited.current = true;
+                setSolution(event.target.value);
+                setSolutionMessage("");
+              }} />
           </label>
           <button type="button" style={T.btnPrimary} disabled={savingSolution || !solution.trim()}
             onClick={saveSolution}>
@@ -169,6 +175,7 @@ function ZendeskTicketHistory({ instanceId, ticket, canPostNotes, onSummaryPoste
 }
 
 const SOLVED_STATUSES = ["solved", "closed"];
+const SOLUTION_STATUSES = ["new", "open", "pending", ...SOLVED_STATUSES];
 
 // Ticket list tabs. New, Open and Pending each search one Zendesk status.
 const LIST_MODES = [
