@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 import { Copy, Check, Code2, Globe, Monitor, Paintbrush, MessageCircle, Layout, Maximize, ChevronDown, ExternalLink, Link2, RefreshCw, MessageSquareText, ToggleLeft, ToggleRight } from "lucide-react";
@@ -104,6 +104,9 @@ export default function EmbedCode() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [theme, setTheme] = useState({ ...DEFAULT_THEME });
   const [previewKey, setPreviewKey] = useState(0);
+  const [previewStylesheet, setPreviewStylesheet] = useState(null);
+  const [stylesheetStatus, setStylesheetStatus] = useState("");
+  const previewFrame = useRef(null);
   const [welcomeMessage, setWelcomeMessage] = useState("");
   const [savedWelcomeMessage, setSavedWelcomeMessage] = useState("");
   const [defaultOpen, setDefaultOpen] = useState(false);
@@ -121,13 +124,67 @@ export default function EmbedCode() {
   const welcomeQuery = welcomeMessage ? `&welcome=${encodeURIComponent(welcomeMessage)}` : "";
   const widgetUrl = `${origin}/widget?instance=${encodeURIComponent(instanceId || "")}&mode=${activeMethod}${themeQuery ? "&" + themeQuery : ""}${welcomeQuery}`;
 
+  const previewUrl = `${widgetUrl}&preview=1`;
+  const sendPreviewStylesheet = useCallback(() => {
+    const frame = previewFrame.current?.contentWindow;
+    if (!frame) return;
+    frame.postMessage({
+      type: "bridgebot-preview-stylesheet",
+      stylesheet: previewStylesheet || { url: savedCssUrl },
+    }, origin);
+  }, [origin, previewStylesheet, savedCssUrl]);
+
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event.origin !== origin || event.source !== previewFrame.current?.contentWindow) return;
+      if (event.data?.type === "bridgebot-preview-ready") sendPreviewStylesheet();
+      if (event.data?.type === "bridgebot-preview-stylesheet-status") setStylesheetStatus(event.data.status);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [origin, sendPreviewStylesheet]);
+
+  useEffect(() => { sendPreviewStylesheet(); }, [sendPreviewStylesheet]);
+
+  const previewCssUrl = () => {
+    const url = cssUrl.trim();
+    try {
+      if (url && (url.length > 2048 || new URL(url).protocol !== "https:" || /["<>\s]/.test(url))) throw new Error();
+    } catch {
+      setStylesheetStatus("Enter a direct HTTPS stylesheet URL.");
+      return;
+    }
+    setStylesheetStatus(url ? "Loading stylesheet…" : "");
+    setPreviewStylesheet({ url });
+  };
+
+  const previewCssFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".css") || file.size > 256 * 1024) {
+      setStylesheetStatus("Choose a .css file up to 256 KB.");
+      return;
+    }
+    try {
+      setPreviewStylesheet({ css: await file.text(), name: file.name });
+      setStylesheetStatus("Applying stylesheet…");
+    } catch {
+      setStylesheetStatus("Couldn’t read that CSS file.");
+    }
+  };
+
   // Load embed config
   useEffect(() => {
     if (!instanceId) return;
-    api.get("/admin/embed-config").then(r => {
+    const controller = new AbortController();
+    api.get("/admin/embed-config", { signal: controller.signal }).then(r => {
+      if (controller.signal.aborted) return;
       const url = r.data?.custom_css_url || "";
       setCssUrl(url);
       setSavedCssUrl(url);
+      setPreviewStylesheet(null);
+      setStylesheetStatus("");
       const wm = r.data?.welcome_message || "";
       setWelcomeMessage(wm);
       setSavedWelcomeMessage(wm);
@@ -135,6 +192,7 @@ export default function EmbedCode() {
       setDefaultOpen(dop);
       setSavedDefaultOpen(dop);
     }).catch(() => {});
+    return () => controller.abort();
   }, [instanceId]);
 
   const saveEmbedConfig = useCallback(async () => {
@@ -147,6 +205,7 @@ export default function EmbedCode() {
         default_open: defaultOpen,
       });
       setSavedCssUrl(cssUrl.trim());
+      setPreviewStylesheet(null);
       setSavedWelcomeMessage(welcomeMessage);
       setSavedDefaultOpen(defaultOpen);
       toast.success("Embed configuration saved");
@@ -399,7 +458,7 @@ export default function EmbedCode() {
               <Code2 size={16} color={colors.text.secondary} />
               <p style={T.sectionTitle}>Custom Stylesheet (Advanced)</p>
             </div>
-            <p style={T.sectionSub}>Override CSS variables with your own stylesheet for even deeper customization.</p>
+            <p style={T.sectionSub}>Use a direct HTTPS link to a CSS file or import a local stylesheet to try it in Live Preview.</p>
             <label style={T.label}>Stylesheet URL</label>
             <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
               <div style={{ flex: 1, position: "relative" }}>
@@ -413,6 +472,16 @@ export default function EmbedCode() {
                 {saving ? "Saving..." : "Save"}
               </button>
             </div>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+              <button type="button" onClick={previewCssUrl} style={T.btnSecondary}>Preview URL</button>
+              <label style={T.btnSecondary}>
+                Import CSS for preview
+                <input type="file" accept=".css,text/css" onChange={previewCssFile} />
+              </label>
+              {previewStylesheet && <button type="button" style={T.btnSecondary}
+                onClick={() => { setPreviewStylesheet(null); setStylesheetStatus(""); }}>Use saved stylesheet</button>}
+            </div>
+            {stylesheetStatus && <p role="status" style={T.hint}>{stylesheetStatus}</p>}
             {savedCssUrl && <p style={{ ...T.hint, color: colors.brand.success }}>Active: {savedCssUrl}</p>}
 
             <button onClick={() => setShowAdvanced(!showAdvanced)} data-testid="toggle-css-vars"
@@ -482,7 +551,7 @@ export default function EmbedCode() {
                     width: "260px", height: "360px", borderRadius: "12px", overflow: "hidden",
                     boxShadow: "0 12px 48px rgba(0,0,0,0.3)",
                   }}>
-                    <iframe key={previewKey} src={widgetUrl}
+                    <iframe key={previewKey} ref={previewFrame} src={previewUrl} onLoad={sendPreviewStylesheet}
                       title="Popup Preview" data-testid="widget-preview-iframe"
                       style={{ width: "100%", height: "100%", border: "none" }} />
                   </div>
@@ -501,20 +570,21 @@ export default function EmbedCode() {
               {activeMethod === "inline" && (
                 <div style={{ padding: "20px", height: "100%", background: "linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%)", display: "flex", flexDirection: "column", alignItems: "center" }}>
                   <div style={{ width: "100%", flex: 1, borderRadius: "10px", overflow: "hidden", border: "1px solid #e2e8f0" }}>
-                    <iframe key={previewKey} src={widgetUrl}
+                    <iframe key={previewKey} ref={previewFrame} src={previewUrl} onLoad={sendPreviewStylesheet}
                       title="Inline Preview" data-testid="widget-preview-iframe"
                       style={{ width: "100%", height: "100%", border: "none" }} />
                   </div>
                 </div>
               )}
               {activeMethod === "fullpage" && (
-                <iframe key={previewKey} src={widgetUrl}
+                <iframe key={previewKey} ref={previewFrame} src={previewUrl} onLoad={sendPreviewStylesheet}
                   title="Fullpage Preview" data-testid="widget-preview-iframe"
                   style={{ width: "100%", height: "100%", border: "none" }} />
               )}
             </div>
             <p style={{ fontFamily: fonts.body, fontSize: "11px", color: colors.text.muted, marginTop: "12px" }}>
-              Theme changes reflect instantly in code snippets. Click Refresh to reload the preview iframe.
+              Try a live message to test the selected bot. Uploaded CSS is preview-only.
+              Theme controls override matching stylesheet variables.
             </p>
           </div>
 
