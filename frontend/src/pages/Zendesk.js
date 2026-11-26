@@ -187,6 +187,14 @@ const LIST_MODES = [
 ];
 // Tabs whose tickets get a spam check (spec 010). Solved tickets aren't checked.
 const SPAM_CHECK_MODES = ["new", "open", "pending"];
+// Whether the ticket list is unfolded, remembered per browser. Storage can be unavailable.
+const LIST_OPEN_KEY = "bf_zendesk_ticket_list_open";
+function readListOpen() {
+  try { return window.localStorage.getItem(LIST_OPEN_KEY) !== "false"; } catch { return true; }
+}
+function writeListOpen(open) {
+  try { window.localStorage.setItem(LIST_OPEN_KEY, String(open)); } catch { /* not remembered */ }
+}
 const tagStyle = { display: "inline-block", marginTop: 4, marginRight: 6, padding: "1px 6px", fontSize: 11, borderRadius: 4 };
 const spamTagStyle = { ...tagStyle, color: "#fde68a", border: "1px solid #f59e0b" };
 
@@ -435,6 +443,7 @@ function SaveToKnowledgeBase({ instanceId, ticketId, onSaved }) {
 
 function ZendeskTickets({ instanceId, canPostNotes }) {
   const [listMode, setListMode] = useState("open");
+  const [listOpen, setListOpen] = useState(readListOpen);
   const [queuePage, setQueuePage] = useState(1);
   const [queueRefresh, setQueueRefresh] = useState(0);
   const [queue, setQueue] = useState(null);
@@ -594,7 +603,20 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   return (
     <div className="grid items-start gap-5 min-[950px]:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" style={{ marginTop: 20 }}>
       <section style={{ ...T.card, minWidth: 0 }}>
-      <h2 style={T.sectionTitle}>Zendesk tickets</h2>
+      <button type="button" aria-expanded={listOpen} aria-controls="zendesk-ticket-list"
+        onClick={() => setListOpen((open) => { writeListOpen(!open); return !open; })}
+        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: 0, marginBottom: listOpen ? 12 : 16,
+          background: "none", border: "none", color: "inherit", cursor: "pointer", textAlign: "left" }}>
+        <span aria-hidden="true" style={{ display: "inline-block", fontSize: 12, transition: "transform 150ms",
+          transform: listOpen ? "rotate(90deg)" : "none" }}>▶</span>
+        <h2 style={{ ...T.sectionTitle, margin: 0 }}>Zendesk tickets</h2>
+        <span style={{ ...T.sectionSub, margin: 0, marginLeft: "auto" }}>
+          {LIST_MODES.find(({ mode }) => mode === listMode).label}
+          {queue ? ` · ${queue.tickets.length} ticket${queue.tickets.length === 1 ? "" : "s"}` : ""}
+          {listOpen ? "" : " · show"}
+        </span>
+      </button>
+      <div id="zendesk-ticket-list" hidden={!listOpen}>
       <div role="group" aria-label="Ticket list" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {LIST_MODES.map(({ mode, label }) => (
           <button key={mode} type="button" aria-pressed={listMode === mode}
@@ -660,6 +682,7 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
             onClick={() => changeQueuePage(queuePage + 1)}>Next</button>
         </div>
       )}
+      </div>
       <form onSubmit={(event) => { event.preventDefault(); loadTicket(ticketId.trim()); }} style={{ display: "grid", gap: 12 }}>
         <label style={T.label}>Ticket ID
           <input style={T.input} value={ticketId} onChange={(e) => setTicketId(e.target.value)}
