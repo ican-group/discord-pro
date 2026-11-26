@@ -187,13 +187,28 @@ const LIST_MODES = [
 ];
 // Tabs whose tickets get a spam check (spec 010). Solved tickets aren't checked.
 const SPAM_CHECK_MODES = ["new", "open", "pending"];
-// Whether the ticket list is unfolded, remembered per browser. Storage can be unavailable.
+// Whether a foldable card is unfolded, remembered per browser. Storage can be unavailable.
 const LIST_OPEN_KEY = "bf_zendesk_ticket_list_open";
-function readListOpen() {
-  try { return window.localStorage.getItem(LIST_OPEN_KEY) !== "false"; } catch { return true; }
+const CONNECTION_OPEN_KEY = "bf_zendesk_connection_open";
+function readOpen(key) {
+  try { return window.localStorage.getItem(key) !== "false"; } catch { return true; }
 }
-function writeListOpen(open) {
-  try { window.localStorage.setItem(LIST_OPEN_KEY, String(open)); } catch { /* not remembered */ }
+function writeOpen(key, open) {
+  try { window.localStorage.setItem(key, String(open)); } catch { /* not remembered */ }
+}
+
+// Card header that folds and unfolds the element with id `controls`.
+function FoldHeader({ title, summary, open, onToggle, controls, closedGap = 0 }) {
+  return (
+    <button type="button" aria-expanded={open} aria-controls={controls} onClick={onToggle}
+      style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: 0, marginBottom: open ? 12 : closedGap,
+        background: "none", border: "none", color: "inherit", cursor: "pointer", textAlign: "left", flexWrap: "wrap" }}>
+      <span aria-hidden="true" style={{ display: "inline-block", fontSize: 12, transition: "transform 150ms",
+        transform: open ? "rotate(90deg)" : "none" }}>▶</span>
+      <h2 style={{ ...T.sectionTitle, margin: 0 }}>{title}</h2>
+      <span style={{ ...T.sectionSub, margin: 0, marginLeft: "auto" }}>{summary}{open ? "" : " · show"}</span>
+    </button>
+  );
 }
 const tagStyle = { display: "inline-block", marginTop: 4, marginRight: 6, padding: "1px 6px", fontSize: 11, borderRadius: 4 };
 const spamTagStyle = { ...tagStyle, color: "#fde68a", border: "1px solid #f59e0b" };
@@ -443,7 +458,7 @@ function SaveToKnowledgeBase({ instanceId, ticketId, onSaved }) {
 
 function ZendeskTickets({ instanceId, canPostNotes }) {
   const [listMode, setListMode] = useState("open");
-  const [listOpen, setListOpen] = useState(readListOpen);
+  const [listOpen, setListOpen] = useState(() => readOpen(LIST_OPEN_KEY));
   const [queuePage, setQueuePage] = useState(1);
   const [queueRefresh, setQueueRefresh] = useState(0);
   const [queue, setQueue] = useState(null);
@@ -603,19 +618,10 @@ function ZendeskTickets({ instanceId, canPostNotes }) {
   return (
     <div className="grid items-start gap-5 min-[950px]:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]" style={{ marginTop: 20 }}>
       <section style={{ ...T.card, minWidth: 0 }}>
-      <button type="button" aria-expanded={listOpen} aria-controls="zendesk-ticket-list"
-        onClick={() => setListOpen((open) => { writeListOpen(!open); return !open; })}
-        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: 0, marginBottom: listOpen ? 12 : 16,
-          background: "none", border: "none", color: "inherit", cursor: "pointer", textAlign: "left" }}>
-        <span aria-hidden="true" style={{ display: "inline-block", fontSize: 12, transition: "transform 150ms",
-          transform: listOpen ? "rotate(90deg)" : "none" }}>▶</span>
-        <h2 style={{ ...T.sectionTitle, margin: 0 }}>Zendesk tickets</h2>
-        <span style={{ ...T.sectionSub, margin: 0, marginLeft: "auto" }}>
-          {LIST_MODES.find(({ mode }) => mode === listMode).label}
-          {queue ? ` · ${queue.tickets.length} ticket${queue.tickets.length === 1 ? "" : "s"}` : ""}
-          {listOpen ? "" : " · show"}
-        </span>
-      </button>
+      <FoldHeader title="Zendesk tickets" open={listOpen} controls="zendesk-ticket-list"
+        onToggle={() => setListOpen((open) => { writeOpen(LIST_OPEN_KEY, !open); return !open; })}
+        summary={LIST_MODES.find(({ mode }) => mode === listMode).label
+          + (queue ? ` · ${queue.tickets.length} ticket${queue.tickets.length === 1 ? "" : "s"}` : "")} closedGap={16} />
       <div id="zendesk-ticket-list" hidden={!listOpen}>
       <div role="group" aria-label="Ticket list" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {LIST_MODES.map(({ mode, label }) => (
@@ -757,6 +763,7 @@ function ZendeskConnection({ instanceId }) {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(() => readOpen(CONNECTION_OPEN_KEY));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -765,6 +772,8 @@ function ZendeskConnection({ instanceId }) {
     }).then(({ data }) => {
       setStatus(data);
       setSubdomain(data.subdomain || "");
+      // Not connected, or the token expired: show the form so it can be (re)connected.
+      if (!data.connected || data.expired) setOpen(true);
     }).catch(() => {
       if (!controller.signal.aborted) setError("Couldn’t load the Zendesk connection.");
     });
@@ -790,11 +799,14 @@ function ZendeskConnection({ instanceId }) {
   return (
     <>
       <div style={{ ...T.card, maxWidth: 640 }}>
-        {status?.connected && <p style={T.sectionSub}>Connected to {status.subdomain}.zendesk.com</p>}
+        <FoldHeader title="Zendesk connection" open={open} controls="zendesk-connection-details"
+          onToggle={() => setOpen((current) => { writeOpen(CONNECTION_OPEN_KEY, !current); return !current; })}
+          summary={!status ? "Loading…" : status.expired ? "Token expired"
+            : status.connected ? `Connected to ${status.subdomain}.zendesk.com` : "Not connected"} />
         {status?.expired && <p style={T.sectionSub}>The access token expired. Reconnect to authorize again.</p>}
         {outcomes[params.get("oauth")] && <p role="status">{outcomes[params.get("oauth")]}</p>}
         {error && <p role="alert">{error}</p>}
-        {status && <>
+        {status && <div id="zendesk-connection-details" hidden={!open}>
           <p style={T.sectionSub}>Add this redirect URL to your Zendesk OAuth client.</p>
           <code style={{ overflowWrap: "anywhere" }}>{status.redirect_uri}</code>
           <form onSubmit={connect} style={{ display: "grid", gap: 12, marginTop: 20 }}>
@@ -814,7 +826,7 @@ function ZendeskConnection({ instanceId }) {
               {busy ? "Opening Zendesk…" : status.connected ? "Reconnect Zendesk" : "Connect to Zendesk"}
             </button>
           </form>
-        </>}
+        </div>}
       </div>
       {status?.connected && <ZendeskTickets instanceId={instanceId} canPostNotes={status.can_post_notes} />}
     </>
