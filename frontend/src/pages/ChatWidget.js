@@ -80,6 +80,7 @@ export default function ChatWidget() {
   const [searchParams] = useSearchParams();
   const instanceId = (searchParams.get("instance") || "").slice(0, 128);
   const mode = MODES.includes(searchParams.get("mode")) ? searchParams.get("mode") : "popup";
+  const isPreview = searchParams.get("preview") === "1";
   const welcomeParam = (searchParams.get("welcome") || "").slice(0, 2000);
   const vars = useMemo(() => themeVars(searchParams), [searchParams]);
   const sessionKey = `widget_session_${instanceId || "default"}`;
@@ -102,19 +103,52 @@ export default function ChatWidget() {
       if (cfg.name) setBotName(cfg.name);
       if (!welcomeParam && cfg.welcome_message) setWelcome(cfg.welcome_message);
       // https only (the server validates it too).
-      if (typeof cfg.custom_css_url === "string" && cfg.custom_css_url.startsWith("https://")) {
+      if (!isPreview && typeof cfg.custom_css_url === "string" && cfg.custom_css_url.startsWith("https://")) {
         link = document.createElement("link");
         link.rel = "stylesheet"; link.href = cfg.custom_css_url; link.setAttribute("data-bridgebot-css", "true");
         document.head.appendChild(link);
       }
     }).catch(() => {});
-    const saved = store.get(sessionKey);
+    const saved = isPreview ? null : store.get(sessionKey);
     if (saved) {
       setSessionId(saved);
       axios.get(`${API}/chat/history/${encodeURIComponent(saved)}`).then(r => { if (!cancelled) setMessages(r.data.messages || []); }).catch(() => {});
     }
     return () => { cancelled = true; if (link) link.remove(); };
-  }, [instanceId, sessionKey, welcomeParam]);
+  }, [instanceId, sessionKey, welcomeParam, isPreview]);
+
+  useEffect(() => {
+    if (!isPreview || window.parent === window) return undefined;
+    const origin = window.location.origin;
+    let stylesheet = null;
+    const report = (status) => window.parent.postMessage({ type: "bridgebot-preview-stylesheet-status", status }, origin);
+    const receive = (event) => {
+      if (event.origin !== origin || event.source !== window.parent ||
+          event.data?.type !== "bridgebot-preview-stylesheet") return;
+      const draft = event.data.stylesheet || {};
+      stylesheet?.remove();
+      stylesheet = null;
+      if (typeof draft.css === "string" && draft.css.length <= 256 * 1024) {
+        stylesheet = document.createElement("style");
+        stylesheet.textContent = draft.css;
+        document.head.appendChild(stylesheet);
+        report(`Previewing ${draft.name || "local stylesheet"}`);
+      } else if (typeof draft.url === "string" && draft.url.startsWith("https://")) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = draft.url;
+        link.onload = () => { if (stylesheet === link) report("Stylesheet loaded in Live Preview."); };
+        link.onerror = () => { if (stylesheet === link) report("Couldn’t load the stylesheet. Check that the URL serves a CSS file."); };
+        stylesheet = link;
+        document.head.appendChild(link);
+      } else {
+        report("");
+      }
+    };
+    window.addEventListener("message", receive);
+    window.parent.postMessage({ type: "bridgebot-preview-ready" }, origin);
+    return () => { window.removeEventListener("message", receive); stylesheet?.remove(); };
+  }, [isPreview]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isLoading]);
   useEffect(() => { if (mode !== "inline") setTimeout(() => inputRef.current?.focus(), 100); }, [mode]);
@@ -133,21 +167,25 @@ export default function ChatWidget() {
       const res = await axios.post(`${API}/chat/send`, { message: text, session_id: sessionId, instance_id: instanceId });
       if (!sessionId) {
         setSessionId(res.data.session_id);
-        store.set(sessionKey, res.data.session_id);
+        if (!isPreview) store.set(sessionKey, res.data.session_id);
       }
-      setMessages(prev => [...prev, { role: "assistant", content: res.data.response, timestamp: new Date().toISOString() }]);
+      setMessages(prev => [...prev, { role: "assistant", content: res.data.response, lookup: res.data.lookup, timestamp: new Date().toISOString() }]);
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Sorry, an error occurred. Please try again.", timestamp: new Date().toISOString(), isError: true }]);
     } finally { setIsLoading(false); }
   };
 
-  const reset = () => { store.remove(sessionKey); setSessionId(null); setMessages([]); };
+  const reset = () => { if (!isPreview) store.remove(sessionKey); setSessionId(null); setMessages([]); };
   const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
+  const example = isPreview && messages.length === 0 ? [
+    { role: "user", content: "Example question", timestamp: "preview-user", isExample: true },
+    { role: "assistant", content: "Example bot reply", timestamp: "preview-bot", isExample: true },
+  ] : [];
   const shown = !instanceId
     ? [{ role: "assistant", content: MISSING_BOT_MESSAGE, timestamp: "missing", isError: true }, ...messages]
     // The welcome message stays at the top of the conversation (it isn't sent to the server).
-    : (welcome ? [{ role: "assistant", content: welcome, timestamp: "welcome", isWelcome: true }, ...messages] : messages);
+    : (welcome ? [{ role: "assistant", content: welcome, timestamp: "welcome", isWelcome: true }, ...example, ...messages] : [...example, ...messages]);
   const canSend = !isLoading && input.trim();
 
   return (
@@ -202,7 +240,14 @@ export default function ChatWidget() {
                 }}>
                   <p style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{msg.content}</p>
                 </div>
-                {msg.role === "assistant" && !msg.isError && !msg.isWelcome && <CopyBtn text={msg.content} />}
+                {isPreview && msg.lookup && (
+                  <small style={{ color: "var(--bb-text-secondary)" }}>
+                    {msg.lookup.provider} · {msg.lookup.status === "unavailable" ? "unavailable"
+                      : msg.lookup.status === "no_call" ? "no live lookup"
+                      : `${msg.lookup.calls} API ${msg.lookup.calls === 1 ? "call" : "calls"}${msg.lookup.status === "partial" ? " · some calls failed" : ""}`}
+                  </small>
+                )}
+                {msg.role === "assistant" && !msg.isError && !msg.isWelcome && !msg.isExample && <CopyBtn text={msg.content} />}
               </div>
             </div>
           ))}

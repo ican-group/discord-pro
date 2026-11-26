@@ -3151,6 +3151,8 @@ async def _agent_lookup_context(instance_id: str, text: str, source: str, conver
     calls = agentconn.call_summary(result.get("tool_calls") or [])
     status = ("unavailable" if not result.get("ok") else "no_call" if not calls
               else "ok" if all(c["ok"] for c in calls) else "partial")
+    if source == "web":
+        out["lookup"] = {"provider": "GridScan Agent", "status": status, "calls": len(calls)}
     try:
         await db.api_lookup_log.insert_one({
             "instance_id": instance_id, "lookup_id": None, "integration_id": doc["id"], "endpoint_id": "GridScan Agent",
@@ -3354,7 +3356,10 @@ async def send_chat_message(body: ChatMessage):
         response = await call_claude(session_id, body.message, system_prompt,
                                     instance_id=instance_id, platform="web", model=bot_config.get("model"), instance_api_key=bot_config.get("api_key"), effort=bot_config.get("effort"))
     await save_conversation(session_id, body.message, response, platform="web", instance_id=instance_id)
-    return {"response": response, "session_id": session_id}
+    result = {"response": response, "session_id": session_id}
+    if looked.get("lookup"):
+        result["lookup"] = looked["lookup"]
+    return result
 
 
 @api_router.get("/chat/history/{session_id}")
