@@ -92,6 +92,16 @@ refuses those URLs for the same reason.
   - Each one is logged in `api_lookup_log` as "GridScan Agent", with its status, time and calls.
   - The log has no addresses or hashes.
 
+**Full identifiers** (added after the first deployment):
+
+- In a lookup reply, the bot writes addresses, hashes, pool IDs and DRep IDs in full, in inline code.
+  It never shortens them to "first 8…last 6", because users copy them into their next question. This
+  applies to direct integrations too.
+- The agent's answer may still shorten them. The prompt therefore also gets the full identifiers that
+  the agent's successful calls used ("Looked up (full values): tx_utxos…: hash=…"). This is in the
+  prompt only. The activity log still has no addresses or hashes.
+- Identifiers from failed calls aren't offered, because the agent may have guessed them.
+
 **Unchanged:**
 
 - Bots without an agent connection, or with it off.

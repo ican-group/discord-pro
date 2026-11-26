@@ -166,6 +166,25 @@ def call_summary(tool_calls: List[Mapping[str, Any]]) -> List[Dict[str, Any]]:
              "ok": bool(c.get("success")), "ms": c.get("duration_ms")} for c in tool_calls or []]
 
 
+_FULL_ID = re.compile(r"(?:addr1|stake1|pool1|drep(?:_script)?1)[a-z0-9]{50,110}|[0-9a-f]{64}")
+
+
+def looked_up_ids(tool_calls: List[Mapping[str, Any]]) -> List[str]:
+    """Full identifiers the agent's successful calls were made with ("tx_utxos: hash=43ab…92b"), so
+    the bot can write them in full even when the agent's answer shortened them. Prompt only, never
+    logged."""
+    out: List[str] = []
+    for c in tool_calls or []:
+        if not c.get("success") or not isinstance(c.get("arguments"), Mapping):
+            continue
+        for k, v in c["arguments"].items():
+            if isinstance(v, str) and _FULL_ID.fullmatch(v.strip()):
+                line = f"{str(c.get('tool') or '?')[:120]}: {str(k)[:40]}={v.strip()}"
+                if line not in out:
+                    out.append(line)
+    return out[:20]
+
+
 def payload_text(data: Any) -> Dict[str, Any]:
     """The payload as text exactly as the agent returned it, and whether the agent cut it.
 
@@ -290,9 +309,12 @@ def lookup_block(result: Mapping[str, Any], *, at: str, reply_format: str) -> st
         return "\n".join(lines)
     ok = [c for c in calls if c["ok"]]
     status = "ok" if ok and len(ok) == len(calls) else ("partly failed" if ok else "lookup unavailable")
+    ids = looked_up_ids(result.get("tool_calls") or [])
     lines += [f"Status: {status} (fresh lookup at {at})",
-              "API calls: " + "; ".join(f"{c['tool']} → HTTP {c['status']}" for c in calls),
-              f"Reply format: {reply_format}",
+              "API calls: " + "; ".join(f"{c['tool']} → HTTP {c['status']}" for c in calls)]
+    if ids:
+        lines.append("Looked up (full values): " + "; ".join(ids))
+    lines += [f"Reply format: {reply_format}",
               "AGENT ANSWER (written by GridScan Agent from the API responses above; use its figures, "
               "addresses, hashes and units exactly; if it includes JSON the user asked for, reproduce that "
               "JSON unchanged):",
