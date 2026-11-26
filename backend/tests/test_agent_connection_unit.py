@@ -152,3 +152,32 @@ def test_call_summary_drops_arguments():
 ])
 def test_wants_fresh(text, fresh):
     assert ac.wants_fresh(text) is fresh
+
+
+TX92B = "43ab5bc909cfa98cdd361d7575ccc6549b2bb96ccd2289bc66238877b7d6192b"
+ADDR_FULL = "addr1qxnfu7yefr2lfdcy5gaxfptvlvzhd5wjxf9t7ezhnrldte6c0pmud52qw72qev3v288350ydkz2yjjar9sej03uzvfss5td45t"
+
+
+def test_lookup_block_gives_full_identifiers_even_when_the_agent_shortened_them():
+    res = {"ok": True, "reply": "Inputs of 43ab5bc9...7d6192b: 5 ADA.", "tool_calls": [
+        {"tool": "tx_utxos_api_txs_hash_utxos", "status_code": 200, "success": True, "arguments": {"hash": TX92B}},
+        {"tool": "address_summary", "status_code": 200, "success": True, "arguments": {"address": ADDR_FULL, "page": "1"}},
+        {"tool": "tx_utxos_api_txs_hash_utxos", "status_code": 400, "success": False, "arguments": {"hash": "f" * 64}}]}
+    block = ac.lookup_block(res, at="t", reply_format="Discord")
+    head = block.split("AGENT ANSWER")[0]
+    assert f"tx_utxos_api_txs_hash_utxos: hash={TX92B}" in head and f"address_summary: address={ADDR_FULL}" in head
+    assert "f" * 64 not in block              # a failed (possibly guessed) value is not offered as real
+    assert "page=" not in head                # only identifiers
+
+
+def test_looked_up_ids_ignores_non_identifiers_and_is_not_in_the_log_summary():
+    calls = [{"tool": "t", "success": True, "arguments": {"hash": TX92B, "count": "10", "q": "addr1short"}}]
+    assert ac.looked_up_ids(calls) == [f"t: hash={TX92B}"]
+    assert TX92B not in str(ac.call_summary(calls))
+
+
+def test_prompt_says_write_identifiers_in_full():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1] / "server.py").read_text()
+    assert "first 8 and last 6" not in src
+    assert "in full, in inline code, never shortened" in src
